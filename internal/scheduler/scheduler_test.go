@@ -1,6 +1,9 @@
 package scheduler_test
 
 import (
+	"bytes"
+	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
@@ -266,4 +269,63 @@ func TestNextFireComputesCorrectlyAcrossDSTTransition(t *testing.T) {
 	if !got.After(after) {
 		t.Fatalf("returned time %v is not after %v", got, after)
 	}
+}
+
+// An invisible hold is the failure the spec calls the worst one: the device
+// reports itself healthy while the room stays silent. Once when it starts
+// holding, once when it resumes — and not once per tick, because Tick runs
+// every second and would otherwise write 86,400 lines a day to an SD card.
+func TestRunnerLogsHoldAndResumeExactlyOnce(t *testing.T) {
+	loc := kyiv(t)
+	var buf bytes.Buffer
+	sync := &clock.FakeSync{Value: false}
+	r := scheduler.NewRunner(sync, cfgWith(weekdayEvent()), func(config.Event, time.Time) {})
+	r.Logger = slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
+
+	base := time.Date(2026, 9, 7, 8, 0, 0, 0, loc)
+	for i := 0; i < 300; i++ {
+		r.Tick(base.Add(time.Duration(i) * time.Second))
+	}
+	if got := strings.Count(buf.String(), "scheduler holding"); got != 1 {
+		t.Fatalf("logged the hold %d times over 300 ticks, want 1:\n%s", got, buf.String())
+	}
+	if got := strings.Count(buf.String(), "scheduler resumed"); got != 0 {
+		t.Fatalf("logged a resume %d times while still holding, want 0:\n%s", got, buf.String())
+	}
+
+	sync.Value = true
+	for i := 300; i < 600; i++ {
+		r.Tick(base.Add(time.Duration(i) * time.Second))
+	}
+	if got := strings.Count(buf.String(), "scheduler resumed"); got != 1 {
+		t.Fatalf("logged the resume %d times over 300 ticks, want 1:\n%s", got, buf.String())
+	}
+	if got := strings.Count(buf.String(), "scheduler holding"); got != 1 {
+		t.Fatalf("logged the hold %d times in total, want 1:\n%s", got, buf.String())
+	}
+}
+
+// A clock that is synchronised from the first tick is the normal case and must
+// say nothing at all: there was no hold to resume from.
+func TestRunnerSaysNothingWhenNeverHolding(t *testing.T) {
+	loc := kyiv(t)
+	var buf bytes.Buffer
+	r := scheduler.NewRunner(&clock.FakeSync{Value: true}, cfgWith(weekdayEvent()), func(config.Event, time.Time) {})
+	r.Logger = slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
+
+	base := time.Date(2026, 9, 7, 8, 0, 0, 0, loc)
+	for i := 0; i < 120; i++ {
+		r.Tick(base.Add(time.Duration(i) * time.Second))
+	}
+	if buf.Len() != 0 {
+		t.Fatalf("a synchronised clock logged:\n%s", buf.String())
+	}
+}
+
+// A nil Logger must not panic: the field is optional.
+func TestRunnerNilLoggerIsSafe(t *testing.T) {
+	loc := kyiv(t)
+	r := scheduler.NewRunner(&clock.FakeSync{Value: false}, cfgWith(weekdayEvent()), func(config.Event, time.Time) {})
+	r.Logger = nil
+	r.Tick(time.Date(2026, 9, 7, 8, 30, 0, 0, loc))
 }

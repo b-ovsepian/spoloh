@@ -2,6 +2,7 @@
 package scheduler
 
 import (
+	"log/slog"
 	"time"
 
 	"github.com/spoloh/spoloh/internal/clock"
@@ -55,6 +56,14 @@ type Runner struct {
 	cfg  func() *config.Config
 	fire func(config.Event, time.Time)
 
+	// Logger receives the hold and resume transitions. NewRunner defaults it
+	// to slog.Default(); a nil value is tolerated and falls back to the same.
+	Logger *slog.Logger
+
+	// holding is true while the clock is unsynchronised, so that the hold and
+	// the resume are each logged once instead of once per tick.
+	holding bool
+
 	// lastFired records which wall-clock minutes each event has already fired in.
 	// Key is "event-id:2006-01-02 15:04", ensuring both occurrences of a repeated
 	// hour on a DST fall-back day map to the same minute and fire only once.
@@ -62,15 +71,34 @@ type Runner struct {
 }
 
 func NewRunner(sync clock.SyncChecker, cfg func() *config.Config, fire func(config.Event, time.Time)) *Runner {
-	return &Runner{sync: sync, cfg: cfg, fire: fire, lastFired: map[string]bool{}}
+	return &Runner{sync: sync, cfg: cfg, fire: fire, Logger: slog.Default(), lastFired: map[string]bool{}}
+}
+
+func (r *Runner) logger() *slog.Logger {
+	if r.Logger == nil {
+		return slog.Default()
+	}
+	return r.Logger
 }
 
 // Tick fires every event due in now's minute.
 func (r *Runner) Tick(now time.Time) {
 	// Without a synchronised clock the device does not know what time it is,
-	// and a wrong time is worse than no announcement.
+	// and a wrong time is worse than no announcement (spec §5.3). The hold has
+	// to be visible: every cause of it — no NTP yet, no timedatectl binary, no
+	// D-Bus — looks identical from here, and an invisible hold is a device
+	// that reports itself healthy while the room stays silent. Logged on the
+	// transition only; this runs once a second.
 	if r.sync != nil && !r.sync.Synced() {
+		if !r.holding {
+			r.holding = true
+			r.logger().Warn("scheduler holding: the clock is not NTP-synchronised, so no scheduled event will fire")
+		}
 		return
+	}
+	if r.holding {
+		r.holding = false
+		r.logger().Info("scheduler resumed: the clock is NTP-synchronised")
 	}
 	// Key on wall-clock time, not absolute instant, so that both occurrences of a
 	// repeated hour on a DST fall-back day map to the same minute.

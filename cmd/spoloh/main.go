@@ -121,7 +121,7 @@ func run(configPath, dataDir string) error {
 		Library:   lib,
 		Log:       lg,
 		Clock:     clock.System{Loc: loc},
-		Sync:      clock.Timedatectl{},
+		Sync:      &clock.Timedatectl{},
 		Logger:    logger,
 		Watchdog:  wd,
 	})

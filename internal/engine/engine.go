@@ -70,6 +70,7 @@ func New(d Deps) *Engine {
 		rnd: rand.New(rand.NewSource(time.Now().UnixNano())),
 	}
 	e.sched = scheduler.NewRunner(d.Sync, d.Config, e.fireScheduled)
+	e.sched.Logger = d.Logger
 	return e
 }
 
