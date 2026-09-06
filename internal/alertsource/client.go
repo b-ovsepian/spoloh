@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	neturl "net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -73,7 +74,11 @@ func (c *Client) fetchOne(ctx context.Context, source string) (Snapshot, error) 
 	} else {
 		url += "&"
 	}
-	url += "source=" + source
+	// The source name comes from the config file, where an operator can type
+	// anything; an unescaped "&" would silently turn the rest of it into a
+	// second query parameter. (net/url is imported under an alias because the
+	// local variable below is called url.)
+	url += "source=" + neturl.QueryEscape(source)
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {

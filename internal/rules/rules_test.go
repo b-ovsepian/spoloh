@@ -227,3 +227,22 @@ func TestShippedDefaultDoesNotSuppressAlertsInQuietHours(t *testing.T) {
 		t.Fatalf("priority = %v, want PriorityAlert", got[0].Priority)
 	}
 }
+
+// A window whose start equals its end resolves to "not quiet", not to "quiet
+// all day". Pinned deliberately: this is the safety-critical direction of an
+// ambiguous configuration — a 24-hour quiet window would silence every
+// scheduled event on the device, and the operator who typed 22:00 twice by
+// accident would have no idea why. The choice must not be flipped silently.
+func TestInQuietHoursEqualFromAndToIsNotQuiet(t *testing.T) {
+	qh := config.QuietHours{Enabled: true, From: "22:00", To: "22:00", AppliesTo: []string{config.CategoryScheduled}}
+
+	for _, hm := range []string{"00:00", "07:30", "21:59", "22:00", "22:01", "23:59"} {
+		at, err := time.Parse("15:04", hm)
+		if err != nil {
+			t.Fatalf("Parse %s: %v", hm, err)
+		}
+		if rules.InQuietHours(qh, at) {
+			t.Fatalf("InQuietHours at %s = true, want false for a zero-length window", hm)
+		}
+	}
+}

@@ -54,7 +54,10 @@ func ctlDevice(pcm string) string {
 	if c := strings.IndexByte(seg, ','); c >= 0 {
 		seg = seg[:c]
 	}
-	if strings.HasPrefix(seg, "CARD=") {
+	// The trailing name has to be there: "x:CARD=" would otherwise yield the
+	// meaningless control "hw:CARD=", the same trap the digit branch below
+	// guards against.
+	if strings.HasPrefix(seg, "CARD=") && len(seg) > len("CARD=") {
 		return "hw:" + seg
 	}
 	if seg != "" && isDigits(seg) {
@@ -97,7 +100,9 @@ func (a ALSA) Play(ctx context.Context, device, path string) error {
 	if device != "" {
 		args = append(args, "-D", device)
 	}
-	args = append(args, path)
+	// "--" so that a file whose name begins with a dash is read as a path and
+	// not as a flag.
+	args = append(args, "--", path)
 
 	out, err := exec.CommandContext(ctx, a.aplay(), args...).CombinedOutput()
 	if err != nil {

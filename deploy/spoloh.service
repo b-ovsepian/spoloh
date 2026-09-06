@@ -35,8 +35,9 @@ StateDirectory=spoloh
 # process could read it but not write the config it seeds on first boot.
 # /etc/spoloh must therefore already exist, owned by spoloh, before this
 # unit starts: see deploy/spoloh.tmpfiles. ReadWritePaths=- (the leading
-# "-" tolerates the path not existing at unit-file-parse time, unlike a
-# bare ReadWritePaths=) then grants the write exception ProtectSystem=full
+# "-" tolerates the path not existing when the unit is started, unlike a
+# bare ReadWritePaths=, which fails the start) then grants the write
+# exception ProtectSystem=full
 # would otherwise deny for a directory outside StateDirectory/RuntimeDirectory.
 ReadWritePaths=-/etc/spoloh
 

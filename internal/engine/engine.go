@@ -168,7 +168,14 @@ func (e *Engine) heartbeat(now time.Time) {
 	if now.Before(e.nextHeartbeat) {
 		return
 	}
-	e.d.Logger.Info("heartbeat", "last_success", e.lastSuccess, "alert", e.d.Machine.Alert())
+	// Before the first successful poll there is no timestamp to report, and
+	// printing the zero time reads as a clock fault rather than as a device
+	// that has simply not got an answer yet.
+	lastSuccess := "none yet"
+	if !e.lastSuccess.IsZero() {
+		lastSuccess = e.lastSuccess.Format(time.RFC3339)
+	}
+	e.d.Logger.Info("heartbeat", "last_success", lastSuccess, "alert", e.d.Machine.Alert())
 	e.nextHeartbeat = now.Add(heartbeatInterval)
 }
 

@@ -46,19 +46,13 @@ func (f *fakeBackend) Calls() []string {
 }
 
 // blockVolume makes the next SetVolume call park until its context is
-// cancelled or releaseVolume is called. It must be set up before the Play
-// request that should be held is submitted. Only the one call that consumes
+// cancelled. It must be set up before the Play request that should be held is
+// submitted. Only the one call that consumes
 // the block is affected; SetVolume resets to non-blocking for calls after it.
 func (f *fakeBackend) blockVolume() {
 	f.mu.Lock()
 	f.volHold = make(chan struct{})
 	f.mu.Unlock()
-}
-
-func (f *fakeBackend) releaseVolume() {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	close(f.volHold)
 }
 
 func (f *fakeBackend) SetVolume(ctx context.Context, _ string, pct int) error {

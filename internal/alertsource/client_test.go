@@ -3,6 +3,7 @@ package alertsource_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -120,5 +121,26 @@ func TestBackoff(t *testing.T) {
 		if got := alertsource.Backoff(tc.attempt); got != tc.want {
 			t.Errorf("Backoff(%d) = %v, want %v", tc.attempt, got, tc.want)
 		}
+	}
+}
+
+// The source name comes from the config file, where an operator can type
+// anything. Unescaped, an "&" would end the source parameter early and turn
+// the rest into a second one.
+func TestFetchEscapesTheSourceParameter(t *testing.T) {
+	var got string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = r.URL.Query().Get("source")
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"source":"t","states":{"м. Київ":{"alertnow":false,"changed":"2026-09-06 15:38:00"}}}`)
+	}))
+	defer srv.Close()
+
+	c := alertsource.New(srv.URL, []string{"skog&region=all"}, srv.Client())
+	if _, err := c.Fetch(context.Background()); err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+	if want := "skog&region=all"; got != want {
+		t.Fatalf("upstream saw source=%q, want %q", got, want)
 	}
 }

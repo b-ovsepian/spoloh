@@ -3,6 +3,7 @@ package scheduler
 
 import (
 	"log/slog"
+	"slices"
 	"time"
 
 	"github.com/spoloh/spoloh/internal/clock"
@@ -67,11 +68,34 @@ type Runner struct {
 	// lastFired records which wall-clock minutes each event has already fired in.
 	// Key is "event-id:2006-01-02 15:04", ensuring both occurrences of a repeated
 	// hour on a DST fall-back day map to the same minute and fire only once.
-	lastFired map[string]bool
+	// The value is that same minute as a location-free instant, which is what
+	// lets Tick prune the map without breaking the DST rule above; see
+	// pruneAfter.
+	lastFired map[string]time.Time
+}
+
+// pruneAfter bounds lastFired. It grows by one entry per FIRING — not one per
+// event id, as an earlier note in this repository had it — so a daily event
+// adds an entry every day for the life of the process. Nothing older than a
+// couple of minutes can ever be consulted again: the key carries the minute,
+// and Tick only ever looks up the current one.
+//
+// The age compared is wall-clock age, never elapsed absolute time. On a DST
+// fall-back day the two occurrences of a repeated hour are an hour apart in
+// absolute time but are the same wall-clock minute, and pruning between them
+// would fire the event a second time — the exact bug the wall-clock key exists
+// to prevent.
+const pruneAfter = 2 * time.Minute
+
+// wallMinute reduces an instant to its wall-clock minute, dropping the
+// location so that two instants an hour apart on a DST fall-back day compare
+// equal.
+func wallMinute(t time.Time) time.Time {
+	return time.Date(t.Year(), t.Month(), t.Day(), t.Hour(), t.Minute(), 0, 0, time.UTC)
 }
 
 func NewRunner(sync clock.SyncChecker, cfg func() *config.Config, fire func(config.Event, time.Time)) *Runner {
-	return &Runner{sync: sync, cfg: cfg, fire: fire, Logger: slog.Default(), lastFired: map[string]bool{}}
+	return &Runner{sync: sync, cfg: cfg, fire: fire, Logger: slog.Default(), lastFired: map[string]time.Time{}}
 }
 
 func (r *Runner) logger() *slog.Logger {
@@ -100,6 +124,9 @@ func (r *Runner) Tick(now time.Time) {
 		r.holding = false
 		r.logger().Info("scheduler resumed: the clock is NTP-synchronised")
 	}
+	wall := wallMinute(now)
+	r.prune(wall)
+
 	// Key on wall-clock time, not absolute instant, so that both occurrences of a
 	// repeated hour on a DST fall-back day map to the same minute.
 	wallClockMinute := now.Format("2006-01-02 15:04")
@@ -113,14 +140,14 @@ func (r *Runner) Tick(now time.Time) {
 		if err != nil || due != cur {
 			continue
 		}
-		if !slicesContainsInt(ev.Weekdays, ISOWeekday(now)) {
+		if !slices.Contains(ev.Weekdays, ISOWeekday(now)) {
 			continue
 		}
 		minuteKey := ev.ID + ":" + wallClockMinute
-		if r.lastFired[minuteKey] {
+		if _, done := r.lastFired[minuteKey]; done {
 			continue
 		}
-		r.lastFired[minuteKey] = true
+		r.lastFired[minuteKey] = wall
 		r.fire(ev, now)
 	}
 }
@@ -147,11 +174,13 @@ func (r *Runner) NextUp(now time.Time) (config.Event, time.Time, bool) {
 	return bestEv, bestAt, found
 }
 
-func slicesContainsInt(xs []int, v int) bool {
-	for _, x := range xs {
-		if x == v {
-			return true
+// prune drops firing records that can no longer be consulted. Entries dated
+// after the current minute are kept: a backwards NTP step on a board with no
+// RTC must not let a minute that has already fired fire a second time.
+func (r *Runner) prune(currentMinute time.Time) {
+	for key, at := range r.lastFired {
+		if currentMinute.Sub(at) > pruneAfter {
+			delete(r.lastFired, key)
 		}
 	}
-	return false
 }

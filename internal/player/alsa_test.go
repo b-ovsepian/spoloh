@@ -16,6 +16,8 @@ func TestCtlDevice(t *testing.T) {
 		{"dmix:CARD=Headphones,DEV=0", "hw:CARD=Headphones"},
 		{"noColonHere", ""},
 		{"weird:notacard", ""},
+		{"x:CARD=", ""}, // a card name is required, as a card number is
+		{"x:CARD=,DEV=0", ""},
 	}
 	for _, c := range cases {
 		if got := ctlDevice(c.pcm); got != c.want {

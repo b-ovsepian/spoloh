@@ -1,13 +1,16 @@
 package engine_test
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -747,5 +750,29 @@ func TestRunReturnsOnContextCancellation(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("Run did not return after its context was cancelled")
+	}
+}
+
+// The first heartbeat used to print last_success=0001-01-01T00:00:00Z, which
+// reads as a broken clock rather than as a device that has not had an answer
+// from upstream yet.
+func TestFirstHeartbeatSaysNoPollHasSucceeded(t *testing.T) {
+	var buf bytes.Buffer
+	clk := clock.NewFake(time.Date(2026, 1, 5, 12, 0, 0, 0, time.UTC))
+	h := newHarnessWith(t, alertstate.New(), clk, func(d *engine.Deps) {
+		d.Logger = slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	})
+	h.fail(true) // no poll can succeed
+
+	h.eng.Tick(context.Background())
+
+	if !strings.Contains(buf.String(), "heartbeat") {
+		t.Fatalf("no heartbeat was written:\n%s", buf.String())
+	}
+	if strings.Contains(buf.String(), "0001-01-01") {
+		t.Fatalf("the first heartbeat printed the zero time:\n%s", buf.String())
+	}
+	if !strings.Contains(buf.String(), "none yet") {
+		t.Fatalf("the first heartbeat does not say that no poll has succeeded:\n%s", buf.String())
 	}
 }
