@@ -110,6 +110,17 @@ func run(configPath, dataDir, listen string) error {
 	}
 	defer lg.Close()
 
+	// eventlog.KindConfigChange is written from exactly one place: the store
+	// itself, for every successful update. Setting the administrator password
+	// is the first configuration change any device sees, and until now it left
+	// no trace at all. A nil *eventlog.Log swallows this, like every other
+	// append.
+	store.SetOnChange(func() {
+		if err := lg.Append(eventlog.Entry{Kind: eventlog.KindConfigChange, OK: true}); err != nil {
+			logger.Warn("could not record the configuration change", "err", err)
+		}
+	})
+
 	pl := player.New(player.ALSA{}, cfg.Audio.Device)
 	pl.OnError = func(r player.Request, stage string, err error) {
 		logger.Error("playback failed", "stage", stage, "event", r.EventID, "err", err)

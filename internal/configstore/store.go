@@ -15,9 +15,25 @@ import (
 type Store struct {
 	path string
 
+	// onChange is called after every successful Update. It exists so the
+	// daemon can record a KindConfigChange entry in one place instead of
+	// every editing screen remembering to: setting the administrator
+	// password is the first configuration change any device sees, and it was
+	// invisible in the log. Plan 2b's screens inherit this by going through
+	// Update, which they already have to.
+	//
+	// Set it with SetOnChange before the store is shared with other
+	// goroutines; it is not guarded, because a hook that can be swapped
+	// mid-flight is a hook nobody can reason about.
+	onChange func()
+
 	mu  sync.RWMutex
 	cfg *config.Config
 }
+
+// SetOnChange installs the hook called after each successful Update. Call it
+// during startup, before the store is handed to anything that writes.
+func (s *Store) SetOnChange(fn func()) { s.onChange = fn }
 
 // Open loads the configuration, seeding the file with the defaults when it does
 // not exist yet. A file that exists but is invalid is an error: silently
@@ -56,6 +72,18 @@ func (s *Store) Get() *config.Config {
 // success that same value becomes the store's live configuration, so a later
 // write to it would reach live state outside the lock.
 func (s *Store) Update(fn func(*config.Config) error) error {
+	if err := s.update(fn); err != nil {
+		return err
+	}
+	// Outside the lock: the hook writes to the event log, and anything that
+	// reaches back into the store from in here would deadlock.
+	if s.onChange != nil {
+		s.onChange()
+	}
+	return nil
+}
+
+func (s *Store) update(fn func(*config.Config) error) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -66,8 +94,12 @@ func (s *Store) Update(fn func(*config.Config) error) error {
 	if err := next.Validate(); err != nil {
 		return fmt.Errorf("rejected configuration change: %w", err)
 	}
+	// Wrapped, unlike the bare return it used to be: this is the path that
+	// fires when the SD card has been remounted read-only — the classic Pi
+	// failure — and "permission denied" with no file name in front of it is
+	// the least useful thing a log can say at that moment.
 	if err := config.Save(s.path, next); err != nil {
-		return err
+		return fmt.Errorf("save %s: %w", s.path, err)
 	}
 	s.cfg = next
 	return nil

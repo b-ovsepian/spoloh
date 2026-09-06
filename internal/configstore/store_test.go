@@ -1,8 +1,10 @@
 package configstore_test
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 
@@ -171,4 +173,74 @@ func openTemp(t *testing.T) *configstore.Store {
 		t.Fatalf("Open: %v", err)
 	}
 	return s
+}
+
+// The hook is what makes eventlog.KindConfigChange reachable at all: nothing
+// wrote that kind, and the very first configuration change a device sees —
+// its administrator password being set — was invisible in the log. Putting it
+// on the store rather than in each handler is what makes Plan 2b's editing
+// screens inherit it.
+func TestUpdateCallsTheChangeHookOnlyOnSuccess(t *testing.T) {
+	store, err := configstore.Open(filepath.Join(t.TempDir(), "config.json"))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+
+	var calls int
+	store.SetOnChange(func() { calls++ })
+
+	if err := store.Update(func(c *config.Config) error {
+		c.Device.Name = "spoloh-2"
+		return nil
+	}); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	if calls != 1 {
+		t.Fatalf("hook called %d times after a successful update, want 1", calls)
+	}
+
+	// A mutator that fails, and a change validation rejects, both leave the
+	// configuration exactly as it was — so neither is a change to record.
+	if err := store.Update(func(*config.Config) error { return errors.New("no") }); err == nil {
+		t.Fatal("Update swallowed the mutator's error")
+	}
+	if err := store.Update(func(c *config.Config) error {
+		c.Alerts.Region = ""
+		return nil
+	}); err == nil {
+		t.Fatal("Update accepted a configuration with no region")
+	}
+	if calls != 1 {
+		t.Fatalf("hook called %d times, want it silent for updates that changed nothing", calls)
+	}
+}
+
+// The one unwrapped error path in the store, and it fires exactly when the SD
+// card has been remounted read-only — the classic Pi failure — so the moment
+// it matters most is the moment it said least.
+func TestUpdateSaysWhichFileItCouldNotSave(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+	store, err := configstore.Open(path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	// config.Save writes atomically through a temp file in the same
+	// directory, so a directory it cannot write to is what a read-only card
+	// looks like from here.
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Fatalf("Chmod: %v", err)
+	}
+	t.Cleanup(func() { os.Chmod(dir, 0o700) })
+
+	err = store.Update(func(c *config.Config) error {
+		c.Device.Name = "spoloh-2"
+		return nil
+	})
+	if err == nil {
+		t.Fatal("Update succeeded against an unwritable directory")
+	}
+	if !strings.Contains(err.Error(), path) {
+		t.Errorf("error %q does not name the file it could not save", err)
+	}
 }
