@@ -31,6 +31,27 @@
       </svg>
       <p class="text-4xl font-bold tracking-wide">СПОКІЙНО</p>
     </div>
+    {{/*
+    The staleness badge. The stream is what keeps this screen honest, so the
+    screen has to say when it has lost the stream: without this the page sat
+    frozen on its last frame and an alert that began afterwards showed as
+    СПОКІЙНО, with nothing to tell the caretaker the display had stopped.
+
+    It follows the same accessibility rule as the state blocks — never colour
+    alone: a shape, a word, and a border, not a tint. It is deliberately not
+    red and not filled, because the only solid red mass on this screen is ever
+    the alert itself.
+
+    Hidden in the server-rendered page because a page that has just been
+    served is not stale by definition; only Alpine can ever raise it.
+    */}}
+    <p data-state="stale" x-show="stale" style="display:none"
+       class="flex items-center justify-center gap-2 rounded-md border-2 border-foreground bg-muted px-3 py-2 text-center font-semibold">
+      <svg class="size-6 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M2 2 22 22"/><path d="M8.5 16.5a5 5 0 0 1 7 0"/><path d="M5 12.9a10 10 0 0 1 3-2.1"/><path d="M16 10.8a10 10 0 0 1 3 2.1"/><path d="M2 8.8a15 15 0 0 1 4.2-2.6"/><path d="M10.2 5.1a15 15 0 0 1 11.8 3.7"/><path d="M12 20h.01"/>
+      </svg>
+      Немає зв’язку з пристроєм — показано застарілі дані
+    </p>
     <p class="text-center text-2xl" x-text="region">{{.Status.Region}}</p>
     <p class="text-center text-muted-foreground" x-show="alert"{{if not .Status.Alert}} style="display:none"{{end}} x-text="since ? 'з ' + since : ''">{{if .Status.Alert}}з {{.SinceText}}{{end}}</p>
   </section>
@@ -101,14 +122,39 @@ function status() {
     lastSuccess: {{.LastSuccessText}}, lastError: {{.Status.LastError}}, source: {{.Status.SourceName}},
     failing: {{.Status.Failing}}, clockSynced: {{.Status.ClockSynced}},
     nextEvent: {{.Status.NextEventName}}, nextEventAt: {{.NextEventAtText}},
+    // stale says the frames stopped arriving, so everything above is a
+    // photograph of some earlier moment rather than the state of the device.
+    stale: false,
+    // The EventSource is kept rather than dropped on the floor: readyState is
+    // the only way to tell a stream that is retrying by itself from one the
+    // browser has given up on, and without a handle there is nothing to close
+    // before opening a replacement.
+    es: null,
     connect() {
+      if (this.es) { this.es.close(); }
       const es = new EventSource('/events');
+      this.es = es;
       es.onmessage = (e) => {
         const d = JSON.parse(e.data);
+        this.stale = false;
         this.alert = d.alert; this.region = d.region; this.since = d.since;
         this.lastSuccess = d.last_success; this.lastError = d.last_error; this.source = d.source;
         this.failing = d.failing; this.clockSynced = d.clock_synced;
         this.nextEvent = d.next_event; this.nextEventAt = d.next_event_at;
+      };
+      // Every way this stream can end arrives here: the daemon restarting,
+      // Wi-Fi dropping, the router rebooting, somebody unplugging the switch.
+      // CONNECTING means the browser is retrying on its own and the badge is
+      // enough. CLOSED means it has given up and will never retry — the case
+      // a session that expired mid-stream produces, because the reconnect is
+      // answered with a redirect to /login whose text/html content type fails
+      // the connection outright. Only a fresh page load recovers from that,
+      // and it goes through /login if the device wants one.
+      es.onerror = () => {
+        this.stale = true;
+        if (es.readyState === EventSource.CLOSED) {
+          setTimeout(() => location.reload(), 5000);
+        }
       };
     },
   };

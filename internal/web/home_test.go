@@ -130,3 +130,55 @@ func TestHomePutsStopAheadOfPlay(t *testing.T) {
 		t.Error("the play control comes before the stop button, which is the one pressed in a hurry")
 	}
 }
+
+// The stream is what keeps this screen honest, so the screen has to be able
+// to say when it has lost the stream. Without the badge — and without the
+// onerror that raises it — a page whose EventSource died sat frozen on its
+// last frame, and an alert that began afterwards showed as СПОКІЙНО.
+//
+// The Go side can only assert the markup and the wiring; the browser
+// behaviour itself is verified by hand (see the fix report).
+func TestHomeCarriesAStalenessBadgeAndAStreamErrorHandler(t *testing.T) {
+	srv, _ := newServerWithStore(t)
+	setPassword(t, srv, "correct horse battery staple")
+	cookie := login(t, srv, "correct horse battery staple")
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.AddCookie(cookie)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+	body := rec.Body.String()
+
+	// A freshly served page is not stale, so the badge starts hidden with
+	// exactly the inline style x-show itself sets — the same pairing the two
+	// state blocks use, which is what makes the no-JS and Alpine renders
+	// identical.
+	const badge = `data-state="stale" x-show="stale" style="display:none"`
+	start := strings.Index(body, badge)
+	if start < 0 {
+		t.Fatalf("the page has no hidden staleness badge; body: %q", body)
+	}
+	end := strings.Index(body[start:], "</p>")
+	if end < 0 {
+		t.Fatal("the staleness badge is never closed")
+	}
+	markup := body[start : start+end]
+	if !strings.Contains(markup, "застарілі") {
+		t.Error("the staleness badge does not say in words that the data is stale")
+	}
+	if !strings.Contains(markup, "<svg") {
+		t.Error("the staleness badge carries no shape, only colour and a word")
+	}
+
+	// The badge is useless unless something raises it, and a browser that has
+	// closed the stream for good never retries on its own.
+	if !strings.Contains(body, "onerror") {
+		t.Error("nothing handles the status stream failing")
+	}
+	if !strings.Contains(body, "EventSource.CLOSED") {
+		t.Error("the page cannot tell a retrying stream from one the browser gave up on")
+	}
+	if !strings.Contains(body, "location.reload()") {
+		t.Error("a closed stream never recovers: nothing reloads the page")
+	}
+}
