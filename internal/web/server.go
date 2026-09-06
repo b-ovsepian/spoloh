@@ -39,6 +39,11 @@ type Server struct {
 	sessions *sessions
 	limiter  *loginLimiter
 	events   *Broadcaster
+	// patterns records every pattern registered on mux, in registration
+	// order. http.ServeMux does not expose what is on it, and a route table
+	// nothing can enumerate is a route table nothing can check against the
+	// authentication exemption list — see routes_test.go.
+	patterns []string
 	// now stands in for time.Now so session expiry is testable from outside
 	// the package via the SetNow helper in export_test.go; it defaults to
 	// time.Now for every real caller. It lives on Server, not Deps, which is
@@ -69,19 +74,28 @@ func New(d Deps) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
-	s.mux.Handle("GET /static/", http.StripPrefix("/static/", http.FileServer(http.FS(static))))
-	s.mux.HandleFunc("GET /setup", s.handleSetup)
-	s.mux.HandleFunc("POST /setup", s.handleSetup)
-	s.mux.HandleFunc("GET /login", s.handleLogin)
-	s.mux.HandleFunc("POST /login", s.handleLogin)
-	s.mux.HandleFunc("POST /logout", s.handleLogout)
-	s.mux.HandleFunc("GET /events", s.handleEvents)
-	s.mux.HandleFunc("GET /log", s.handleLog)
-	s.mux.HandleFunc("POST /play", s.handlePlay)
-	s.mux.HandleFunc("POST /stop", s.handleStop)
-	s.mux.HandleFunc("GET /{$}", s.handleHome)
+	s.handle("GET /static/", http.StripPrefix("/static/", http.FileServer(http.FS(static))))
+	s.handle("GET /setup", http.HandlerFunc(s.handleSetup))
+	s.handle("POST /setup", http.HandlerFunc(s.handleSetup))
+	s.handle("GET /login", http.HandlerFunc(s.handleLogin))
+	s.handle("POST /login", http.HandlerFunc(s.handleLogin))
+	s.handle("POST /logout", http.HandlerFunc(s.handleLogout))
+	s.handle("GET /events", http.HandlerFunc(s.handleEvents))
+	s.handle("GET /log", http.HandlerFunc(s.handleLog))
+	s.handle("POST /play", http.HandlerFunc(s.handlePlay))
+	s.handle("POST /stop", http.HandlerFunc(s.handleStop))
+	s.handle("GET /{$}", http.HandlerFunc(s.handleHome))
 
 	return s, nil
+}
+
+// handle registers a route and remembers its pattern, so the route table can
+// be walked and checked against publicPaths rather than only spot-checked
+// route by route. Every route must go through this and not through s.mux
+// directly.
+func (s *Server) handle(pattern string, h http.Handler) {
+	s.mux.Handle(pattern, h)
+	s.patterns = append(s.patterns, pattern)
 }
 
 // Handler returns the fully wrapped handler, middleware included. requireAuth
@@ -101,7 +115,15 @@ var publicPaths = map[string]bool{
 }
 
 func isPublicPath(path string) bool {
-	return publicPaths[path] || strings.HasPrefix(path, "/static/")
+	if publicPaths[path] {
+		return true
+	}
+	// "/static" as well as "/static/...": http.ServeMux matches the bare
+	// path against the "GET /static/" pattern and answers it with a 301 to
+	// the trailing-slash form, so requireAuth sees a routed request. Exempting
+	// only the prefix sent that redirect to /login instead — a login page
+	// where the browser expected a stylesheet.
+	return path == "/static" || strings.HasPrefix(path, "/static/")
 }
 
 // securityHeaders applies the few that matter for a plain-HTTP LAN appliance:

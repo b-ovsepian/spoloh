@@ -8,3 +8,16 @@ import "time"
 func (s *Server) SetNow(now func() time.Time) {
 	s.now = now
 }
+
+// Patterns lists every route pattern registered on the server's mux, in
+// registration order. http.ServeMux does not expose its own table, so this is
+// what lets routes_test.go check the whole table against the authentication
+// exemption list rather than spot-checking a route at a time.
+func (s *Server) Patterns() []string {
+	return append([]string(nil), s.patterns...)
+}
+
+// IsPublicPath exposes the exemption rule requireAuth applies, so a test can
+// state the ruling for every registered route directly instead of inferring
+// it from a response that two different code paths could have produced.
+func IsPublicPath(path string) bool { return isPublicPath(path) }
