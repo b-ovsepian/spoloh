@@ -6,20 +6,32 @@ package alertsource
 import (
 	"encoding/json"
 	"fmt"
+	"sync"
 	"time"
 )
 
 // tsLayout is the wall-clock format used by every upstream timestamp.
 const tsLayout = "2006-01-02 15:04:05"
 
-// Kyiv is the location every upstream timestamp is expressed in.
-var Kyiv = time.FixedZone("EET", 2*3600)
-
-func init() {
+// Kyiv returns the location every upstream timestamp is expressed in.
+//
+// It is resolved on first use rather than in an init(). cmd/spoloh imports
+// time/tzdata to embed the zone database for the minimal OS images that have
+// no /usr/share/zoneinfo, but package initialisation order puts an init() here
+// before tzdata has registered it — so the lookup would fail on exactly the
+// images that import exists for, and the fixed +2 fallback would silently win.
+// That is an hour wrong from late March to late October. By first use, every
+// package's initialisation is long finished.
+//
+// The fallback remains for a genuinely missing database: +2 is right for
+// winter and an hour out for summer, which still beats refusing to read a
+// timestamp at all.
+var Kyiv = sync.OnceValue(func() *time.Location {
 	if loc, err := time.LoadLocation("Europe/Kyiv"); err == nil {
-		Kyiv = loc
+		return loc
 	}
-}
+	return time.FixedZone("EET", 2*3600)
+})
 
 // RegionState is one oblast's alert state at a point in time.
 type RegionState struct {
@@ -71,7 +83,7 @@ func Parse(data []byte) (Snapshot, error) {
 		States: make(map[string]RegionState, len(w.States)),
 	}
 	if w.CachedAt != "" {
-		if t, err := time.ParseInLocation(tsLayout, w.CachedAt, Kyiv); err == nil {
+		if t, err := time.ParseInLocation(tsLayout, w.CachedAt, Kyiv()); err == nil {
 			snap.CachedAt = t
 		}
 	}
@@ -81,7 +93,7 @@ func Parse(data []byte) (Snapshot, error) {
 		// time — to mean "never observed". Testing the year rather than a
 		// precomputed instant keeps this correct whichever historical offset
 		// the tzdata carries for Kyiv in 1970.
-		if t, err := time.ParseInLocation(tsLayout, st.Changed, Kyiv); err == nil && t.Year() > 1970 {
+		if t, err := time.ParseInLocation(tsLayout, st.Changed, Kyiv()); err == nil && t.Year() > 1970 {
 			rs.Changed = t
 		}
 		snap.States[name] = rs

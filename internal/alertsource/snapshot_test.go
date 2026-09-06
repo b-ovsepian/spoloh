@@ -178,3 +178,24 @@ func TestParseMalformedCachedAtFallsBackToZeroTime(t *testing.T) {
 		t.Fatalf("valid changed must be parsed correctly, got %v want %v", kh.Changed, want)
 	}
 }
+
+// Europe/Kyiv is EET (+2) in winter and EEST (+3) in summer. Resolving the
+// location in a package-level init() lost a race with time/tzdata's own
+// initialisation, so on an image with no /usr/share/zoneinfo the fixed +2
+// fallback won silently and every summer timestamp was an hour out.
+func TestKyivIsTheRealZoneNotAFixedOffset(t *testing.T) {
+	if got := alertsource.Kyiv().String(); got != "Europe/Kyiv" {
+		t.Fatalf("Kyiv() = %q, want Europe/Kyiv", got)
+	}
+
+	body := []byte(`{"source":"t","cachedat":"2026-07-01 12:00:00",
+		"states":{"м. Київ":{"alertnow":true,"changed":"2026-07-01 12:00:00"}}}`)
+	snap, err := alertsource.Parse(body)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	st, _ := snap.Region("м. Київ")
+	if want := time.Date(2026, 7, 1, 9, 0, 0, 0, time.UTC); !st.Changed.Equal(want) {
+		t.Fatalf("a summer timestamp parsed as %v, want %v (Kyiv is +3 in July, not +2)", st.Changed.UTC(), want)
+	}
+}
