@@ -2,6 +2,12 @@
 Description=Spoloh air raid alert announcer
 After=network-online.target sound.target
 Wants=network-online.target
+# Spec §10: the device never stops trying. systemd's default start rate limit
+# (5 starts in 10s) would otherwise put the unit into a permanent failed state
+# after a crash loop — a silent announcer that no longer even tries to come
+# back, which is the worst failure this device can have. 0 disables the limit;
+# RestartSec=5 below is what keeps the retries from becoming a busy loop.
+StartLimitIntervalSec=0
 
 [Service]
 Type=notify

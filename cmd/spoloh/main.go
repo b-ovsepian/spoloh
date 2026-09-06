@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"sync"
 	"syscall"
 	"time"
 
@@ -136,7 +137,16 @@ func run(configPath, dataDir string) error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	go pl.Run(ctx)
+	// The player runs in its own goroutine and its OnError writes to the event
+	// log, so the log has to outlive it. Without this wait, the deferred
+	// lg.Close() below could run while an OnError was mid-Append.
+	var players sync.WaitGroup
+	players.Add(1)
+	go func() {
+		defer players.Done()
+		pl.Run(ctx)
+	}()
+
 	logger.Info("spoloh started",
 		"version", version,
 		"region", cfg.Alerts.Region,
@@ -147,6 +157,13 @@ func run(configPath, dataDir string) error {
 
 	err = eng.Run(ctx)
 	wd.Stopping()
+
+	// stop() before the wait, not just deferred: pl.Run returns on context
+	// cancellation, so cancelling here is what guarantees the wait ends even
+	// if eng.Run returned for some reason other than the context.
+	stop()
+	players.Wait()
+
 	if err != nil && !errors.Is(err, context.Canceled) {
 		return err
 	}

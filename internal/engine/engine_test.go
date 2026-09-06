@@ -639,3 +639,113 @@ func TestNilEventLogStillAnnounces(t *testing.T) {
 		t.Fatalf("PlayManual: %v", err)
 	}
 }
+
+// The spec (§5.5) claims the minute of silence is a filled-in row rather than a
+// separate code path. That claim is only worth anything if the path is actually
+// exercised: scheduler fire, through the rule engine, to the player.
+func TestScheduledEventPlaysAtItsConfiguredTime(t *testing.T) {
+	// Monday 2026-09-07 at 09:00, the default config's minute of silence.
+	clk := clock.NewFake(time.Date(2026, 9, 7, 9, 0, 0, 0, time.UTC))
+	h := newHarnessWithClock(t, clk)
+
+	h.eng.Tick(context.Background())
+
+	if got := waitPlayed(t, h.rec); got != "metronome.wav" {
+		t.Fatalf("played %q at 09:00, want metronome.wav", got)
+	}
+}
+
+// Quiet hours suppress scheduled events, and only scheduled events (§5.1).
+func TestScheduledEventIsSuppressedInQuietHours(t *testing.T) {
+	clk := clock.NewFake(time.Date(2026, 9, 7, 9, 0, 0, 0, time.UTC))
+	h := newHarnessWithClock(t, clk)
+	h.cfg.QuietHours.Enabled = true
+	h.cfg.QuietHours.From = "08:00"
+	h.cfg.QuietHours.To = "10:00"
+	h.cfg.QuietHours.AppliesTo = []string{config.CategoryScheduled}
+
+	h.eng.Tick(context.Background())
+	time.Sleep(200 * time.Millisecond)
+
+	if got := h.rec.Played(); len(got) != 0 {
+		t.Fatalf("played %v inside quiet hours, want nothing", got)
+	}
+}
+
+// A scheduled event fires at most once per minute however often Tick runs, and
+// the tick runs once a second.
+func TestScheduledEventFiresOncePerMinuteThroughTheEngine(t *testing.T) {
+	base := time.Date(2026, 9, 7, 9, 0, 0, 0, time.UTC)
+	clk := clock.NewFake(base)
+	h := newHarnessWithClock(t, clk)
+	ctx := context.Background()
+
+	for i := 0; i < 60; i++ {
+		clk.Set(base.Add(time.Duration(i) * time.Second))
+		h.eng.Tick(ctx)
+	}
+	waitPlayed(t, h.rec)
+	time.Sleep(200 * time.Millisecond)
+
+	if got := h.rec.Played(); len(got) != 1 {
+		t.Fatalf("played %v over one minute of ticks, want exactly one metronome", got)
+	}
+}
+
+// An unsynchronised clock fires nothing at all: a minute of silence at a random
+// hour after a power cut is worse than none (§5.3).
+func TestScheduledEventHoldsOnAnUnsyncedClock(t *testing.T) {
+	clk := clock.NewFake(time.Date(2026, 9, 7, 9, 0, 0, 0, time.UTC))
+	h := newHarnessWith(t, alertstate.New(), clk, func(d *engine.Deps) {
+		d.Sync = &clock.FakeSync{Value: false}
+	})
+
+	h.eng.Tick(context.Background())
+	time.Sleep(200 * time.Millisecond)
+
+	if got := h.rec.Played(); len(got) != 0 {
+		t.Fatalf("played %v on an unsynchronised clock, want nothing", got)
+	}
+}
+
+func TestSchedulerReportsTheNextEvent(t *testing.T) {
+	clk := clock.NewFake(time.Date(2026, 9, 7, 8, 0, 0, 0, time.UTC))
+	h := newHarnessWithClock(t, clk)
+
+	ev, at, ok := h.eng.Scheduler().NextUp(clk.Now())
+	if !ok {
+		t.Fatal("NextUp reported nothing, want the default minute of silence")
+	}
+	if ev.Sound != "metronome.wav" {
+		t.Fatalf("NextUp event sound = %q, want metronome.wav", ev.Sound)
+	}
+	if want := time.Date(2026, 9, 7, 9, 0, 0, 0, time.UTC); !at.Equal(want) {
+		t.Fatalf("NextUp at = %v, want %v", at, want)
+	}
+}
+
+// Run is the loop the daemon actually spends its life in; it must return when
+// the process is asked to stop, and not before.
+func TestRunReturnsOnContextCancellation(t *testing.T) {
+	h := newHarness(t)
+	ctx, cancel := context.WithCancel(context.Background())
+
+	done := make(chan error, 1)
+	go func() { done <- h.eng.Run(ctx) }()
+
+	select {
+	case err := <-done:
+		t.Fatalf("Run returned %v before the context was cancelled", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	cancel()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("Run returned %v, want context.Canceled", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Run did not return after its context was cancelled")
+	}
+}
