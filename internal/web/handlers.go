@@ -254,18 +254,24 @@ func (s *Server) handlePlay(w http.ResponseWriter, r *http.Request) {
 
 // handleStop is manual playback's other half: the button an operator reaches
 // for in a hurry, so it must silence whatever is on the speaker right now,
-// not merely clear what was queued behind it — which is exactly what
-// Player.Stop does, cancelling the in-flight request as well as the queue.
+// not merely clear what was queued behind it.
+//
+// It goes through Engine.StopManual rather than Player.Stop for the same
+// reason /play goes through PlayManual: the engine is what records the
+// operator's action in the event log. Calling the player directly left the
+// log showing that someone started the siren and never that they stopped it.
 func (s *Server) handleStop(w http.ResponseWriter, r *http.Request) {
 	if !sameOrigin(r) {
 		http.Error(w, "cross-origin request rejected", http.StatusForbidden)
 		return
 	}
-	// Player is nil in this package's own tests and before Task 9 wires the
-	// dashboard up — same guard as handleHome and sse.go. There is nothing to
-	// stop, so this is a safe no-op rather than an error.
-	if s.deps.Player != nil {
-		s.deps.Player.Stop()
+	// Engine is nil in this package's own tests and before Task 9 wires the
+	// dashboard up — same guard as handlePlay and sse.go. There is then
+	// nothing to stop, which is a safe no-op rather than an error: unlike
+	// /play, a stop that finds nothing playing has already achieved what the
+	// operator wanted.
+	if s.deps.Engine != nil {
+		s.deps.Engine.StopManual()
 	}
 	http.Redirect(w, r, "/?stopped=1", http.StatusSeeOther)
 }

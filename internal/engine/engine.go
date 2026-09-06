@@ -311,6 +311,25 @@ func (e *Engine) PlayManual(sound string, volume int) error {
 	return nil
 }
 
+// StopManual silences whatever is on the speaker, on the operator's command,
+// and records that it happened.
+//
+// /play goes through PlayManual and leaves a KindManual entry behind; /stop
+// used to call Player.Stop directly and leave nothing, so a school's log
+// showed that someone started the siren and never that they stopped it —
+// and stopping is the one dashboard action that can make this device go
+// quiet. Player.Stop cancels the in-flight request as well as the queue,
+// which is what the button in a hurry has to mean.
+func (e *Engine) StopManual() {
+	// Player is nil in tests that do not need one; there is nothing to stop,
+	// which is a no-op rather than an error, but the operator's action is
+	// still worth recording.
+	if e.d.Player != nil {
+		e.d.Player.Stop()
+	}
+	e.record(eventlog.Entry{At: e.d.Clock.Now(), Kind: eventlog.KindManual, EventID: "stop", OK: true})
+}
+
 func (e *Engine) announce(trigger, kind string, at time.Time) {
 	for _, d := range rules.Resolve(e.d.Config(), trigger, at) {
 		e.play(d, kind, at)

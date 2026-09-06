@@ -776,3 +776,30 @@ func TestFirstHeartbeatSaysNoPollHasSucceeded(t *testing.T) {
 		t.Fatalf("the first heartbeat does not say that no poll has succeeded:\n%s", buf.String())
 	}
 }
+
+// Stopping is the one dashboard action that can make this device go quiet, so
+// a log that records the start of a manual siren and not its end is missing
+// the half that matters when someone asks why the building was silent.
+func TestStopManualIsRecorded(t *testing.T) {
+	h := newHarness(t)
+
+	if err := h.eng.PlayManual("siren.wav", 100); err != nil {
+		t.Fatalf("PlayManual: %v", err)
+	}
+	waitPlayed(t, h.rec)
+	h.eng.StopManual()
+
+	entries, err := h.log.Recent(10)
+	if err != nil {
+		t.Fatalf("Recent: %v", err)
+	}
+	var stopped bool
+	for _, e := range entries {
+		if e.Kind == eventlog.KindManual && e.EventID == "stop" {
+			stopped = true
+		}
+	}
+	if !stopped {
+		t.Fatalf("stopping playback left no trace in the log: %+v", entries)
+	}
+}
