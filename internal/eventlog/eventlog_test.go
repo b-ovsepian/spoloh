@@ -170,6 +170,32 @@ func TestReopenPersists(t *testing.T) {
 	}
 }
 
+// Recent must hand back the same instant that was appended, regardless of
+// what location it is later rendered in — the presentation layer, not the
+// storage layer, decides which timezone a timestamp is shown in.
+func TestRecentPreservesTheInstant(t *testing.T) {
+	lg, _ := openLog(t, 100)
+	kyiv, err := time.LoadLocation("Europe/Kyiv")
+	if err != nil {
+		t.Fatalf("LoadLocation: %v", err)
+	}
+	at := time.Date(2026, 9, 6, 15, 41, 0, 0, kyiv)
+
+	if err := lg.Append(eventlog.Entry{At: at, Kind: eventlog.KindAlert}); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	got, err := lg.Recent(1)
+	if err != nil {
+		t.Fatalf("Recent: %v", err)
+	}
+	if !got[0].At.Equal(at) {
+		t.Fatalf("At = %v, want the same instant as %v", got[0].At, at)
+	}
+	if got[0].At.In(kyiv).Format("15:04") != "15:41" {
+		t.Fatalf("rendered in Kyiv = %q, want 15:41", got[0].At.In(kyiv).Format("15:04"))
+	}
+}
+
 // A nil *Log stands in for an event log that could not be opened — a corrupt
 // database or a read-only SD card. Every method must be a no-op, because the
 // daemon carries on without one rather than refusing to announce alerts.

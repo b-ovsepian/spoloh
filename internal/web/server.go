@@ -75,6 +75,7 @@ func New(d Deps) (*Server, error) {
 	s.mux.HandleFunc("POST /login", s.handleLogin)
 	s.mux.HandleFunc("POST /logout", s.handleLogout)
 	s.mux.HandleFunc("GET /events", s.handleEvents)
+	s.mux.HandleFunc("GET /log", s.handleLog)
 	s.mux.HandleFunc("GET /{$}", s.handleHome)
 
 	return s, nil

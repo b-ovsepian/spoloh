@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/b-ovsepian/spoloh/internal/configstore"
+	"github.com/b-ovsepian/spoloh/internal/eventlog"
 	"github.com/b-ovsepian/spoloh/internal/web"
 )
 
@@ -23,6 +24,33 @@ func newServerWithStore(t *testing.T) (*web.Server, *configstore.Store) {
 		t.Fatalf("web.New: %v", err)
 	}
 	return srv, store
+}
+
+// newServerWithLog wires up a real eventlog.Log backed by a temp file, for
+// tests that need the /log page to have something to render.
+func newServerWithLog(t *testing.T) (*web.Server, *configstore.Store, *eventlog.Log) {
+	t.Helper()
+	store, err := configstore.Open(filepath.Join(t.TempDir(), "config.json"))
+	if err != nil {
+		t.Fatalf("configstore.Open: %v", err)
+	}
+	lg, err := eventlog.Open(filepath.Join(t.TempDir(), "spoloh.db"), 100)
+	if err != nil {
+		t.Fatalf("eventlog.Open: %v", err)
+	}
+	t.Cleanup(func() { lg.Close() })
+	srv, err := web.New(web.Deps{Config: store, Log: lg})
+	if err != nil {
+		t.Fatalf("web.New: %v", err)
+	}
+	return srv, store, lg
+}
+
+func appendAlert(t *testing.T, lg *eventlog.Log, sound string) {
+	t.Helper()
+	if err := lg.Append(eventlog.Entry{Kind: eventlog.KindAlert, Sound: sound, OK: true}); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
 }
 
 func newServer(t *testing.T) *web.Server {

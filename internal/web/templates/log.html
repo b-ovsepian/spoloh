@@ -1,0 +1,38 @@
+{{define "title"}}Журнал подій — Spoloh{{end}}
+{{define "content"}}
+<div class="card p-6">
+  <header class="mb-4">
+    <h1 class="text-lg font-semibold">Журнал подій</h1>
+  </header>
+  {{if .Notice}}
+  <p class="text-muted-foreground">{{.Notice}}</p>
+  {{else}}
+  <div class="table-container">
+    <table class="table">
+      <thead>
+        <tr>
+          <th>Час</th>
+          <th>Тип</th>
+          <th>Подія</th>
+          <th>Звук</th>
+          <th>Статус</th>
+          <th>Помилка</th>
+        </tr>
+      </thead>
+      <tbody>
+        {{range .Entries}}
+        <tr{{if not .OK}} class="bg-destructive/10"{{end}}>
+          <td class="font-mono text-sm">{{.AtText}}</td>
+          <td>{{.Kind}}</td>
+          <td>{{.EventID}}</td>
+          <td>{{.Sound}}</td>
+          <td>{{if .OK}}<span class="text-sm">ОК</span>{{else}}<span class="text-destructive font-semibold">Помилка</span>{{end}}</td>
+          <td class="text-sm text-muted-foreground break-all">{{.Err}}</td>
+        </tr>
+        {{end}}
+      </tbody>
+    </table>
+  </div>
+  {{end}}
+</div>
+{{end}}

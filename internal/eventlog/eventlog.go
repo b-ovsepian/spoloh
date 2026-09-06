@@ -153,7 +153,10 @@ func (l *Log) Recent(n int) ([]Entry, error) {
 		if err := rows.Scan(&e.ID, &ms, &e.Kind, &e.EventID, &e.Sound, &okInt, &e.Err); err != nil {
 			return nil, err
 		}
-		e.At = time.UnixMilli(ms).UTC()
+		// Deliberately not .UTC(): the stored value is an unambiguous Unix
+		// millisecond, and which location it is rendered in is a decision
+		// for the presentation layer, not this package.
+		e.At = time.UnixMilli(ms)
 		e.OK = okInt != 0
 		out = append(out, e)
 	}
