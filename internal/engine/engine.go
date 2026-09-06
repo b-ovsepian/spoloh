@@ -104,6 +104,22 @@ func New(d Deps) *Engine {
 		d:   d,
 		rnd: rand.New(rand.NewSource(time.Now().UnixNano())),
 	}
+	// Seed the dashboard's mirrored alert fields from the machine, which
+	// cmd/spoloh has already Restore'd from state.json by the time it gets
+	// here. Without this they stay false until the first successful poll
+	// writes them, so a device that lost power mid-alert would come back up
+	// showing a large calm state — indefinitely if upstream is unreachable,
+	// which is precisely the situation this dashboard exists to serve. Doing
+	// it in New rather than at the top of Run keeps it ahead of any goroutine
+	// that could read Status, so there is nothing to race with.
+	//
+	// This mirrors, it does not decide: Machine.Restore deliberately leaves
+	// the machine un-baselined, so the first Apply still cannot replay a
+	// siren for an alert that was already running (spec §5.2).
+	if d.Machine != nil {
+		e.alert = d.Machine.Alert()
+		e.alertSince = d.Machine.Since()
+	}
 	e.sched = scheduler.NewRunner(d.Sync, d.Config, e.fireScheduled)
 	e.sched.Logger = d.Logger
 	return e

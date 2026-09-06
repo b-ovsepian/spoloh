@@ -4,6 +4,8 @@ import (
 	"context"
 	"testing"
 	"time"
+
+	"github.com/b-ovsepian/spoloh/internal/alertstate"
 )
 
 func TestStatusBeforeAnyPoll(t *testing.T) {
@@ -115,5 +117,30 @@ func TestStatusReportsTheNextScheduledEvent(t *testing.T) {
 	}
 	if got.NextEventAt.Before(time.Now().Add(-24 * time.Hour)) {
 		t.Fatalf("NextEventAt = %v, which is not a plausible upcoming time", got.NextEventAt)
+	}
+}
+
+// A device that loses power in the middle of an alert must come back up
+// showing that alert as ongoing, before it has managed a single poll — and
+// stay showing it if upstream is unreachable, which is exactly when the
+// operator needs the screen (spec §5.8). Restore is what cmd/spoloh calls on
+// boot; Status has to read what it left behind rather than only what a
+// successful poll wrote.
+func TestStatusReportsARestoredAlertBeforeAnyPoll(t *testing.T) {
+	since := time.Date(2026, 9, 6, 2, 41, 57, 0, time.UTC)
+	m := alertstate.New()
+	m.Restore(alertstate.Persisted{Alert: true, Since: since})
+
+	h := newHarnessWithMachine(t, m)
+
+	got := h.eng.Status()
+	if !got.Alert {
+		t.Fatal("a restored alert is not reported as ongoing before the first poll")
+	}
+	if !got.Since.Equal(since) {
+		t.Fatalf("Since = %v, want the restored start time %v", got.Since, since)
+	}
+	if !got.LastSuccess.IsZero() {
+		t.Error("no poll has succeeded yet, so LastSuccess must still be the zero time")
 	}
 }
