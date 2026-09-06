@@ -2,6 +2,7 @@ package engine_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -505,5 +506,73 @@ func TestTickBackwardsClockStepDoesNotStallPolling(t *testing.T) {
 	h.eng.Tick(ctx)
 	if got := h.hits(); got != 2 {
 		t.Fatalf("hits after the backwards clock step = %d, want 2 — polling stalled silently", got)
+	}
+}
+
+// deadlineSource records the deadline of the context PollOnce hands to Fetch.
+type deadlineSource struct {
+	deadline time.Time
+	hasOne   bool
+	calledAt time.Time
+}
+
+func (s *deadlineSource) Fetch(ctx context.Context) (alertsource.Snapshot, error) {
+	s.calledAt = time.Now()
+	s.deadline, s.hasOne = ctx.Deadline()
+	return alertsource.Snapshot{}, errors.New("stub source failure")
+}
+
+// The cascade tries each configured source in turn with a 10s per-request
+// timeout, so without an overall deadline the six sources the spec lists would
+// block a single tick for a minute — longer than WatchdogSec, which is a
+// guaranteed kill on every failing poll. The deadline must therefore cover the
+// whole cascade regardless of how many sources are configured.
+func TestPollOnceBoundsTheWholeCascade(t *testing.T) {
+	src := &deadlineSource{}
+	cfg := config.Default()
+	cfg.Alerts.Sources = []string{"default", "skog", "klimenko", "jaam", "aiu", "ual"}
+
+	eng := engine.New(engine.Deps{
+		Config:  func() *config.Config { return cfg },
+		Source:  src,
+		Machine: alertstate.New(),
+		Clock:   clock.System{Loc: time.UTC},
+		Sync:    &clock.FakeSync{Value: true},
+	})
+
+	if err := eng.PollOnce(context.Background()); err == nil {
+		t.Fatal("expected the stub source's failure")
+	}
+	if !src.hasOne {
+		t.Fatal("Fetch was handed a context with no deadline: one stuck cascade would starve the watchdog")
+	}
+	// Must be comfortably under the 30s watchdog ping interval that
+	// WatchdogSec=60 implies.
+	if budget := src.deadline.Sub(src.calledAt); budget <= 0 || budget > 25*time.Second {
+		t.Fatalf("cascade budget = %v, want a positive value well under the 30s watchdog ping interval", budget)
+	}
+}
+
+// A caller's own deadline must still win when it is the shorter one: shutdown
+// must not have to wait out the cascade budget.
+func TestPollOnceKeepsAShorterCallerDeadline(t *testing.T) {
+	src := &deadlineSource{}
+	cfg := config.Default()
+
+	eng := engine.New(engine.Deps{
+		Config:  func() *config.Config { return cfg },
+		Source:  src,
+		Machine: alertstate.New(),
+		Clock:   clock.System{Loc: time.UTC},
+		Sync:    &clock.FakeSync{Value: true},
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	if err := eng.PollOnce(ctx); err == nil {
+		t.Fatal("expected the stub source's failure")
+	}
+	if budget := src.deadline.Sub(src.calledAt); budget > time.Second {
+		t.Fatalf("cascade budget = %v, want the caller's shorter deadline to win", budget)
 	}
 }

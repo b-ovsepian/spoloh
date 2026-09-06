@@ -46,6 +46,23 @@ type Deps struct {
 // roughly 17,000 lines a day to an SD card and bury the handful that matter.
 const heartbeatInterval = 15 * time.Minute
 
+// fetchDeadline caps one poll's entire source cascade, however many sources
+// the operator has configured.
+//
+// The arithmetic it has to respect: deploy/spoloh.service sets WatchdogSec=60,
+// and systemd wants a ping at least twice per period, so watchdog.Interval
+// throttles pings to one every 30s. alertsource.Client gives each request its
+// own 10s timeout and tries the configured sources one after another, so with
+// the three default sources a single failing poll blocked the tick for 30s,
+// putting the maximum gap between pings at exactly 30+30 = 60s — precisely on
+// the deadline. With all six sources the spec lists, a failing poll would kill
+// the daemon every time.
+//
+// 20s keeps a whole cascade comfortably below the 30s ping interval whatever
+// the source count, while still allowing two full 10s attempts before the
+// backoff takes over.
+const fetchDeadline = 20 * time.Second
+
 type Engine struct {
 	d     Deps
 	sched *scheduler.Runner
@@ -114,6 +131,10 @@ func (e *Engine) Tick(ctx context.Context) {
 		e.d.Watchdog.Alive()
 		return
 	}
+	// Ping before the blocking poll as well as after it. A poll can hold the
+	// tick for up to fetchDeadline, and a ping only on the far side of that
+	// would let one slow cascade eat the whole watchdog budget.
+	e.d.Watchdog.Alive()
 	if err := e.PollOnce(ctx); err != nil {
 		e.attempt++
 		wait := alertsource.Backoff(e.attempt)
@@ -167,7 +188,12 @@ func (e *Engine) pollInterval() time.Duration {
 func (e *Engine) PollOnce(ctx context.Context) error {
 	cfg := e.d.Config()
 
-	snap, err := e.d.Source.Fetch(ctx)
+	// One deadline over the whole cascade, not one per source: see
+	// fetchDeadline for the watchdog arithmetic it protects.
+	fetchCtx, cancel := context.WithTimeout(ctx, fetchDeadline)
+	defer cancel()
+
+	snap, err := e.d.Source.Fetch(fetchCtx)
 	if err != nil {
 		e.failing = true
 		e.record(eventlog.Entry{At: e.d.Clock.Now(), Kind: eventlog.KindSourceFailure, OK: false, Err: err.Error()})
