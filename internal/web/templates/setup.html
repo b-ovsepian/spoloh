@@ -1,6 +1,8 @@
-{{define "title"}}Налаштування — Spoloh{{end}}
+{{/* Reached before any session can exist, so it renders in the bare shell too. */}}
+{{define "layout"}}{{template "bare" .}}{{end}}
+{{define "title"}}Налаштування — Сполох{{end}}
 {{define "content"}}
-<div class="card mx-auto max-w-sm p-6">
+<div class="card p-6">
   <header class="mb-4">
     <h1 class="text-lg font-semibold">Створення пароля адміністратора</h1>
   </header>

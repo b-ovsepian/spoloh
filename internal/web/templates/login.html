@@ -1,8 +1,10 @@
-{{define "title"}}Вхід — Spoloh{{end}}
+{{/* Reached without a session, so it renders in the shell that has no navigation. */}}
+{{define "layout"}}{{template "bare" .}}{{end}}
+{{define "title"}}Вхід — Сполох{{end}}
 {{define "content"}}
-<div class="card mx-auto max-w-sm p-6">
+<div class="card p-6">
   <header class="mb-4">
-    <h1 class="text-lg font-semibold">Вхід до Spoloh</h1>
+    <h1 class="text-lg font-semibold">Вхід</h1>
   </header>
   {{if .Error}}
   <div class="alert mb-4" data-variant="destructive" role="alert">

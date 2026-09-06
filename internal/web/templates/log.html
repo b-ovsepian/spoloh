@@ -1,13 +1,39 @@
-{{define "title"}}Журнал подій — Spoloh{{end}}
+{{define "title"}}Журнал подій — Сполох{{end}}
+{{define "width"}}max-w-5xl{{end}}
 {{define "content"}}
-<div class="card p-6">
+<div class="card p-4 sm:p-6">
   <header class="mb-4">
     <h1 class="text-lg font-semibold">Журнал подій</h1>
   </header>
   {{if .Notice}}
   <p class="text-muted-foreground">{{.Notice}}</p>
   {{else}}
-  <div class="table-container">
+  {{/*
+  Two renderings of the same rows, one shown at a time. A six-column table on
+  a 390px screen is a horizontal scroll an operator has to discover, and the
+  column they came for — what failed — is the one off the right edge; a
+  stacked card puts the time, the kind and the outcome on the first line
+  instead. Above sm: the table wins outright, because scanning two hundred
+  rows for the odd failure is what a table is for. The duplicated loop is the
+  price, and it is paid in markup rather than in a second view model.
+
+  A failure is marked three ways over: the word "Помилка", a ✕ in front of it,
+  and a thick bar down the leading edge of the row — never colour alone.
+  */}}
+  <ul class="grid gap-2 sm:hidden">
+    {{range .Entries}}
+    <li class="rounded-md border border-border border-l-4 p-3 {{if .OK}}border-l-border{{else}}border-l-destructive bg-destructive/10{{end}}">
+      <div class="flex items-baseline justify-between gap-2">
+        <span class="font-mono text-sm">{{.AtText}}</span>
+        <span class="text-sm font-semibold{{if not .OK}} text-destructive{{end}}">{{if .OK}}✓ ОК{{else}}✕ Помилка{{end}}</span>
+      </div>
+      <p class="font-medium">{{.Kind}}{{if .EventID}} · {{.EventID}}{{end}}</p>
+      {{if .Sound}}<p class="text-sm text-muted-foreground">{{.Sound}}</p>{{end}}
+      {{if .Err}}<p class="text-sm wrap-break-word">{{.Err}}</p>{{end}}
+    </li>
+    {{end}}
+  </ul>
+  <div class="table-container hidden sm:block">
     <table class="table">
       <thead>
         <tr>
@@ -26,7 +52,7 @@
           <td>{{.Kind}}</td>
           <td>{{.EventID}}</td>
           <td>{{.Sound}}</td>
-          <td>{{if .OK}}<span class="text-sm">ОК</span>{{else}}<span class="text-destructive font-semibold">Помилка</span>{{end}}</td>
+          <td>{{if .OK}}<span class="text-sm">✓ ОК</span>{{else}}<span class="font-semibold text-destructive">✕ Помилка</span>{{end}}</td>
           <td class="text-sm text-muted-foreground whitespace-normal wrap-break-word">{{.Err}}</td>
         </tr>
         {{end}}

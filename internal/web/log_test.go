@@ -141,3 +141,35 @@ func TestLogPageShowsLoadFailureNotice(t *testing.T) {
 		t.Error("a log that failed to load should say so, distinctly from an empty or missing one")
 	}
 }
+
+// A failure must be tellable from a success by more than the row's colour:
+// the word and a mark in front of it carry it too.
+func TestLogMarksFailuresWithMoreThanColour(t *testing.T) {
+	srv, _, lg := newServerWithLog(t)
+	setPassword(t, srv, "correct horse battery staple")
+	cookie := login(t, srv, "correct horse battery staple")
+
+	if err := lg.Append(eventlog.Entry{
+		Kind: eventlog.KindPlaybackError, EventID: "alert-start", Sound: "siren.wav",
+		OK: false, Err: "aplay: device or resource busy",
+	}); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/log", nil)
+	req.AddCookie(cookie)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+	body := rec.Body.String()
+
+	if !strings.Contains(body, "✕ Помилка") {
+		t.Error("a failed entry is not marked with anything but colour")
+	}
+	if !strings.Contains(body, "aplay: device or resource busy") {
+		t.Error("the failure's reason is not on the page")
+	}
+	// The stacked rendering is what a phone gets; the table is hidden there.
+	if !strings.Contains(body, "sm:hidden") || !strings.Contains(body, "hidden sm:block") {
+		t.Error("the log has only one layout, so a phone gets the six-column table")
+	}
+}

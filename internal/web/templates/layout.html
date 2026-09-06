@@ -1,13 +1,59 @@
+{{/*
+Two shells, one document skeleton. "layout" is what every authenticated page
+renders in: the name, the navigation between the two screens, and the way out.
+"bare" is for /setup and /login, which are reached before a session exists —
+navigation there would offer links that only bounce off requireAuth, and a
+logout button for a session nobody has. The unauthenticated pages select it
+with a one-line override of "layout" rather than this file testing a flag it
+would have to be handed from Go.
+*/}}
+{{define "head"}}<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{block "title" .}}Сполох{{end}}</title>
+<link rel="stylesheet" href="/static/app.css">
+<script defer src="/static/alpine.min.js"></script>{{end}}
+
 {{define "layout"}}<!doctype html>
 <html lang="uk">
 <head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>{{block "title" .}}Spoloh{{end}}</title>
-<link rel="stylesheet" href="/static/app.css">
-<script defer src="/static/alpine.min.js"></script>
+{{template "head" .}}
 </head>
 <body class="min-h-screen bg-background text-foreground">
-<main class="mx-auto max-w-3xl p-4">{{block "content" .}}{{end}}</main>
+<header class="border-b border-border bg-card">
+  <div class="mx-auto flex max-w-3xl items-center gap-2 p-3 sm:gap-4">
+    <span class="text-lg font-semibold tracking-wide">Сполох</span>
+    {{/*
+    aria-current is bound by Alpine from the address bar rather than passed in
+    from Go: the two page handlers have no field for it, and marking the open
+    page is worth a binding but not a change to every view model. Without
+    JavaScript the links still work — only the highlight is missing.
+    */}}
+    <nav aria-label="Розділи" class="flex items-center gap-1" x-data>
+      <a href="/" class="rounded-md px-3 py-2 text-sm hover:bg-accent aria-[current=page]:bg-accent aria-[current=page]:font-semibold" :aria-current="location.pathname === '/' ? 'page' : null">Головна</a>
+      <a href="/log" class="rounded-md px-3 py-2 text-sm hover:bg-accent aria-[current=page]:bg-accent aria-[current=page]:font-semibold" :aria-current="location.pathname === '/log' ? 'page' : null">Журнал</a>
+    </nav>
+    <form method="post" action="/logout" class="ms-auto">
+      <button class="btn" data-variant="outline" data-size="sm" type="submit">Вийти</button>
+    </form>
+  </div>
+</header>
+{{/*
+The reading measure is a block so the one dense screen can widen: the log's
+six columns wrap into ribbons at the width that suits the home screen.
+*/}}
+<main class="mx-auto w-full {{block "width" .}}max-w-3xl{{end}} p-4">{{block "content" .}}{{end}}</main>
+</body>
+</html>{{end}}
+
+{{define "bare"}}<!doctype html>
+<html lang="uk">
+<head>
+{{template "head" .}}
+</head>
+<body class="min-h-screen bg-background text-foreground">
+<main class="mx-auto flex min-h-screen max-w-sm flex-col justify-center gap-4 p-4">
+  <p class="text-center text-2xl font-semibold tracking-wide">Сполох</p>
+  {{block "content" .}}{{end}}
+</main>
 </body>
 </html>{{end}}

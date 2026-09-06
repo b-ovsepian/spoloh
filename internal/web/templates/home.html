@@ -1,51 +1,95 @@
-{{define "title"}}Spoloh — {{.Status.Region}}{{end}}
+{{define "title"}}Сполох — {{.Status.Region}}{{end}}
 {{define "content"}}
 <div x-data="status()" x-init="connect()" class="grid gap-4">
-  <section class="card p-6">
-    <h1 class="text-3xl font-semibold{{if .Status.Alert}} text-destructive{{end}}" :class="alert ? 'text-destructive' : ''" x-text="alert ? 'ТРИВОГА' : 'Спокійно'">{{if .Status.Alert}}ТРИВОГА{{else}}Спокійно{{end}}</h1>
-    <p class="text-lg" x-text="region">{{.Status.Region}}</p>
-    <p class="text-muted-foreground" x-show="alert" x-text="since ? 'з ' + since : ''">{{if .Status.Alert}}з {{.SinceText}}{{end}}</p>
-  </section>
+  {{/*
+  The one question this screen exists to answer, answered from arm's length.
+  Both states are rendered and one is hidden, rather than one block whose
+  classes Alpine swaps: Alpine's :class binding only removes the classes it
+  added itself, so a server-rendered "bg-destructive" would survive the alert
+  ending and leave a calm device looking alarmed. The inline display:none is
+  what x-show itself sets, so a browser with no JavaScript sees the state the
+  server rendered and Alpine takes over from exactly there.
 
-  <section class="card p-6">
-    <h2 class="font-semibold mb-2">Адреса пристрою</h2>
-    {{range .Addresses}}<p class="text-2xl font-mono">{{.}}</p>{{end}}
-    <p class="text-muted-foreground">http://{{.Hostname}}.local</p>
-  </section>
-
-  <section class="card p-6">
-    <h2 class="font-semibold mb-2">Найближча подія</h2>
-    <p><span x-text="nextEvent">{{.Status.NextEventName}}</span> — <span x-text="nextEventAt">{{.NextEventAtText}}</span></p>
-  </section>
-
-  <section class="card p-6">
-    <h2 class="font-semibold mb-2">Стан</h2>
-    <p>Годинник: <span x-text="clockSynced ? 'синхронізовано' : 'НЕ синхронізовано'">{{if .Status.ClockSynced}}синхронізовано{{else}}НЕ синхронізовано{{end}}</span></p>
-    <p>Джерело: <span x-text="source">{{.Status.SourceName}}</span>, останній успіх <span x-text="lastSuccess">{{.LastSuccessText}}</span></p>
-    <p class="text-destructive" x-show="failing" x-text="lastError">{{if .Status.Failing}}{{.Status.LastError}}{{end}}</p>
-  </section>
-
-  <section class="card p-6">
-    <h2 class="font-semibold mb-2">Ручне відтворення</h2>
-    {{if .Flash}}<div class="alert mb-4" role="status"><section><p>{{.Flash}}</p></section></div>{{end}}
-    {{if .Sounds}}
-    <div class="flex flex-wrap items-end gap-2">
-      <form method="post" action="/play" class="field flex-1 min-w-48">
-        <label for="sound">Звук</label>
-        <select class="select" id="sound" name="sound" required>
-          {{range .Sounds}}<option value="{{.Name}}">{{.Name}}</option>{{end}}
-        </select>
-        <button class="btn mt-2" type="submit">Відтворити</button>
-      </form>
-      <form method="post" action="/stop">
-        <button class="btn" data-variant="destructive" type="submit">Зупинити</button>
-      </form>
+  State is never carried by colour alone: each block pairs its colour with the
+  word and with a shape — a warning triangle or a tick — so the screen still
+  reads correctly to a colour-blind caretaker or behind glass in a bright
+  corridor.
+  */}}
+  <section aria-live="polite" class="grid gap-3">
+    <div data-state="alert" x-show="alert"{{if not .Status.Alert}} style="display:none"{{end}}
+         class="flex flex-col items-center gap-3 rounded-xl border-4 border-destructive bg-destructive px-4 py-10 text-white">
+      <svg class="size-16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z"/>
+        <path d="M12 9v5"/><path d="M12 17.5h.01"/>
+      </svg>
+      <p class="text-5xl font-black tracking-wide">ТРИВОГА</p>
     </div>
-    {{else}}
-    <p class="text-muted-foreground mb-2">Бібліотека звуків порожня.</p>
-    <form method="post" action="/stop">
-      <button class="btn" data-variant="destructive" type="submit">Зупинити</button>
+    <div data-state="calm" x-show="!alert"{{if .Status.Alert}} style="display:none"{{end}}
+         class="flex flex-col items-center gap-3 rounded-xl border-4 border-border bg-card px-4 py-10 text-foreground">
+      <svg class="size-16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <circle cx="12" cy="12" r="9"/><path d="m8 12.5 2.5 2.5L16 9.5"/>
+      </svg>
+      <p class="text-4xl font-bold tracking-wide">СПОКІЙНО</p>
+    </div>
+    <p class="text-center text-2xl" x-text="region">{{.Status.Region}}</p>
+    <p class="text-center text-muted-foreground" x-show="alert"{{if not .Status.Alert}} style="display:none"{{end}} x-text="since ? 'з ' + since : ''">{{if .Status.Alert}}з {{.SinceText}}{{end}}</p>
+  </section>
+
+  {{/*
+  Pressed in a hurry, so it sits directly under the state block and is on
+  screen without scrolling at phone width. It is deliberately nowhere near the
+  play control below and shaped nothing like it: a full-width red-outlined bar
+  with a stop square, against a small dark button inside a card. Outlined
+  rather than filled, so that the only solid red mass on the screen is ever
+  the alert itself — a permanent red bar on a calm device would read as an
+  alarm from across the corridor, which is the one thing this screen must
+  never get wrong.
+  */}}
+  <form method="post" action="/stop">
+    <button class="btn h-14 w-full border-2 border-destructive bg-card text-xl font-semibold text-destructive hover:bg-destructive/10" type="submit">
+      <svg class="size-6" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>
+      Зупинити звук
+    </button>
+  </form>
+
+  {{if .Flash}}<div class="alert" role="status"><section><p>{{.Flash}}</p></section></div>{{end}}
+
+  <section class="card p-4">
+    <h2 class="text-sm font-semibold text-muted-foreground">Адреса пристрою</h2>
+    {{range .Addresses}}<p class="font-mono text-2xl">{{.}}</p>{{end}}
+    <p class="font-mono text-lg text-muted-foreground">http://{{.Hostname}}.local</p>
+  </section>
+
+  <section class="card p-4">
+    <h2 class="text-sm font-semibold text-muted-foreground">Найближча подія</h2>
+    <p class="text-lg"><span x-text="nextEvent">{{.Status.NextEventName}}</span> — <span class="font-mono" x-text="nextEventAt">{{.NextEventAtText}}</span></p>
+  </section>
+
+  {{/*
+  Where a silent device is noticed. Both lines carry a mark as well as a word,
+  for the same reason the state block does.
+  */}}
+  <section class="card p-4">
+    <h2 class="text-sm font-semibold text-muted-foreground">Стан</h2>
+    <p>Годинник:
+      <span x-text="clockSynced ? '✓ синхронізовано' : '✕ НЕ синхронізовано'">{{if .Status.ClockSynced}}✓ синхронізовано{{else}}✕ НЕ синхронізовано{{end}}</span>
+    </p>
+    <p>Джерело: <span x-text="source">{{.Status.SourceName}}</span>, останній успіх <span class="font-mono" x-text="lastSuccess">{{.LastSuccessText}}</span></p>
+    <p class="font-semibold text-destructive" x-show="failing"{{if not .Status.Failing}} style="display:none"{{end}} x-text="lastError ? '✕ ' + lastError : ''">{{if .Status.Failing}}✕ {{.Status.LastError}}{{end}}</p>
+  </section>
+
+  <section class="card p-4">
+    <h2 class="text-sm font-semibold text-muted-foreground">Ручне відтворення</h2>
+    {{if .Sounds}}
+    <form method="post" action="/play" class="field mt-2">
+      <label for="sound">Звук</label>
+      <select class="select" id="sound" name="sound" required>
+        {{range .Sounds}}<option value="{{.Name}}">{{.Name}}</option>{{end}}
+      </select>
+      <button class="btn mt-2 w-fit" data-variant="outline" type="submit">Відтворити</button>
     </form>
+    {{else}}
+    <p class="text-muted-foreground">Бібліотека звуків порожня.</p>
     {{end}}
   </section>
 </div>
