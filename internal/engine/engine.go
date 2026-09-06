@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math/rand"
+	"sync"
 	"time"
 
 	"github.com/b-ovsepian/spoloh/internal/alertsource"
@@ -73,9 +74,20 @@ type Engine struct {
 	attempt  int
 
 	firstPollLogged bool
-	failing         bool
-	lastSuccess     time.Time
 	nextHeartbeat   time.Time
+
+	// mu guards the fields below, which the dashboard reads from an HTTP
+	// goroutine while the engine writes them from its own. alertstate.Machine
+	// is single-goroutine by contract, so the two values the dashboard needs
+	// from it are mirrored here at the moment they change rather than read
+	// across the boundary.
+	mu          sync.RWMutex
+	alert       bool
+	alertSince  time.Time
+	failing     bool
+	lastError   string
+	lastSuccess time.Time
+	sourceName  string
 }
 
 func New(d Deps) *Engine {
@@ -171,9 +183,12 @@ func (e *Engine) heartbeat(now time.Time) {
 	// Before the first successful poll there is no timestamp to report, and
 	// printing the zero time reads as a clock fault rather than as a device
 	// that has simply not got an answer yet.
+	e.mu.RLock()
+	last := e.lastSuccess
+	e.mu.RUnlock()
 	lastSuccess := "none yet"
-	if !e.lastSuccess.IsZero() {
-		lastSuccess = e.lastSuccess.Format(time.RFC3339)
+	if !last.IsZero() {
+		lastSuccess = last.Format(time.RFC3339)
 	}
 	e.d.Logger.Info("heartbeat", "last_success", lastSuccess, "alert", e.d.Machine.Alert())
 	e.nextHeartbeat = now.Add(heartbeatInterval)
@@ -202,7 +217,10 @@ func (e *Engine) PollOnce(ctx context.Context) error {
 
 	snap, err := e.d.Source.Fetch(fetchCtx)
 	if err != nil {
+		e.mu.Lock()
 		e.failing = true
+		e.lastError = err.Error()
+		e.mu.Unlock()
 		e.record(eventlog.Entry{At: e.d.Clock.Now(), Kind: eventlog.KindSourceFailure, OK: false, Err: err.Error()})
 		return err
 	}
@@ -210,16 +228,32 @@ func (e *Engine) PollOnce(ctx context.Context) error {
 	st, ok := snap.Region(cfg.Alerts.Region)
 	if !ok {
 		err := fmt.Errorf("region %q is not present in the snapshot", cfg.Alerts.Region)
+		e.mu.Lock()
 		e.failing = true
+		e.lastError = err.Error()
+		e.mu.Unlock()
 		e.record(eventlog.Entry{At: e.d.Clock.Now(), Kind: eventlog.KindSourceFailure, OK: false, Err: err.Error()})
 		return err
 	}
 
 	now := e.d.Clock.Now()
-	e.lastSuccess = now
 	e.reportHealth(cfg, snap, st)
 
-	switch e.d.Machine.Apply(st, now) {
+	transition := e.d.Machine.Apply(st, now)
+
+	// Mirrored for the dashboard on every successful poll, including one
+	// that produces no transition — a quiet day must still read as a
+	// healthy device, not a frozen one.
+	e.mu.Lock()
+	e.failing = false
+	e.lastError = ""
+	e.lastSuccess = now
+	e.sourceName = snap.Source
+	e.alert = e.d.Machine.Alert()
+	e.alertSince = e.d.Machine.Since()
+	e.mu.Unlock()
+
+	switch transition {
 	case alertstate.Started:
 		e.announce(config.TriggerAlertStart, eventlog.KindAlert, now)
 	case alertstate.Ended:
@@ -295,14 +329,20 @@ func (e *Engine) play(d rules.Decision, kind string, at time.Time) {
 // heartbeatInterval's comment for why logging all of them would be worse
 // than logging none.
 func (e *Engine) reportHealth(cfg *config.Config, snap alertsource.Snapshot, st alertsource.RegionState) {
+	e.mu.RLock()
+	wasFailing := e.failing
+	e.mu.RUnlock()
+
 	switch {
 	case !e.firstPollLogged:
 		e.d.Logger.Info("alert source reachable", "source", snap.Source, "region", cfg.Alerts.Region, "alert", st.Alert)
 		e.firstPollLogged = true
-	case e.failing:
+	case wasFailing:
 		e.d.Logger.Info("alert source recovered", "source", snap.Source, "region", cfg.Alerts.Region, "alert", st.Alert)
 	}
-	e.failing = false
+	// The reset to false is recorded once, uniformly, in PollOnce's mirror
+	// block right after this returns — not here, so there is a single place
+	// that clears a failure on success.
 }
 
 func (e *Engine) record(entry eventlog.Entry) {

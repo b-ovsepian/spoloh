@@ -51,6 +51,10 @@ func (s *Store) Get() *config.Config {
 // result, persists it atomically, and only then makes it visible to readers.
 // Any failure — the mutator's own error, validation, or the write — leaves both
 // memory and disk exactly as they were.
+//
+// fn must not retain the *config.Config it is given beyond the call: on
+// success that same value becomes the store's live configuration, so a later
+// write to it would reach live state outside the lock.
 func (s *Store) Update(fn func(*config.Config) error) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
