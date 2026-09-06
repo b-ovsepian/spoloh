@@ -1,0 +1,111 @@
+// Package alertstate turns a stream of upstream snapshots into transitions.
+package alertstate
+
+import (
+	"encoding/json"
+	"os"
+	"time"
+
+	"github.com/spoloh/spoloh/internal/alertsource"
+)
+
+type Transition int
+
+const (
+	NoChange Transition = iota
+	Started
+	Ended
+)
+
+func (t Transition) String() string {
+	switch t {
+	case Started:
+		return "started"
+	case Ended:
+		return "ended"
+	default:
+		return "no_change"
+	}
+}
+
+// Machine tracks one oblast. It is driven from the poll loop's single
+// goroutine and is not safe for concurrent Apply calls.
+type Machine struct {
+	baselined bool
+	alert     bool
+	since     time.Time
+}
+
+func New() *Machine { return &Machine{} }
+
+// Apply folds one observation into the machine and reports what changed.
+//
+// The first observation after start is always a silent baseline: if an alert
+// was already running before a reboot it was announced then, and repeating the
+// siren only confuses people.
+func (m *Machine) Apply(st alertsource.RegionState, now time.Time) Transition {
+	since := st.Changed
+	if since.IsZero() {
+		since = now
+	}
+
+	if !m.baselined {
+		m.baselined = true
+		m.alert = st.Alert
+		m.since = since
+		return NoChange
+	}
+	if st.Alert == m.alert {
+		return NoChange
+	}
+
+	m.alert = st.Alert
+	m.since = since
+	if st.Alert {
+		return Started
+	}
+	return Ended
+}
+
+func (m *Machine) Alert() bool          { return m.alert }
+func (m *Machine) Since() time.Time     { return m.since }
+func (m *Machine) Baselined() bool      { return m.baselined }
+func (m *Machine) Persisted() Persisted { return Persisted{Alert: m.alert, Since: m.since} }
+
+// Restore seeds the machine from disk so the dashboard can show an alert as
+// ongoing straight after boot. It deliberately leaves the machine un-baselined.
+func (m *Machine) Restore(p Persisted) {
+	m.alert = p.Alert
+	m.since = p.Since
+}
+
+// Persisted is the slice of state that survives a restart.
+type Persisted struct {
+	Alert bool      `json:"alert"`
+	Since time.Time `json:"since"`
+}
+
+// LoadPersisted reads the state file. A missing or damaged file is not an
+// error: the device must boot regardless, and the worst consequence is that
+// the dashboard shows a quiet state until the first poll lands.
+func LoadPersisted(path string) (Persisted, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return Persisted{}, nil
+	}
+	var p Persisted
+	if err := json.Unmarshal(data, &p); err != nil {
+		return Persisted{}, nil
+	}
+	return p, nil
+}
+
+// SavePersisted writes the state file. Callers must invoke it only on a
+// transition, never on every poll: this file lives on an SD card.
+func SavePersisted(path string, p Persisted) error {
+	data, err := json.Marshal(p)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, data, 0o600)
+}
