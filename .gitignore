@@ -3,3 +3,4 @@
 *.wav
 !internal/library/assets/*.wav
 .superpowers/
+/node_modules/

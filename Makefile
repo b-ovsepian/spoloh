@@ -21,3 +21,11 @@ dist:
 
 clean:
 	rm -rf dist spoloh
+
+# Regenerating the stylesheet needs Node; building the daemon does not, which is
+# why internal/web/static/app.css is committed. Run this only when the design
+# changes. Tailwind v4 ships its CLI as a separate package (@tailwindcss/cli),
+# not bundled into tailwindcss itself, hence the package name below.
+.PHONY: css
+css:
+	npx --yes @tailwindcss/cli -i web/src/app.css -o internal/web/static/app.css --minify

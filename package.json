@@ -1,0 +1,10 @@
+{
+  "name": "spoloh-dashboard-css",
+  "private": true,
+  "description": "Tailwind CSS build pipeline for the Spoloh dashboard. Node is only needed here (make css); the Go daemon itself never depends on it.",
+  "devDependencies": {
+    "@tailwindcss/cli": "^4.3.3",
+    "basecoat-css": "^1.0.2",
+    "tailwindcss": "^4.3.3"
+  }
+}
