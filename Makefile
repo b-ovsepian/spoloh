@@ -24,8 +24,15 @@ clean:
 
 # Regenerating the stylesheet needs Node; building the daemon does not, which is
 # why internal/web/static/app.css is committed. Run this only when the design
-# changes. Tailwind v4 ships its CLI as a separate package (@tailwindcss/cli),
-# not bundled into tailwindcss itself, hence the package name below.
+# changes, or after any template gains a new class — Tailwind v4 emits only the
+# classes it finds referenced in source, so a stale stylesheet renders quietly
+# unstyled rather than failing anything. `npm ci` installs the exact toolchain
+# pinned in package-lock.json (Tailwind v4 ships its CLI as the separate
+# @tailwindcss/cli package, not bundled into tailwindcss itself) and this
+# target then runs that local binary directly, so a clean clone always
+# produces the same stylesheet instead of whatever is latest on the registry.
+# First run needs nothing but Node — `npm ci` fetches everything else.
 .PHONY: css
 css:
-	npx --yes @tailwindcss/cli -i web/src/app.css -o internal/web/static/app.css --minify
+	npm ci
+	./node_modules/.bin/tailwindcss -i web/src/app.css -o internal/web/static/app.css --minify
