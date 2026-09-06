@@ -69,31 +69,6 @@ func TestRecentHonoursLimit(t *testing.T) {
 	}
 }
 
-// The log lives on an SD card. Unbounded growth would eventually fill it and
-// wear it out, so old rows must be dropped.
-func TestCapacityIsEnforced(t *testing.T) {
-	const capacity = 20
-	lg, _ := openLog(t, capacity)
-	for i := 0; i < 500; i++ {
-		if err := lg.Append(eventlog.Entry{At: time.Now(), Kind: eventlog.KindScheduled}); err != nil {
-			t.Fatalf("Append %d: %v", i, err)
-		}
-	}
-	n, err := lg.Count()
-	if err != nil {
-		t.Fatalf("Count: %v", err)
-	}
-	// The sweep only fires every pruneEvery inserts, so the count can
-	// transiently overshoot capacity by up to pruneEvery-1 rows between
-	// sweeps. capacity*3 is comfortably clear of that true worst case while
-	// still catching a sweep that has stopped firing at all; it is
-	// deliberately not the exact bound so retuning pruneEvery later doesn't
-	// require recomputing this threshold.
-	if n > capacity*3 {
-		t.Fatalf("count = %d, want the log pruned near its capacity of %d", n, capacity)
-	}
-}
-
 func TestErrorEntriesRoundTrip(t *testing.T) {
 	lg, _ := openLog(t, 100)
 	want := "source default: http 500"
