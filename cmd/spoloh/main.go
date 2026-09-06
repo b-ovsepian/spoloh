@@ -191,7 +191,22 @@ func run(configPath, dataDir, listen string) error {
 		// A dashboard that fails to bind — or that stops for any other
 		// reason — must not take the daemon down: announcing alerts is the
 		// job, and serving a web page is not.
-		if err := websrv.ListenAndServe(ctx, listen); err != nil {
+		err := websrv.ListenAndServe(ctx, listen)
+		switch {
+		case err == nil:
+			// A clean stop: nothing to tell the operator.
+		case ctx.Err() != nil:
+			// ctx was already cancelled when ListenAndServe returned, so
+			// this is the shutdown backstop firing (or some other hiccup
+			// during a stop the daemon itself requested), not a failure the
+			// operator needs to act on — logging it at Error would train
+			// whoever reads these logs to ignore the one line that means
+			// the dashboard could not come up at all.
+			logger.Warn("dashboard did not shut down cleanly", "err", err)
+		default:
+			// The dashboard failed on its own — most likely a bind
+			// failure at startup — while the daemon was not asking it to
+			// stop. This is the one an operator should see.
 			logger.Error("dashboard stopped", "err", err)
 		}
 	}()

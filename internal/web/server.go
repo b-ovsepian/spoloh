@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io/fs"
 	"log/slog"
+	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -124,6 +125,30 @@ func (s *Server) ListenAndServe(ctx context.Context, addr string) error {
 		ReadHeaderTimeout: 10 * time.Second,
 		// No WriteTimeout: the SSE stream added in Task 5 is a long-lived
 		// response and a write deadline would sever it every minute.
+		//
+		// Every request's context descends from ctx — the same one this
+		// call receives and that the select below watches — rather than
+		// from Background(). http.Server.Shutdown only closes idle
+		// connections and then waits for active ones to finish on their
+		// own; it never cancels a request context itself. A wall-mounted
+		// dashboard's SSE connection is never idle, so without this,
+		// handleEvents would sit in its select until something else ended
+		// the connection, and Shutdown would run out the 5-second backstop
+		// below on every single restart while anyone had the page open —
+		// the normal case for this device, not a rare one. With
+		// BaseContext wired to ctx, cancelling ctx cancels every in-flight
+		// request's context in the same instant, handleEvents returns
+		// immediately, and Shutdown finds nothing left to wait for.
+		BaseContext: func(net.Listener) context.Context { return ctx },
+	}
+
+	// Listening (rather than calling srv.ListenAndServe, which does both at
+	// once) lets a bind failure be reported before publishLoop ever starts:
+	// there is no point ticking once a second and publishing to a
+	// broadcaster with no server behind it.
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		return err
 	}
 
 	// publishLoop is tied to the same ctx that governs this call, so it never
@@ -132,7 +157,7 @@ func (s *Server) ListenAndServe(ctx context.Context, addr string) error {
 	go s.publishLoop(ctx)
 
 	done := make(chan error, 1)
-	go func() { done <- srv.ListenAndServe() }()
+	go func() { done <- srv.Serve(ln) }()
 
 	select {
 	case err := <-done:
@@ -141,8 +166,20 @@ func (s *Server) ListenAndServe(ctx context.Context, addr string) error {
 		}
 		return err
 	case <-ctx.Done():
+		// BaseContext above means every in-flight request has already been
+		// told to stop by the time we get here, so Shutdown finding only
+		// idle or already-finishing connections and returning promptly is
+		// the expected path. The timeout is a backstop for whatever that
+		// reasoning missed (a hijacked connection, a handler ignoring its
+		// context), not the mechanism this depends on — if it ever fires,
+		// force-close what is left rather than leak it for the life of the
+		// process, which by then is shutting down anyway.
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		return srv.Shutdown(shutdownCtx)
+		if err := srv.Shutdown(shutdownCtx); err != nil {
+			srv.Close()
+			return err
+		}
+		return nil
 	}
 }

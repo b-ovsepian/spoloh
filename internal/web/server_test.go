@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -194,6 +195,87 @@ func TestListenAndServeStopsWithTheContext(t *testing.T) {
 		}
 	case <-time.After(10 * time.Second):
 		t.Fatal("the server did not shut down when its context was cancelled")
+	}
+}
+
+// TestListenAndServeEndsLiveConnectionsPromptlyOnShutdown guards the fix for
+// the review finding that the earlier version of this test missed entirely:
+// TestListenAndServeStopsWithTheContext never had a client connected, so it
+// could not have caught http.Server.Shutdown's real behaviour — it closes
+// idle connections and then waits indefinitely for active ones, and never
+// cancels a request's own context. An SSE connection is never idle. A wall-
+// mounted dashboard left open across a restart (this device's normal
+// deployment) would therefore stall every shutdown for the full five-second
+// backstop timeout. BaseContext fixes this by tying every request's context
+// to the same ctx this call receives, so cancelling it ends the SSE handler's
+// select immediately. This test proves that against a real listener and a
+// real client — not an in-process ServeHTTP call — because the mechanism
+// under test (a server closing a client's connection out from under it) only
+// exists on the wire.
+func TestListenAndServeEndsLiveConnectionsPromptlyOnShutdown(t *testing.T) {
+	srv, _ := newServerWithStore(t)
+	setPassword(t, srv, "correct horse battery staple")
+	cookie := login(t, srv, "correct horse battery staple")
+
+	// Reserve a free loopback port, then release it immediately: addr is
+	// needed up front to dial it, but only ListenAndServe below may bind it.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("net.Listen: %v", err)
+	}
+	addr := ln.Addr().String()
+	if err := ln.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- srv.ListenAndServe(ctx, addr) }()
+
+	// Dial /events until the listener is actually up; retry rather than
+	// sleep a fixed amount, since how long that takes is not this test's
+	// concern.
+	var resp *http.Response
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		req, rerr := http.NewRequest(http.MethodGet, "http://"+addr+"/events", nil)
+		if rerr != nil {
+			t.Fatalf("NewRequest: %v", rerr)
+		}
+		req.AddCookie(cookie)
+		resp, err = http.DefaultClient.Do(req)
+		if err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("could not connect to the dashboard: %v", err)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	defer resp.Body.Close()
+
+	// Read the immediate frame handleEvents sends on connect, so the
+	// connection is a genuinely live, held-open SSE stream — the same shape
+	// a browser tab left on the home screen leaves behind — rather than one
+	// that merely dialled and never received anything.
+	buf := make([]byte, 64)
+	if _, err := resp.Body.Read(buf); err != nil {
+		t.Fatalf("reading the first SSE frame: %v", err)
+	}
+
+	start := time.Now()
+	cancel()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("ListenAndServe returned %v, want a clean shutdown", err)
+		}
+	case <-time.After(4 * time.Second):
+		t.Fatal("shutdown did not complete within the 5s backstop with a live SSE connection open")
+	}
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Fatalf("shutdown took %s with a live SSE connection open; want well under the 5s backstop, not just under it", elapsed)
 	}
 }
 
