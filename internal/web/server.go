@@ -5,10 +5,10 @@ package web
 import (
 	"context"
 	"errors"
-	"html/template"
 	"io/fs"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/b-ovsepian/spoloh/internal/configstore"
@@ -33,13 +33,14 @@ type Deps struct {
 
 type Server struct {
 	deps     Deps
-	tmpl     *template.Template
+	pages    pageSet
 	mux      *http.ServeMux
 	sessions *sessions
 	limiter  *loginLimiter
-	// now stands in for time.Now so session expiry is testable; it is
-	// unexported because nothing outside this package needs to set it, and
-	// Deps is frozen for this task.
+	// now stands in for time.Now so session expiry is testable from outside
+	// the package via the SetNow helper in export_test.go; it defaults to
+	// time.Now for every real caller. It lives on Server, not Deps, which is
+	// frozen for this task.
 	now func() time.Time
 }
 
@@ -47,14 +48,14 @@ func New(d Deps) (*Server, error) {
 	if d.Logger == nil {
 		d.Logger = slog.Default()
 	}
-	tmpl, err := parseTemplates()
+	pages, err := parseTemplates()
 	if err != nil {
 		return nil, err
 	}
 
 	s := &Server{
 		deps:     d,
-		tmpl:     tmpl,
+		pages:    pages,
 		mux:      http.NewServeMux(),
 		sessions: newSessions(),
 		limiter:  newLoginLimiter(),
@@ -66,10 +67,12 @@ func New(d Deps) (*Server, error) {
 		return nil, err
 	}
 	s.mux.Handle("GET /static/", http.StripPrefix("/static/", http.FileServer(http.FS(static))))
-	s.mux.HandleFunc("/setup", s.handleSetup)
-	s.mux.HandleFunc("/login", s.handleLogin)
+	s.mux.HandleFunc("GET /setup", s.handleSetup)
+	s.mux.HandleFunc("POST /setup", s.handleSetup)
+	s.mux.HandleFunc("GET /login", s.handleLogin)
+	s.mux.HandleFunc("POST /login", s.handleLogin)
 	s.mux.HandleFunc("POST /logout", s.handleLogout)
-	s.mux.Handle("GET /{$}", s.requireAuth(http.HandlerFunc(s.handleIndex)))
+	s.mux.HandleFunc("GET /{$}", s.handleIndex)
 
 	return s, nil
 }
@@ -80,9 +83,24 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 }
 
-// Handler returns the fully wrapped handler, middleware included.
+// Handler returns the fully wrapped handler, middleware included. requireAuth
+// wraps the whole mux rather than individual routes, so a route a later task
+// adds is protected by default and has to be deliberately exempted, rather
+// than protected only if whoever adds it remembers to wrap it.
 func (s *Server) Handler() http.Handler {
-	return securityHeaders(s.mux)
+	return securityHeaders(s.requireAuth(s.mux))
+}
+
+// publicPaths never require a session: they are how an operator reaches or
+// leaves one, and static assets a login or setup page itself needs to render.
+var publicPaths = map[string]bool{
+	"/setup":  true,
+	"/login":  true,
+	"/logout": true,
+}
+
+func isPublicPath(path string) bool {
+	return publicPaths[path] || strings.HasPrefix(path, "/static/")
 }
 
 // securityHeaders applies the few that matter for a plain-HTTP LAN appliance:
