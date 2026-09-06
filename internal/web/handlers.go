@@ -3,6 +3,7 @@ package web
 import (
 	"net/http"
 	"net/url"
+	"time"
 
 	"github.com/b-ovsepian/spoloh/internal/engine"
 	"github.com/b-ovsepian/spoloh/internal/eventlog"
@@ -36,28 +37,26 @@ type homeView struct {
 	Flash string
 }
 
-// handleHome renders the dashboard: the page an operator actually looks at.
-// Every value is rendered server-side so the page is correct with
-// JavaScript disabled or before Alpine has loaded — the SSE stream wired up
-// in home.html only keeps it fresh afterward.
-func (s *Server) handleHome(w http.ResponseWriter, r *http.Request) {
-	cfg := s.deps.Config.Get()
-	loc := s.location()
-
+// status returns the engine's live status with two fields already filled in
+// even when there is no engine at all: Region and the next scheduled event
+// are pure functions of the configuration, not of engine state, so they are
+// always shown, before the engine exists or in this package's own tests.
+// NextUp is documented as safe for exactly this: a fresh, stateless Runner
+// reads the same configured events the live scheduler would.
+//
+// Both handleHome and the SSE stream in sse.go call this one method rather
+// than each computing Region and NextEvent themselves, so the page an
+// operator loaded and the frames that keep it updated can never disagree
+// about what the daemon has no engine for yet.
+func (s *Server) status(loc *time.Location) engine.Status {
 	// Engine is nil until the daemon wires the dashboard up (Task 9) and in
 	// this package's own tests; a zero-value Status renders a page with
-	// every engine-derived field empty rather than panicking, the same
-	// guard sse.go uses for the event stream.
+	// every engine-derived field empty rather than panicking.
 	var st engine.Status
 	if s.deps.Engine != nil {
 		st = s.deps.Engine.Status()
 	}
-	// Region and the next scheduled event are pure functions of the
-	// configuration, not of engine state, so they are always shown even
-	// before the engine exists. NextUp is documented as safe for exactly
-	// this: a fresh, stateless Runner reads the same configured events the
-	// live scheduler would.
-	st.Region = cfg.Alerts.Region
+	st.Region = s.deps.Config.Get().Alerts.Region
 	runner := scheduler.NewRunner(nil, s.deps.Config.Get, nil)
 	if ev, at, ok := runner.NextUp(s.now().In(loc)); ok {
 		st.NextEventName = ev.Name
@@ -66,6 +65,17 @@ func (s *Server) handleHome(w http.ResponseWriter, r *http.Request) {
 		}
 		st.NextEventAt = at
 	}
+	return st
+}
+
+// handleHome renders the dashboard: the page an operator actually looks at.
+// Every value is rendered server-side so the page is correct with
+// JavaScript disabled or before Alpine has loaded — the SSE stream wired up
+// in home.html only keeps it fresh afterward.
+func (s *Server) handleHome(w http.ResponseWriter, r *http.Request) {
+	cfg := s.deps.Config.Get()
+	loc := s.location()
+	st := s.status(loc)
 
 	view := homeView{
 		Status:    st,

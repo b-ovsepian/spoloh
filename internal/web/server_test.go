@@ -1,7 +1,9 @@
 package web_test
 
 import (
+	"bufio"
 	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -171,6 +173,129 @@ func TestUnknownPathIsNotFound(t *testing.T) {
 
 // The dashboard is served over plain HTTP on a LAN, so it must not be
 // embeddable in someone else's page and must not leak its URLs onward.
+// TestListenAndServeStopsWithTheContext proves the shutdown ordering the
+// daemon relies on: cancelling ctx must make ListenAndServe return promptly
+// and cleanly, with no lingering listener, so main.go can safely proceed to
+// stop the engine, the player, and finally close the event log.
+func TestListenAndServeStopsWithTheContext(t *testing.T) {
+	srv, _ := newServerWithStore(t)
+	ctx, cancel := context.WithCancel(context.Background())
+
+	done := make(chan error, 1)
+	go func() { done <- srv.ListenAndServe(ctx, "127.0.0.1:0") }()
+
+	time.Sleep(200 * time.Millisecond)
+	cancel()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("ListenAndServe returned %v, want a clean shutdown", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the server did not shut down when its context was cancelled")
+	}
+}
+
+// pipeResponseWriter is a minimal http.ResponseWriter/http.Flusher backed by
+// an io.Pipe. httptest.ResponseRecorder is not safe for a reader and the
+// handler's writer goroutine to touch concurrently — its Buffer has no lock —
+// so a long-lived stream like SSE needs something a reader can drain while
+// the handler is still writing. A pipe gives that for free: Write blocks
+// until Read consumes it, which is exactly the synchronization this test
+// needs and nothing more.
+type pipeResponseWriter struct {
+	header http.Header
+	pw     *io.PipeWriter
+}
+
+func newPipeResponseWriter(pw *io.PipeWriter) *pipeResponseWriter {
+	return &pipeResponseWriter{header: make(http.Header), pw: pw}
+}
+
+func (p *pipeResponseWriter) Header() http.Header         { return p.header }
+func (p *pipeResponseWriter) Write(b []byte) (int, error) { return p.pw.Write(b) }
+func (p *pipeResponseWriter) WriteHeader(int)             {}
+func (p *pipeResponseWriter) Flush()                      {}
+
+// TestPublishLoopDeliversTicksAndStopsWithTheContext proves publishLoop's two
+// unguaranteed behaviours directly, rather than by inspection: a subscriber
+// actually receives a tick-driven frame while the loop runs, and the loop
+// itself exits once ctx is cancelled rather than leaking past the server it
+// belongs to.
+func TestPublishLoopDeliversTicksAndStopsWithTheContext(t *testing.T) {
+	srv, _ := newServerWithStore(t)
+	setPassword(t, srv, "correct horse battery staple")
+	cookie := login(t, srv, "correct horse battery staple")
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	done := make(chan error, 1)
+	go func() { done <- srv.ListenAndServe(ctx, "127.0.0.1:0") }()
+
+	req := httptest.NewRequest(http.MethodGet, "/events", nil)
+	req.AddCookie(cookie)
+	reqCtx, reqCancel := context.WithCancel(req.Context())
+	defer reqCancel()
+	req = req.WithContext(reqCtx)
+
+	pr, pw := io.Pipe()
+	w := newPipeResponseWriter(pw)
+	go func() {
+		srv.Handler().ServeHTTP(w, req)
+		pw.Close()
+	}()
+
+	lines := make(chan string)
+	readErrs := make(chan error, 1)
+	go func() {
+		r := bufio.NewReader(pr)
+		for {
+			line, err := r.ReadString('\n')
+			if line != "" {
+				lines <- line
+			}
+			if err != nil {
+				readErrs <- err
+				return
+			}
+		}
+	}()
+
+	// publishInterval is one second; wait comfortably longer than that for a
+	// second, tick-driven frame — the first "data: " line is the immediate
+	// snapshot handleEvents sends before the loop ever ticks.
+	frames := 0
+	deadline := time.After(5 * time.Second)
+waitForFrames:
+	for {
+		select {
+		case line := <-lines:
+			if strings.HasPrefix(line, "data: ") {
+				frames++
+				if frames >= 2 {
+					break waitForFrames
+				}
+			}
+		case err := <-readErrs:
+			t.Fatalf("reading the SSE stream: %v (frames seen: %d)", err, frames)
+		case <-deadline:
+			t.Fatalf("subscriber did not receive a tick-driven frame; frames seen: %d", frames)
+		}
+	}
+	reqCancel()
+
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("ListenAndServe returned %v, want a clean shutdown", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("publishLoop did not stop when its context was cancelled")
+	}
+}
+
 func TestSecurityHeadersArePresent(t *testing.T) {
 	srv := newServer(t)
 	rec := httptest.NewRecorder()

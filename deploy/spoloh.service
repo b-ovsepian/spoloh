@@ -18,6 +18,10 @@ WatchdogSec=60
 # ProtectHome/ProtectSystem below give it no other way onto the box.
 User=spoloh
 Group=audio
+# No -listen flag: the dashboard binds its default of :80. The address is a
+# flag rather than a config.json field on purpose (see cmd/spoloh/main.go),
+# so recovering an unreachable dashboard never needs more than editing this
+# unit — never an SD card reader.
 ExecStart=/usr/local/bin/spoloh -config /etc/spoloh/config.json -data /var/lib/spoloh
 Restart=always
 RestartSec=5

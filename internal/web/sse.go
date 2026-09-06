@@ -7,8 +7,6 @@ import (
 	"net/http"
 	"sync"
 	"time"
-
-	"github.com/b-ovsepian/spoloh/internal/engine"
 )
 
 // subscriberBuffer is small on purpose: the stream is a liveness display, not
@@ -101,14 +99,12 @@ func (s *Server) location() *time.Location {
 }
 
 func (s *Server) currentFrame() ([]byte, error) {
-	// Engine is nil until the daemon wires the dashboard up (Task 9) and in
-	// this package's own tests; a zero-value Status renders a frame with
-	// every field empty rather than panicking.
-	var st engine.Status
-	if s.deps.Engine != nil {
-		st = s.deps.Engine.Status()
-	}
 	loc := s.location()
+	// status() fills in Region and the next scheduled event from the
+	// configuration even when Engine is nil — the same fallback handleHome
+	// uses — so the stream and the page it keeps fresh never disagree about
+	// what the daemon has no engine for yet.
+	st := s.status(loc)
 
 	f := statusFrame{
 		Region:      st.Region,
