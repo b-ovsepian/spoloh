@@ -102,3 +102,79 @@ func TestRegionsFallbackList(t *testing.T) {
 		t.Fatal("м. Київ must be in the fallback list")
 	}
 }
+
+func TestParseMalformedChangedFallsBackToZeroTime(t *testing.T) {
+	// Regression test: malformed timestamp in changed must not discard the snapshot.
+	// The Alert boolean must still be usable even if Changed cannot be parsed.
+	data := []byte(`{
+		"source": "test",
+		"cachedat": "2026-09-06 15:39:05",
+		"states": {
+			"Київська область": { "alertnow": true, "changed": "not-a-timestamp" },
+			"Львівська область": { "alertnow": false, "changed": "also-invalid" }
+		}
+	}`)
+	snap, err := alertsource.Parse(data)
+	if err != nil {
+		t.Fatalf("Parse should succeed with malformed timestamps: %v", err)
+	}
+	if len(snap.States) != 2 {
+		t.Fatalf("states = %d, want 2", len(snap.States))
+	}
+
+	kv, ok := snap.Region("Київська область")
+	if !ok {
+		t.Fatal("Київська область missing")
+	}
+	if !kv.Alert {
+		t.Fatal("Alert boolean must be preserved even with malformed changed")
+	}
+	if !kv.Changed.IsZero() {
+		t.Fatalf("malformed changed must become zero time, got %v", kv.Changed)
+	}
+
+	lv, ok := snap.Region("Львівська область")
+	if !ok {
+		t.Fatal("Львівська область missing")
+	}
+	if lv.Alert {
+		t.Fatal("Alert boolean must be false")
+	}
+	if !lv.Changed.IsZero() {
+		t.Fatalf("malformed changed must become zero time, got %v", lv.Changed)
+	}
+}
+
+func TestParseMalformedCachedAtFallsBackToZeroTime(t *testing.T) {
+	// Regression test: malformed cachedat must not discard the snapshot or its states.
+	data := []byte(`{
+		"source": "test",
+		"cachedat": "not-a-valid-timestamp",
+		"states": {
+			"Харківська область": { "alertnow": true, "changed": "2026-09-06 07:32:08" },
+			"м. Київ": { "alertnow": false, "changed": "2026-09-06 02:44:20" }
+		}
+	}`)
+	snap, err := alertsource.Parse(data)
+	if err != nil {
+		t.Fatalf("Parse should succeed with malformed cachedat: %v", err)
+	}
+	if !snap.CachedAt.IsZero() {
+		t.Fatalf("malformed cachedat must become zero time, got %v", snap.CachedAt)
+	}
+	if len(snap.States) != 2 {
+		t.Fatalf("states = %d, want 2", len(snap.States))
+	}
+
+	kh, ok := snap.Region("Харківська область")
+	if !ok {
+		t.Fatal("Харківська область missing")
+	}
+	if !kh.Alert {
+		t.Fatal("Харківська область should be alerting")
+	}
+	want := time.Date(2026, 9, 6, 7, 32, 8, 0, kyiv(t))
+	if !kh.Changed.Equal(want) {
+		t.Fatalf("valid changed must be parsed correctly, got %v want %v", kh.Changed, want)
+	}
+}

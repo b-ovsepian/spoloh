@@ -50,9 +50,13 @@ type wireSnapshot struct {
 	} `json:"states"`
 }
 
-// Parse converts an upstream body into a Snapshot. It is deliberately strict:
-// anything it cannot fully understand is an error, never a partial state, since
-// a misparse would either announce a phantom alert or swallow a real one.
+// Parse converts an upstream body into a Snapshot. Structural decoding and the
+// presence of states are strict: invalid JSON or an empty states object is an
+// error. Timestamps, however, are parsed leniently and fall back to zero time
+// on error, because they are display-only and must never cause a snapshot with
+// valid alert booleans to be discarded. Consequently, a malformed timestamp
+// is indistinguishable from the "never observed" sentinel; this trade-off
+// preserves the most critical data (alertnow) for a safety-critical device.
 func Parse(data []byte) (Snapshot, error) {
 	var w wireSnapshot
 	if err := json.Unmarshal(data, &w); err != nil {
