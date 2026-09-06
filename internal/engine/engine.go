@@ -33,13 +33,26 @@ type Deps struct {
 	Logger    *slog.Logger
 }
 
+// heartbeatInterval bounds how often the liveness line is written. Without
+// it, a daemon that is wedged — no transitions, no errors, just silently not
+// polling — looks byte-identical in the journal to a healthy one; logging
+// every poll at the default 5s cadence, on the other hand, would write
+// roughly 17,000 lines a day to an SD card and bury the handful that matter.
+const heartbeatInterval = 15 * time.Minute
+
 type Engine struct {
 	d     Deps
 	sched *scheduler.Runner
 	rnd   *rand.Rand
 
 	nextPoll time.Time
+	pollWait time.Duration // the wait Tick most recently scheduled nextPoll for
 	attempt  int
+
+	firstPollLogged bool
+	failing         bool
+	lastSuccess     time.Time
+	nextHeartbeat   time.Time
 }
 
 func New(d Deps) *Engine {
@@ -73,7 +86,22 @@ func (e *Engine) Run(ctx context.Context) error {
 // Tick performs one second of work: scheduled events always, a poll when due.
 func (e *Engine) Tick(ctx context.Context) {
 	now := e.d.Clock.Now()
+	defer e.heartbeat(now)
+
 	e.sched.Tick(now)
+
+	// A clock that steps backwards must not leave the poll gate shut for the
+	// whole of the step. clock.System.Now() calls time.Time.In, which strips
+	// the monotonic reading, so an NTP correction on a board with no RTC is a
+	// pure backwards jump in the values compared here — nothing crashes, the
+	// ticker keeps firing, and without this guard the gate would stay shut
+	// for the entire step with nothing in the journal to show it. The
+	// remaining wait can never legitimately exceed the wait we actually
+	// scheduled, so anything larger means the clock moved, not that we are
+	// early; that needs no arbitrary threshold to detect.
+	if e.nextPoll.Sub(now) > e.pollWait {
+		e.nextPoll = now
+	}
 
 	if now.Before(e.nextPoll) {
 		return
@@ -86,11 +114,28 @@ func (e *Engine) Tick(ctx context.Context) {
 			wait = rl.RetryAfter
 		}
 		e.nextPoll = now.Add(wait)
+		e.pollWait = wait
 		e.d.Logger.Warn("alert poll failed", "err", err, "retry_in", wait, "attempt", e.attempt)
 		return
 	}
 	e.attempt = 0
-	e.nextPoll = now.Add(e.pollInterval())
+	wait := e.pollInterval()
+	e.nextPoll = now.Add(wait)
+	e.pollWait = wait
+}
+
+// heartbeat writes a low-rate liveness line: the time of the last successful
+// poll and the current alert state. It uses the same backwards-clock guard as
+// the poll gate, for the same reason.
+func (e *Engine) heartbeat(now time.Time) {
+	if e.nextHeartbeat.Sub(now) > heartbeatInterval {
+		e.nextHeartbeat = now
+	}
+	if now.Before(e.nextHeartbeat) {
+		return
+	}
+	e.d.Logger.Info("heartbeat", "last_success", e.lastSuccess, "alert", e.d.Machine.Alert())
+	e.nextHeartbeat = now.Add(heartbeatInterval)
 }
 
 // pollInterval jitters the configured interval by up to a second either way.
@@ -111,6 +156,7 @@ func (e *Engine) PollOnce(ctx context.Context) error {
 
 	snap, err := e.d.Source.Fetch(ctx)
 	if err != nil {
+		e.failing = true
 		e.record(eventlog.Entry{At: e.d.Clock.Now(), Kind: eventlog.KindSourceFailure, OK: false, Err: err.Error()})
 		return err
 	}
@@ -118,11 +164,15 @@ func (e *Engine) PollOnce(ctx context.Context) error {
 	st, ok := snap.Region(cfg.Alerts.Region)
 	if !ok {
 		err := fmt.Errorf("region %q is not present in the snapshot", cfg.Alerts.Region)
+		e.failing = true
 		e.record(eventlog.Entry{At: e.d.Clock.Now(), Kind: eventlog.KindSourceFailure, OK: false, Err: err.Error()})
 		return err
 	}
 
 	now := e.d.Clock.Now()
+	e.lastSuccess = now
+	e.reportHealth(cfg, snap, st)
+
 	switch e.d.Machine.Apply(st, now) {
 	case alertstate.Started:
 		e.announce(config.TriggerAlertStart, eventlog.KindAlert, now)
@@ -191,6 +241,22 @@ func (e *Engine) play(d rules.Decision, kind string, at time.Time) {
 	})
 	e.d.Logger.Info("announcing", "kind", kind, "event", d.EventID, "sound", d.Sound, "volume", d.Volume)
 	e.record(eventlog.Entry{At: at, Kind: kind, EventID: d.EventID, Sound: d.Sound, OK: true})
+}
+
+// reportHealth logs only the poll's reachability transitions: the first
+// successful poll since the process started, and recovery from a run of
+// failures. Every other successful poll is silent by design — see
+// heartbeatInterval's comment for why logging all of them would be worse
+// than logging none.
+func (e *Engine) reportHealth(cfg *config.Config, snap alertsource.Snapshot, st alertsource.RegionState) {
+	switch {
+	case !e.firstPollLogged:
+		e.d.Logger.Info("alert source reachable", "source", snap.Source, "region", cfg.Alerts.Region, "alert", st.Alert)
+		e.firstPollLogged = true
+	case e.failing:
+		e.d.Logger.Info("alert source recovered", "source", snap.Source, "region", cfg.Alerts.Region, "alert", st.Alert)
+	}
+	e.failing = false
 }
 
 func (e *Engine) record(entry eventlog.Entry) {

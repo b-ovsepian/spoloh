@@ -1,0 +1,18 @@
+# systemd-sysusers(5) declaration for the spoloh service account.
+#
+# Install alongside the service unit, e.g. by copying this file to
+# /usr/lib/sysusers.d/spoloh.conf (or /etc/sysusers.d/spoloh.conf for a local
+# override) and running:
+#
+#   systemd-sysusers spoloh.conf
+#
+# This must run before deploy/spoloh.service is first started: that unit's
+# User=spoloh has no other way to come into existence, and ProtectHome=true /
+# ProtectSystem=full in the unit leave no room to create it as a side effect
+# of starting the service.
+#
+# Type Name   ID  GECOS                       Home directory
+u     spoloh  -   "Spoloh alert announcer"    /var/lib/spoloh
+# Grants the aplay/amixer access the audio group carries; matches Group=audio
+# in the unit.
+m     spoloh  audio
