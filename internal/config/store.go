@@ -4,7 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"path/filepath"
+
+	"github.com/spoloh/spoloh/internal/atomicfile"
 )
 
 // Load reads and validates a config file. A missing file returns an error for
@@ -24,10 +25,10 @@ func Load(path string) (*Config, error) {
 	return &c, nil
 }
 
-// Save validates then writes the config atomically: a temporary file in the
-// same directory, fsync, rename, then fsync the directory. A power cut mid-write
+// Save validates then writes the config atomically. A power cut mid-write
 // leaves the previous file intact, which matters on an appliance that loses
-// mains power without warning.
+// mains power without warning; so does an invalid config, which is rejected
+// before anything is written at all.
 func Save(path string, c *Config) error {
 	if err := c.Validate(); err != nil {
 		return fmt.Errorf("refusing to save an invalid config: %w", err)
@@ -38,39 +39,5 @@ func Save(path string, c *Config) error {
 	}
 	data = append(data, '\n')
 
-	dir := filepath.Dir(path)
-	tmp, err := os.CreateTemp(dir, ".config-*.tmp")
-	if err != nil {
-		return err
-	}
-	tmpName := tmp.Name()
-	defer os.Remove(tmpName) // no-op once the rename has succeeded
-
-	if _, err := tmp.Write(data); err != nil {
-		tmp.Close()
-		return err
-	}
-	if err := tmp.Sync(); err != nil {
-		tmp.Close()
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		return err
-	}
-	if err := os.Chmod(tmpName, 0o600); err != nil {
-		return err
-	}
-	if err := os.Rename(tmpName, path); err != nil {
-		return err
-	}
-	return syncDir(dir)
-}
-
-func syncDir(dir string) error {
-	d, err := os.Open(dir)
-	if err != nil {
-		return err
-	}
-	defer d.Close()
-	return d.Sync()
+	return atomicfile.Write(path, data, 0o600)
 }

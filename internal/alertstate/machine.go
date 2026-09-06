@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/spoloh/spoloh/internal/alertsource"
+	"github.com/spoloh/spoloh/internal/atomicfile"
 )
 
 type Transition int
@@ -108,12 +109,12 @@ func LoadPersisted(path string) (Persisted, error) {
 	return p, nil
 }
 
-// SavePersisted writes the state file. Callers must invoke it only on a
-// transition, never on every poll: this file lives on an SD card.
+// SavePersisted writes the state file atomically. Callers must invoke it only
+// on a transition, never on every poll: this file lives on an SD card.
 func SavePersisted(path string, p Persisted) error {
 	data, err := json.Marshal(p)
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, data, 0o600)
+	return atomicfile.Write(path, data, 0o600)
 }
