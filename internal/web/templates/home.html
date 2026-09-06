@@ -24,6 +24,30 @@
     <p>Джерело: <span x-text="source">{{.Status.SourceName}}</span>, останній успіх <span x-text="lastSuccess">{{.LastSuccessText}}</span></p>
     <p class="text-destructive" x-show="failing" x-text="lastError">{{if .Status.Failing}}{{.Status.LastError}}{{end}}</p>
   </section>
+
+  <section class="card p-6">
+    <h2 class="font-semibold mb-2">Ручне відтворення</h2>
+    {{if .Flash}}<div class="alert mb-4" role="status"><section><p>{{.Flash}}</p></section></div>{{end}}
+    {{if .Sounds}}
+    <div class="flex flex-wrap items-end gap-2">
+      <form method="post" action="/play" class="field flex-1 min-w-48">
+        <label for="sound">Звук</label>
+        <select class="select" id="sound" name="sound" required>
+          {{range .Sounds}}<option value="{{.Name}}">{{.Name}}</option>{{end}}
+        </select>
+        <button class="btn mt-2" type="submit">Відтворити</button>
+      </form>
+      <form method="post" action="/stop">
+        <button class="btn" data-variant="destructive" type="submit">Зупинити</button>
+      </form>
+    </div>
+    {{else}}
+    <p class="text-muted-foreground mb-2">Бібліотека звуків порожня.</p>
+    <form method="post" action="/stop">
+      <button class="btn" data-variant="destructive" type="submit">Зупинити</button>
+    </form>
+    {{end}}
+  </section>
 </div>
 
 <script>

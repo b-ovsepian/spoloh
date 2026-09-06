@@ -2,9 +2,11 @@ package web
 
 import (
 	"net/http"
+	"net/url"
 
 	"github.com/b-ovsepian/spoloh/internal/engine"
 	"github.com/b-ovsepian/spoloh/internal/eventlog"
+	"github.com/b-ovsepian/spoloh/internal/library"
 	"github.com/b-ovsepian/spoloh/internal/scheduler"
 )
 
@@ -24,6 +26,14 @@ type homeView struct {
 	SinceText       string
 	LastSuccessText string
 	NextEventAtText string
+	// Sounds lists what an operator may choose from the manual-playback
+	// form. Empty (rather than nil-and-panicking) when Deps.Library is nil
+	// or its List call fails, so the rest of the page still renders.
+	Sounds []library.Sound
+	// Flash is a one-shot notice carried across the redirect from /play or
+	// /stop, so the page an operator lands back on after pressing a button
+	// visibly says what just happened instead of looking unchanged.
+	Flash string
 }
 
 // handleHome renders the dashboard: the page an operator actually looks at.
@@ -72,7 +82,35 @@ func (s *Server) handleHome(w http.ResponseWriter, r *http.Request) {
 		view.NextEventAtText = st.NextEventAt.In(loc).Format("2006-01-02 15:04")
 	}
 
+	// Library is nil until Task 9 wires the dashboard up and in this
+	// package's own tests that don't need it — same guard as Engine above.
+	if s.deps.Library != nil {
+		sounds, err := s.deps.Library.List()
+		if err != nil {
+			s.deps.Logger.Error("library: list", "err", err)
+		} else {
+			view.Sounds = sounds
+		}
+	}
+	view.Flash = flashMessage(r)
+
 	s.render(w, http.StatusOK, "home.html", view)
+}
+
+// flashMessage turns the query parameters /play and /stop redirect back with
+// into the Ukrainian notice shown on the page. Query parameters rather than a
+// cookie: the message is meant to be seen exactly once, by the browser that
+// is about to render this response, and never needs to survive past it.
+func flashMessage(r *http.Request) string {
+	q := r.URL.Query()
+	switch {
+	case q.Has("stopped"):
+		return "Відтворення зупинено."
+	case q.Has("played"):
+		return "Відтворюється: " + q.Get("played")
+	default:
+		return ""
+	}
 }
 
 // logEntryView is what log.html reads for one row. At is pre-formatted in
@@ -154,4 +192,55 @@ func (s *Server) handleLog(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.render(w, http.StatusOK, "log.html", view)
+}
+
+// handlePlay is spec §5.6's first-class manual path: the one that still works
+// when upstream is down but the threat is real. Registered as POST /play so
+// requireAuth protects it by default and a GET — a prefetch, a link preview,
+// a bookmark sync — can never reach it, and sameOrigin closes the one gap
+// SameSite cookies leave open for a state-changing POST.
+//
+// The sound name is handed to Engine.PlayManual exactly as the operator sent
+// it: PlayManual already refuses anything that is not a real library entry,
+// and building or checking a filesystem path here would only duplicate that
+// check with a second chance to get it wrong.
+func (s *Server) handlePlay(w http.ResponseWriter, r *http.Request) {
+	if !sameOrigin(r) {
+		http.Error(w, "cross-origin request rejected", http.StatusForbidden)
+		return
+	}
+	// Engine is nil in this package's own tests and before Task 9 wires the
+	// dashboard up — same guard as handleHome and sse.go.
+	if s.deps.Engine == nil {
+		http.Error(w, "Відтворення недоступне на цьому пристрої.", http.StatusServiceUnavailable)
+		return
+	}
+
+	sound := r.FormValue("sound")
+	volume := s.deps.Config.Get().Audio.MasterVolume
+	if err := s.deps.Engine.PlayManual(sound, volume); err != nil {
+		s.deps.Logger.Warn("manual playback rejected", "sound", sound, "err", err)
+		http.Error(w, "Такого звука немає в бібліотеці.", http.StatusBadRequest)
+		return
+	}
+
+	http.Redirect(w, r, "/?"+url.Values{"played": {sound}}.Encode(), http.StatusSeeOther)
+}
+
+// handleStop is manual playback's other half: the button an operator reaches
+// for in a hurry, so it must silence whatever is on the speaker right now,
+// not merely clear what was queued behind it — which is exactly what
+// Player.Stop does, cancelling the in-flight request as well as the queue.
+func (s *Server) handleStop(w http.ResponseWriter, r *http.Request) {
+	if !sameOrigin(r) {
+		http.Error(w, "cross-origin request rejected", http.StatusForbidden)
+		return
+	}
+	// Player is nil in this package's own tests and before Task 9 wires the
+	// dashboard up — same guard as handleHome and sse.go. There is nothing to
+	// stop, so this is a safe no-op rather than an error.
+	if s.deps.Player != nil {
+		s.deps.Player.Stop()
+	}
+	http.Redirect(w, r, "/?stopped=1", http.StatusSeeOther)
 }

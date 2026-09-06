@@ -1,15 +1,22 @@
 package web_test
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/b-ovsepian/spoloh/internal/clock"
 	"github.com/b-ovsepian/spoloh/internal/configstore"
+	"github.com/b-ovsepian/spoloh/internal/engine"
 	"github.com/b-ovsepian/spoloh/internal/eventlog"
+	"github.com/b-ovsepian/spoloh/internal/library"
+	"github.com/b-ovsepian/spoloh/internal/player"
 	"github.com/b-ovsepian/spoloh/internal/web"
 )
 
@@ -44,6 +51,48 @@ func newServerWithLog(t *testing.T) (*web.Server, *configstore.Store, *eventlog.
 		t.Fatalf("web.New: %v", err)
 	}
 	return srv, store, lg
+}
+
+// newServerWithPlayer wires a real engine.Engine and player.Player over a
+// recording backend — the same shape internal/engine's own tests use — so
+// /play and /stop exercise the actual manual-playback path (PlayManual, the
+// library lookup, the player's queue and cancellation) rather than a mock
+// standing in for it. The returned *fakePlaybackBackend is what manual_test.go
+// inspects.
+func newServerWithPlayer(t *testing.T) (*web.Server, *configstore.Store, *fakePlaybackBackend) {
+	t.Helper()
+	store, err := configstore.Open(filepath.Join(t.TempDir(), "config.json"))
+	if err != nil {
+		t.Fatalf("configstore.Open: %v", err)
+	}
+
+	soundsDir := t.TempDir()
+	riff := make([]byte, 64)
+	copy(riff, "RIFF")
+	copy(riff[8:], "WAVE")
+	if err := os.WriteFile(filepath.Join(soundsDir, "siren.wav"), riff, 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	lib := library.New(soundsDir, library.FFmpeg{})
+
+	backend := newFakePlaybackBackend()
+	pl := player.New(backend, "default")
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	go pl.Run(ctx)
+
+	eng := engine.New(engine.Deps{
+		Config:  store.Get,
+		Player:  pl,
+		Library: lib,
+		Clock:   clock.System{Loc: time.UTC},
+	})
+
+	srv, err := web.New(web.Deps{Config: store, Engine: eng, Player: pl, Library: lib})
+	if err != nil {
+		t.Fatalf("web.New: %v", err)
+	}
+	return srv, store, backend
 }
 
 func appendAlert(t *testing.T, lg *eventlog.Log, sound string) {
