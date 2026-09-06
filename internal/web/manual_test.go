@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -90,6 +91,9 @@ func TestPlayRequiresAuthentication(t *testing.T) {
 	if rec.Code != http.StatusSeeOther {
 		t.Fatalf("status = %d, want a redirect to login", rec.Code)
 	}
+	if loc := rec.Header().Get("Location"); loc != "/login" {
+		t.Fatalf("redirected to %q, want /login — any redirect satisfies a bare status check, including one that still played the sound", loc)
+	}
 }
 
 func TestPlayIsRejectedOnGet(t *testing.T) {
@@ -159,4 +163,32 @@ func TestStopSilencesPlayback(t *testing.T) {
 		t.Fatalf("status = %d, want 303", rec.Code)
 	}
 	assertCancelled(t, rec8, "siren.wav")
+}
+
+// The home page trusts its own query string to build the flash notice after
+// /play redirects back to it. Anyone who can get an authenticated operator to
+// open a crafted "?played=" link — a link in a chat, a bookmark someone
+// edited — could otherwise plant arbitrary text on the device's own
+// dashboard, formatted to look like something the device said. The fix is to
+// only ever echo a name that is a real library sound.
+func TestFlashMessageValidatesTheSoundName(t *testing.T) {
+	srv, _, _ := newServerWithPlayer(t)
+	setPassword(t, srv, "correct horse battery staple")
+	cookie := login(t, srv, "correct horse battery staple")
+
+	req := httptest.NewRequest(http.MethodGet, "/?played="+url.QueryEscape("Тривога! Це не тест"), nil)
+	req.AddCookie(cookie)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+	if strings.Contains(rec.Body.String(), "Тривога! Це не тест") {
+		t.Fatal("an unvalidated played value was echoed onto the page")
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/?played=siren.wav", nil)
+	req.AddCookie(cookie)
+	rec = httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+	if !strings.Contains(rec.Body.String(), "siren.wav") {
+		t.Fatal("a real library sound was not echoed onto the page")
+	}
 }

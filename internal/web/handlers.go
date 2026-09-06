@@ -92,7 +92,7 @@ func (s *Server) handleHome(w http.ResponseWriter, r *http.Request) {
 			view.Sounds = sounds
 		}
 	}
-	view.Flash = flashMessage(r)
+	view.Flash = s.flashMessage(r)
 
 	s.render(w, http.StatusOK, "home.html", view)
 }
@@ -101,13 +101,28 @@ func (s *Server) handleHome(w http.ResponseWriter, r *http.Request) {
 // into the Ukrainian notice shown on the page. Query parameters rather than a
 // cookie: the message is meant to be seen exactly once, by the browser that
 // is about to render this response, and never needs to survive past it.
-func flashMessage(r *http.Request) string {
+//
+// The "played" value is never echoed unless Library confirms it names a real
+// sound. It is otherwise attacker-controllable: anyone who gets an already
+// logged-in operator to open a crafted "?played=..." link could plant
+// arbitrary text on the device's own trusted dashboard. html/template would
+// still escape it — this is not an injection fix — but an unvalidated string
+// has no business looking like something the device said.
+func (s *Server) flashMessage(r *http.Request) string {
 	q := r.URL.Query()
 	switch {
 	case q.Has("stopped"):
 		return "Відтворення зупинено."
 	case q.Has("played"):
-		return "Відтворюється: " + q.Get("played")
+		sound := q.Get("played")
+		// Library is nil in this package's own tests and before Task 9
+		// wires the dashboard up — same guard as handleHome's Sounds
+		// lookup above. With no library to confirm against, the name
+		// cannot be trusted, so it falls back to the generic message too.
+		if s.deps.Library != nil && s.deps.Library.Has(sound) {
+			return "Відтворюється: " + sound
+		}
+		return "Відтворення почалося."
 	default:
 		return ""
 	}
