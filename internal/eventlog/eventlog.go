@@ -5,6 +5,7 @@ package eventlog
 import (
 	"database/sql"
 	"fmt"
+	"sync"
 	"time"
 
 	_ "modernc.org/sqlite" // pure-Go driver; cgo would end ARM cross-compilation
@@ -33,10 +34,15 @@ type Entry struct {
 	Err     string
 }
 
+// Log is safe for concurrent use: Append may be called from multiple
+// goroutines (e.g. the engine's state transitions and the player's OnError
+// callback both append to the same Log).
 type Log struct {
 	db       *sql.DB
 	capacity int
-	inserts  int
+
+	mu      sync.Mutex // guards inserts and the decision to prune
+	inserts int
 }
 
 func Open(path string, capacity int) (*Log, error) {
@@ -65,7 +71,18 @@ CREATE TABLE IF NOT EXISTS entries (
 		db.Close()
 		return nil, err
 	}
-	return &Log{db: db, capacity: capacity}, nil
+
+	l := &Log{db: db, capacity: capacity}
+	// Prune unconditionally on every open, not just after pruneEvery inserts:
+	// a board on unreliable mains power can restart more often than that, and
+	// the in-process sweep counter starts back at zero on every restart. This
+	// is the only place that re-establishes the cap regardless of how the
+	// previous process's run ended.
+	if err := l.prune(); err != nil {
+		db.Close()
+		return nil, err
+	}
+	return l, nil
 }
 
 func (l *Log) Append(e Entry) error {
@@ -80,8 +97,15 @@ func (l *Log) Append(e Entry) error {
 		return err
 	}
 
+	// The counter and the sweep decision are shared state across goroutines;
+	// the INSERT itself is not held under the lock since database/sql is
+	// already safe for concurrent use on its own.
+	l.mu.Lock()
 	l.inserts++
-	if l.inserts%pruneEvery == 0 {
+	shouldPrune := l.inserts%pruneEvery == 0
+	l.mu.Unlock()
+
+	if shouldPrune {
 		return l.prune()
 	}
 	return nil

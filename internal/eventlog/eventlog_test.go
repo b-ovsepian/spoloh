@@ -2,6 +2,7 @@ package eventlog_test
 
 import (
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -71,7 +72,8 @@ func TestRecentHonoursLimit(t *testing.T) {
 // The log lives on an SD card. Unbounded growth would eventually fill it and
 // wear it out, so old rows must be dropped.
 func TestCapacityIsEnforced(t *testing.T) {
-	lg, _ := openLog(t, 20)
+	const capacity = 20
+	lg, _ := openLog(t, capacity)
 	for i := 0; i < 500; i++ {
 		if err := lg.Append(eventlog.Entry{At: time.Now(), Kind: eventlog.KindScheduled}); err != nil {
 			t.Fatalf("Append %d: %v", i, err)
@@ -81,8 +83,14 @@ func TestCapacityIsEnforced(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Count: %v", err)
 	}
-	if n > 40 {
-		t.Fatalf("count = %d, want the log pruned near its capacity of 20", n)
+	// The sweep only fires every pruneEvery inserts, so the count can
+	// transiently overshoot capacity by up to pruneEvery-1 rows between
+	// sweeps. capacity*3 is comfortably clear of that true worst case while
+	// still catching a sweep that has stopped firing at all; it is
+	// deliberately not the exact bound so retuning pruneEvery later doesn't
+	// require recomputing this threshold.
+	if n > capacity*3 {
+		t.Fatalf("count = %d, want the log pruned near its capacity of %d", n, capacity)
 	}
 }
 
@@ -100,6 +108,66 @@ func TestErrorEntriesRoundTrip(t *testing.T) {
 	}
 	if got[0].OK || got[0].Err != want {
 		t.Fatalf("entry = %+v, want a failure carrying %q", got[0], want)
+	}
+}
+
+// A device on unreliable mains power can restart more often than every
+// pruneEvery inserts, so the in-process sweep counter alone can never fire.
+// Open must re-establish the cap on every process start regardless of what
+// happened before the last restart.
+func TestReopenPrunesToCapacity(t *testing.T) {
+	const capacity = 5
+	lg, path := openLog(t, capacity)
+	// Fewer than pruneEvery (32) inserts, so no in-process sweep fires.
+	for i := 0; i < 10; i++ {
+		if err := lg.Append(eventlog.Entry{At: time.Now(), Kind: eventlog.KindScheduled}); err != nil {
+			t.Fatalf("Append %d: %v", i, err)
+		}
+	}
+	if err := lg.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	again, err := eventlog.Open(path, capacity)
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	defer again.Close()
+
+	n, err := again.Count()
+	if err != nil {
+		t.Fatalf("Count: %v", err)
+	}
+	if n > capacity {
+		t.Fatalf("count after reopen = %d, want pruned to capacity %d", n, capacity)
+	}
+}
+
+// The engine and the player call Append from different goroutines (engine
+// state transitions vs. the player's OnError callback), so Append must be
+// safe for concurrent use. Run with -race to catch the unsynchronized
+// counter this test is guarding against.
+func TestAppendIsSafeForConcurrentUse(t *testing.T) {
+	lg, _ := openLog(t, 50)
+
+	const goroutines = 8
+	const perGoroutine = 20
+	var wg sync.WaitGroup
+	wg.Add(goroutines)
+	for g := 0; g < goroutines; g++ {
+		go func() {
+			defer wg.Done()
+			for i := 0; i < perGoroutine; i++ {
+				if err := lg.Append(eventlog.Entry{At: time.Now(), Kind: eventlog.KindScheduled}); err != nil {
+					t.Errorf("Append: %v", err)
+				}
+			}
+		}()
+	}
+	wg.Wait()
+
+	if _, err := lg.Count(); err != nil {
+		t.Fatalf("Count: %v", err)
 	}
 }
 
