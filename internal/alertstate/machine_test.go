@@ -148,16 +148,36 @@ func TestLoadPersistedMissingFileIsEmpty(t *testing.T) {
 	}
 }
 
-func TestLoadPersistedCorruptFileIsEmpty(t *testing.T) {
+func TestLoadPersistedCorruptFileReportsErrorAndEmptyState(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state.json")
 	if err := os.WriteFile(path, []byte("{{{"), 0o600); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 	got, err := alertstate.LoadPersisted(path)
-	if err != nil {
-		t.Fatalf("a corrupt state file must not stop the daemon: %v", err)
+	if err == nil {
+		t.Fatal("corrupt state file must report an error so it can be logged")
 	}
 	if got.Alert {
-		t.Fatal("corrupt state should read as quiet")
+		t.Fatal("returned state must be the usable zero value (quiet)")
+	}
+}
+
+func TestLoadPersistedUnreadableFileReportsError(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("cannot test permission bits as root")
+	}
+	path := filepath.Join(t.TempDir(), "state.json")
+	if err := os.WriteFile(path, []byte("{}"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	if err := os.Chmod(path, 0o000); err != nil {
+		t.Fatalf("Chmod: %v", err)
+	}
+	got, err := alertstate.LoadPersisted(path)
+	if err == nil {
+		t.Fatal("unreadable state file must report an error so it can be logged")
+	}
+	if got.Alert {
+		t.Fatal("returned state must be the usable zero value (quiet)")
 	}
 }

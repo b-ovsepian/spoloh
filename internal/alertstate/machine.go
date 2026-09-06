@@ -3,6 +3,7 @@ package alertstate
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"time"
 
@@ -85,17 +86,24 @@ type Persisted struct {
 	Since time.Time `json:"since"`
 }
 
-// LoadPersisted reads the state file. A missing or damaged file is not an
-// error: the device must boot regardless, and the worst consequence is that
-// the dashboard shows a quiet state until the first poll lands.
+// LoadPersisted reads the state file. The returned Persisted is always safe to
+// use even when the error is non-nil. Callers must log the error and carry on
+// rather than treating it as fatal: the device has to boot.
+//
+// A missing file returns Persisted{}, nil: first boot is normal and unremarkable.
+// A file that exists but cannot be read returns Persisted{}, err.
+// A file that reads but fails to unmarshal returns Persisted{}, err.
 func LoadPersisted(path string) (Persisted, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return Persisted{}, nil
+		if os.IsNotExist(err) {
+			return Persisted{}, nil
+		}
+		return Persisted{}, err
 	}
 	var p Persisted
 	if err := json.Unmarshal(data, &p); err != nil {
-		return Persisted{}, nil
+		return Persisted{}, fmt.Errorf("parse %s: %w", path, err)
 	}
 	return p, nil
 }
