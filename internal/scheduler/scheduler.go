@@ -38,7 +38,7 @@ func NextFire(ev config.Event, after time.Time) (time.Time, bool) {
 	// Eight days covers any weekday set, including one that only allows the
 	// same weekday we are already past.
 	for i := 0; i < 8; i++ {
-		candidate := day.AddDate(0, 0, i).Add(time.Duration(minutes) * time.Minute)
+		candidate := time.Date(day.Year(), day.Month(), day.Day()+i, minutes/60, minutes%60, 0, 0, loc)
 		if !candidate.After(after) {
 			continue
 		}
@@ -55,13 +55,14 @@ type Runner struct {
 	cfg  func() *config.Config
 	fire func(config.Event, time.Time)
 
-	// lastFired records the minute each event last fired in, so repeated ticks
-	// within the same minute produce exactly one announcement.
-	lastFired map[string]time.Time
+	// lastFired records which wall-clock minutes each event has already fired in.
+	// Key is "event-id:2006-01-02 15:04", ensuring both occurrences of a repeated
+	// hour on a DST fall-back day map to the same minute and fire only once.
+	lastFired map[string]bool
 }
 
 func NewRunner(sync clock.SyncChecker, cfg func() *config.Config, fire func(config.Event, time.Time)) *Runner {
-	return &Runner{sync: sync, cfg: cfg, fire: fire, lastFired: map[string]time.Time{}}
+	return &Runner{sync: sync, cfg: cfg, fire: fire, lastFired: map[string]bool{}}
 }
 
 // Tick fires every event due in now's minute.
@@ -71,7 +72,9 @@ func (r *Runner) Tick(now time.Time) {
 	if r.sync != nil && !r.sync.Synced() {
 		return
 	}
-	minute := now.Truncate(time.Minute)
+	// Key on wall-clock time, not absolute instant, so that both occurrences of a
+	// repeated hour on a DST fall-back day map to the same minute.
+	wallClockMinute := now.Format("2006-01-02 15:04")
 	cur := now.Hour()*60 + now.Minute()
 
 	for _, ev := range r.cfg().Events {
@@ -85,10 +88,11 @@ func (r *Runner) Tick(now time.Time) {
 		if !slicesContainsInt(ev.Weekdays, ISOWeekday(now)) {
 			continue
 		}
-		if last, ok := r.lastFired[ev.ID]; ok && last.Equal(minute) {
+		minuteKey := ev.ID + ":" + wallClockMinute
+		if r.lastFired[minuteKey] {
 			continue
 		}
-		r.lastFired[ev.ID] = minute
+		r.lastFired[minuteKey] = true
 		r.fire(ev, now)
 	}
 }
