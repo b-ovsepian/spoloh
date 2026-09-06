@@ -1,0 +1,141 @@
+// Package eventlog records what the device did, with a hard row cap: this file
+// lives on an SD card and must never grow without bound.
+package eventlog
+
+import (
+	"database/sql"
+	"fmt"
+	"time"
+
+	_ "modernc.org/sqlite" // pure-Go driver; cgo would end ARM cross-compilation
+)
+
+const (
+	KindAlert         = "alert"
+	KindScheduled     = "scheduled"
+	KindManual        = "manual"
+	KindSourceFailure = "source_failure"
+	KindConfigChange  = "config_change"
+	KindPlaybackError = "playback_error"
+)
+
+// pruneEvery limits how often the capacity sweep runs; sweeping on every insert
+// would be pure waste on a slow SD card.
+const pruneEvery = 32
+
+type Entry struct {
+	ID      int64
+	At      time.Time
+	Kind    string
+	EventID string
+	Sound   string
+	OK      bool
+	Err     string
+}
+
+type Log struct {
+	db       *sql.DB
+	capacity int
+	inserts  int
+}
+
+func Open(path string, capacity int) (*Log, error) {
+	if capacity < 1 {
+		capacity = 1000
+	}
+	dsn := fmt.Sprintf("file:%s?_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)&_pragma=busy_timeout(5000)", path)
+	db, err := sql.Open("sqlite", dsn)
+	if err != nil {
+		return nil, err
+	}
+	// One writer keeps SQLite happy and matches how the daemon actually uses it.
+	db.SetMaxOpenConns(1)
+
+	const schema = `
+CREATE TABLE IF NOT EXISTS entries (
+	id       INTEGER PRIMARY KEY AUTOINCREMENT,
+	at       INTEGER NOT NULL,
+	kind     TEXT    NOT NULL,
+	event_id TEXT    NOT NULL DEFAULT '',
+	sound    TEXT    NOT NULL DEFAULT '',
+	ok       INTEGER NOT NULL DEFAULT 1,
+	err      TEXT    NOT NULL DEFAULT ''
+);`
+	if _, err := db.Exec(schema); err != nil {
+		db.Close()
+		return nil, err
+	}
+	return &Log{db: db, capacity: capacity}, nil
+}
+
+func (l *Log) Append(e Entry) error {
+	if e.At.IsZero() {
+		e.At = time.Now()
+	}
+	_, err := l.db.Exec(
+		`INSERT INTO entries (at, kind, event_id, sound, ok, err) VALUES (?, ?, ?, ?, ?, ?)`,
+		e.At.UnixMilli(), e.Kind, e.EventID, e.Sound, boolToInt(e.OK), e.Err,
+	)
+	if err != nil {
+		return err
+	}
+
+	l.inserts++
+	if l.inserts%pruneEvery == 0 {
+		return l.prune()
+	}
+	return nil
+}
+
+func (l *Log) prune() error {
+	_, err := l.db.Exec(
+		`DELETE FROM entries WHERE id NOT IN (SELECT id FROM entries ORDER BY id DESC LIMIT ?)`,
+		l.capacity,
+	)
+	return err
+}
+
+// Recent returns the newest n entries, newest first.
+func (l *Log) Recent(n int) ([]Entry, error) {
+	if n < 1 {
+		n = 50
+	}
+	rows, err := l.db.Query(
+		`SELECT id, at, kind, event_id, sound, ok, err FROM entries ORDER BY id DESC LIMIT ?`, n,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []Entry
+	for rows.Next() {
+		var (
+			e     Entry
+			ms    int64
+			okInt int
+		)
+		if err := rows.Scan(&e.ID, &ms, &e.Kind, &e.EventID, &e.Sound, &okInt, &e.Err); err != nil {
+			return nil, err
+		}
+		e.At = time.UnixMilli(ms).UTC()
+		e.OK = okInt != 0
+		out = append(out, e)
+	}
+	return out, rows.Err()
+}
+
+func (l *Log) Count() (int, error) {
+	var n int
+	err := l.db.QueryRow(`SELECT COUNT(*) FROM entries`).Scan(&n)
+	return n, err
+}
+
+func (l *Log) Close() error { return l.db.Close() }
+
+func boolToInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
+}
