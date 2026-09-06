@@ -51,9 +51,17 @@ func TestPagesAreNamedInCyrillic(t *testing.T) {
 	}
 }
 
-// The mDNS name is an identifier, not a word, and must stay ASCII — a Cyrillic
-// hostname becomes punycode and stops being readable over the phone.
-func TestTheMDNSNameStaysLatin(t *testing.T) {
+// The home page must not advertise an address nothing answers. It used to
+// print "http://spoloh.local" unconditionally, and this test used to pin that
+// — but no part of this branch publishes mDNS: the unit depends on no
+// avahi-daemon and there is no publisher anywhere. That is Plan 3. It was the
+// only memorable address on the page and therefore the first thing an
+// operator tried, and it did not resolve.
+//
+// When Plan 3 publishes the name, this test flips back to asserting the line
+// is present and stays ASCII: a Cyrillic hostname becomes punycode and stops
+// being readable over the phone.
+func TestTheHomePageAdvertisesNoUnpublishedMDNSName(t *testing.T) {
 	srv, _ := newServerWithStore(t)
 	setPassword(t, srv, "correct horse battery staple")
 	cookie := login(t, srv, "correct horse battery staple")
@@ -63,8 +71,27 @@ func TestTheMDNSNameStaysLatin(t *testing.T) {
 	rec := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rec, req)
 
-	if !strings.Contains(rec.Body.String(), "spoloh.local") {
-		t.Error("the home page no longer shows the ASCII mDNS name")
+	if strings.Contains(rec.Body.String(), ".local") {
+		t.Error("the home page advertises a .local address that nothing in this branch publishes")
+	}
+}
+
+// Spec §9 wants network health shown separately from source health: a source
+// failure alone cannot tell "the router is down" from "Ubilling is down", and
+// those need different actions from whoever is standing in front of the
+// device. Holding no address at all is what the first one looks like.
+func TestTheHomePageReportsNetworkHealth(t *testing.T) {
+	srv, _ := newServerWithStore(t)
+	setPassword(t, srv, "correct horse battery staple")
+	cookie := login(t, srv, "correct horse battery staple")
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.AddCookie(cookie)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+
+	if !strings.Contains(rec.Body.String(), "Мережа:") {
+		t.Error("the home page carries no network-health line")
 	}
 }
 

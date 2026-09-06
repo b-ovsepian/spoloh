@@ -21,9 +21,11 @@ const recentLogEntries = 200
 // JavaScript literal for Alpine's initial state, and a time.Time there would
 // render as a Go struct.
 type homeView struct {
-	Status          engine.Status
+	Status engine.Status
+	// Addresses is both the "what do I type into a browser" answer and the
+	// page's network-health signal: holding no address at all is what "not on
+	// the network" looks like from inside the daemon.
 	Addresses       []string
-	Hostname        string
 	SinceText       string
 	LastSuccessText string
 	NextEventAtText string
@@ -73,14 +75,12 @@ func (s *Server) status(loc *time.Location) engine.Status {
 // JavaScript disabled or before Alpine has loaded — the SSE stream wired up
 // in home.html only keeps it fresh afterward.
 func (s *Server) handleHome(w http.ResponseWriter, r *http.Request) {
-	cfg := s.deps.Config.Get()
 	loc := s.location()
 	st := s.status(loc)
 
 	view := homeView{
 		Status:    st,
 		Addresses: LocalAddresses(),
-		Hostname:  cfg.Device.Name,
 	}
 	if !st.Since.IsZero() {
 		view.SinceText = st.Since.In(loc).Format("2006-01-02 15:04")
