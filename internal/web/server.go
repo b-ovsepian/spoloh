@@ -75,15 +75,9 @@ func New(d Deps) (*Server, error) {
 	s.mux.HandleFunc("POST /login", s.handleLogin)
 	s.mux.HandleFunc("POST /logout", s.handleLogout)
 	s.mux.HandleFunc("GET /events", s.handleEvents)
-	s.mux.HandleFunc("GET /{$}", s.handleIndex)
+	s.mux.HandleFunc("GET /{$}", s.handleHome)
 
 	return s, nil
-}
-
-// handleIndex is a placeholder for the dashboard's home page: authentication
-// is the only thing this task adds behind it. Later tasks replace the body.
-func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
-	w.WriteHeader(http.StatusOK)
 }
 
 // Handler returns the fully wrapped handler, middleware included. requireAuth

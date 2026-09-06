@@ -1,0 +1,49 @@
+{{define "title"}}Spoloh — {{.Status.Region}}{{end}}
+{{define "content"}}
+<div x-data="status()" x-init="connect()" class="grid gap-4">
+  <section class="card p-6">
+    <h1 class="text-3xl font-semibold{{if .Status.Alert}} text-destructive{{end}}" :class="alert ? 'text-destructive' : ''" x-text="alert ? 'ТРИВОГА' : 'Спокійно'">{{if .Status.Alert}}ТРИВОГА{{else}}Спокійно{{end}}</h1>
+    <p class="text-lg" x-text="region">{{.Status.Region}}</p>
+    <p class="text-muted-foreground" x-show="alert" x-text="since ? 'з ' + since : ''">{{if .Status.Alert}}з {{.SinceText}}{{end}}</p>
+  </section>
+
+  <section class="card p-6">
+    <h2 class="font-semibold mb-2">Адреса пристрою</h2>
+    {{range .Addresses}}<p class="text-2xl font-mono">{{.}}</p>{{end}}
+    <p class="text-muted-foreground">http://{{.Hostname}}.local</p>
+  </section>
+
+  <section class="card p-6">
+    <h2 class="font-semibold mb-2">Найближча подія</h2>
+    <p><span x-text="nextEvent">{{.Status.NextEventName}}</span> — <span x-text="nextEventAt">{{.NextEventAtText}}</span></p>
+  </section>
+
+  <section class="card p-6">
+    <h2 class="font-semibold mb-2">Стан</h2>
+    <p>Годинник: <span x-text="clockSynced ? 'синхронізовано' : 'НЕ синхронізовано'">{{if .Status.ClockSynced}}синхронізовано{{else}}НЕ синхронізовано{{end}}</span></p>
+    <p>Джерело: <span x-text="source">{{.Status.SourceName}}</span>, останній успіх <span x-text="lastSuccess">{{.LastSuccessText}}</span></p>
+    <p class="text-destructive" x-show="failing" x-text="lastError">{{if .Status.Failing}}{{.Status.LastError}}{{end}}</p>
+  </section>
+</div>
+
+<script>
+function status() {
+  return {
+    alert: {{.Status.Alert}}, region: {{.Status.Region}}, since: {{.SinceText}},
+    lastSuccess: {{.LastSuccessText}}, lastError: {{.Status.LastError}}, source: {{.Status.SourceName}},
+    failing: {{.Status.Failing}}, clockSynced: {{.Status.ClockSynced}},
+    nextEvent: {{.Status.NextEventName}}, nextEventAt: {{.NextEventAtText}},
+    connect() {
+      const es = new EventSource('/events');
+      es.onmessage = (e) => {
+        const d = JSON.parse(e.data);
+        this.alert = d.alert; this.region = d.region; this.since = d.since;
+        this.lastSuccess = d.last_success; this.lastError = d.last_error; this.source = d.source;
+        this.failing = d.failing; this.clockSynced = d.clock_synced;
+        this.nextEvent = d.next_event; this.nextEventAt = d.next_event_at;
+      };
+    },
+  };
+}
+</script>
+{{end}}
