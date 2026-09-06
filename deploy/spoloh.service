@@ -18,13 +18,19 @@ AmbientCapabilities=CAP_NET_BIND_SERVICE
 NoNewPrivileges=true
 ProtectSystem=full
 ProtectHome=true
-# StateDirectory/ConfigurationDirectory (unlike ReadWritePaths) are created
-# and chowned to User=/Group= by systemd before ExecStart runs, and they grant
-# the write exception ReadWritePaths cannot: ProtectSystem=full makes /etc
-# read-only, so main.go's first-boot MkdirAll("/etc/spoloh") only works
-# because systemd already created that directory for us.
+# StateDirectory is created AND chowned to User=/Group= by systemd before
+# ExecStart runs, so /var/lib/spoloh needs nothing else.
 StateDirectory=spoloh
-ConfigurationDirectory=spoloh
+# ConfigurationDirectory= looked like the /etc equivalent of StateDirectory
+# but is not: systemd.exec(5) creates it root-owned regardless of User=/
+# Group= (mode ConfigurationDirectoryMode=, default 0755), so the spoloh
+# process could read it but not write the config it seeds on first boot.
+# /etc/spoloh must therefore already exist, owned by spoloh, before this
+# unit starts: see deploy/spoloh.tmpfiles. ReadWritePaths=- (the leading
+# "-" tolerates the path not existing at unit-file-parse time, unlike a
+# bare ReadWritePaths=) then grants the write exception ProtectSystem=full
+# would otherwise deny for a directory outside StateDirectory/RuntimeDirectory.
+ReadWritePaths=-/etc/spoloh
 
 [Install]
 WantedBy=multi-user.target

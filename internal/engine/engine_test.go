@@ -312,9 +312,12 @@ func TestPlayManualRejectsUnknownSound(t *testing.T) {
 
 // Restore is the real boot path (cmd/spoloh calls it unconditionally), and it
 // deliberately leaves the machine un-baselined — a bare alertstate.New() does
-// not exercise that at all. This guards against a future change that makes
-// Restore baseline the machine, which would make TestBootDuringActiveAlertStaysSilent
-// stay green while the real daemon announced a phantom siren on every reboot.
+// not exercise that at all. This is the "restored state agrees with the
+// first poll" case; on its own it does NOT discriminate a Restore that wrongly
+// baselines the machine, because when persisted and polled states already
+// match, Apply returns NoChange either way. See
+// TestBootWithRestoredActiveAlertIgnoresContradictingFirstPoll below for the
+// case that only a genuinely un-baselined machine can pass.
 func TestBootWithRestoredActiveAlertStaysSilent(t *testing.T) {
 	m := alertstate.New()
 	m.Restore(alertstate.Persisted{Alert: true, Since: time.Date(2026, 9, 6, 12, 0, 0, 0, time.UTC)})
@@ -329,6 +332,30 @@ func TestBootWithRestoredActiveAlertStaysSilent(t *testing.T) {
 
 	if got := h.rec.Played(); len(got) != 0 {
 		t.Fatalf("played %v after restoring an already-active alert, want nothing", got)
+	}
+}
+
+// TestBootWithRestoredActiveAlertIgnoresContradictingFirstPoll is the
+// discriminating case the test above cannot be: it restores an active alert,
+// then polls a state that DISAGREES with it. A correctly un-baselined machine
+// treats this as a silent baseline, same as any first poll. A Restore that
+// (incorrectly) set baselined too would instead see a mismatch against the
+// restored alert and fire alertstate.Ended — a phantom all-clear announced
+// on every reboot whose alert has since ended.
+func TestBootWithRestoredActiveAlertIgnoresContradictingFirstPoll(t *testing.T) {
+	m := alertstate.New()
+	m.Restore(alertstate.Persisted{Alert: true, Since: time.Date(2026, 9, 6, 12, 0, 0, 0, time.UTC)})
+
+	h := newHarnessWithMachine(t, m)
+	h.set(false) // the fresh poll disagrees with the restored state
+
+	if err := h.eng.PollOnce(context.Background()); err != nil {
+		t.Fatalf("PollOnce: %v", err)
+	}
+	time.Sleep(200 * time.Millisecond)
+
+	if got := h.rec.Played(); len(got) != 0 {
+		t.Fatalf("played %v after a first poll contradicting the restored state, want nothing (silent baseline, not a phantom all-clear)", got)
 	}
 }
 

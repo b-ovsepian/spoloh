@@ -1,0 +1,20 @@
+# systemd-tmpfiles(5) declaration for spoloh's /etc configuration directory.
+#
+# ConfigurationDirectory=spoloh in deploy/spoloh.service does NOT do this for
+# us: systemd.exec(5) creates that directory root-owned at
+# ConfigurationDirectoryMode= (default 0755) regardless of the unit's User=/
+# Group=, so relying on it left the service unable to write the config file
+# it seeds on first boot. /etc/spoloh must exist, owned by spoloh, before the
+# unit starts.
+#
+# Install alongside the service unit, e.g. by copying this file to
+# /usr/lib/tmpfiles.d/spoloh.conf (or /etc/tmpfiles.d/spoloh.conf for a local
+# override) and running:
+#
+#   systemd-tmpfiles --create spoloh.conf
+#
+# This must run after deploy/spoloh.sysusers (the spoloh user/group have to
+# exist first) and before deploy/spoloh.service is first started.
+#
+# Type Path         Mode  User    Group   Age  Argument
+d      /etc/spoloh  0750  spoloh  spoloh  -
