@@ -56,6 +56,7 @@ func snapshotBody(alert bool) string {
 
 type harness struct {
 	eng  *engine.Engine
+	cfg  *config.Config
 	rec  *recorder
 	log  *eventlog.Log
 	set  func(alert bool)
@@ -86,7 +87,10 @@ func newHarnessWithClock(t *testing.T, clk clock.Clock) *harness {
 	return newHarnessWith(t, alertstate.New(), clk)
 }
 
-func newHarnessWith(t *testing.T, machine *alertstate.Machine, clk clock.Clock) *harness {
+// newHarnessWith builds the engine and everything under it. Options mutate the
+// assembled Deps before the engine is constructed, for the cases that need a
+// dependency the default wiring does not produce — a missing event log, say.
+func newHarnessWith(t *testing.T, machine *alertstate.Machine, clk clock.Clock, opts ...func(*engine.Deps)) *harness {
 	t.Helper()
 
 	var (
@@ -145,7 +149,7 @@ func newHarnessWith(t *testing.T, machine *alertstate.Machine, clk clock.Clock) 
 	cfg.Alerts.Region = "м. Київ"
 	cfg.Alerts.Sources = []string{"default"}
 
-	eng := engine.New(engine.Deps{
+	deps := engine.Deps{
 		Config:    func() *config.Config { return cfg },
 		StatePath: filepath.Join(dir, "state.json"),
 		Source:    alertsource.New(srv.URL, cfg.Alerts.Sources, srv.Client()),
@@ -155,10 +159,15 @@ func newHarnessWith(t *testing.T, machine *alertstate.Machine, clk clock.Clock) 
 		Log:       lg,
 		Clock:     clk,
 		Sync:      &clock.FakeSync{Value: true},
-	})
+	}
+	for _, opt := range opts {
+		opt(&deps)
+	}
+	eng := engine.New(deps)
 
 	return &harness{
 		eng:  eng,
+		cfg:  cfg,
 		rec:  rec,
 		log:  lg,
 		set:  func(v bool) { mu.Lock(); alert = v; mu.Unlock() },
@@ -574,5 +583,33 @@ func TestPollOnceKeepsAShorterCallerDeadline(t *testing.T) {
 	}
 	if budget := src.deadline.Sub(src.calledAt); budget > time.Second {
 		t.Fatalf("cascade budget = %v, want the caller's shorter deadline to win", budget)
+	}
+}
+
+// The daemon carries on with a nil event log when the database cannot be
+// opened, so every path that records must tolerate one. Announcing an alert is
+// the path that matters: a diagnostic subsystem must never cost the siren.
+func TestNilEventLogStillAnnounces(t *testing.T) {
+	h := newHarnessWith(t, alertstate.New(), clock.System{Loc: time.UTC}, func(d *engine.Deps) { d.Log = nil })
+	ctx := context.Background()
+
+	if err := h.eng.PollOnce(ctx); err != nil { // quiet baseline
+		t.Fatalf("PollOnce: %v", err)
+	}
+	h.set(true)
+	if err := h.eng.PollOnce(ctx); err != nil {
+		t.Fatalf("PollOnce: %v", err)
+	}
+	if got := waitPlayed(t, h.rec); got != "siren.wav" {
+		t.Fatalf("played %q, want siren.wav", got)
+	}
+
+	// And the failure paths that also record.
+	h.fail(true)
+	if err := h.eng.PollOnce(ctx); err == nil {
+		t.Fatal("expected a poll error")
+	}
+	if err := h.eng.PlayManual("siren.wav", 100); err != nil {
+		t.Fatalf("PlayManual: %v", err)
 	}
 }

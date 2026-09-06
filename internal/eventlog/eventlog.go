@@ -37,6 +37,11 @@ type Entry struct {
 // Log is safe for concurrent use: Append may be called from multiple
 // goroutines (e.g. the engine's state transitions and the player's OnError
 // callback both append to the same Log).
+//
+// A nil *Log is valid and does nothing. The event log is a diagnostic: a
+// corrupt database file or a read-only SD card must cost the operator their
+// history, never the siren, so callers that fail to open one carry on with a
+// nil Log rather than refusing to start.
 type Log struct {
 	db       *sql.DB
 	capacity int
@@ -86,6 +91,9 @@ CREATE TABLE IF NOT EXISTS entries (
 }
 
 func (l *Log) Append(e Entry) error {
+	if l == nil {
+		return nil
+	}
 	if e.At.IsZero() {
 		e.At = time.Now()
 	}
@@ -121,6 +129,9 @@ func (l *Log) prune() error {
 
 // Recent returns the newest n entries, newest first.
 func (l *Log) Recent(n int) ([]Entry, error) {
+	if l == nil {
+		return nil, nil
+	}
 	if n < 1 {
 		n = 50
 	}
@@ -150,12 +161,20 @@ func (l *Log) Recent(n int) ([]Entry, error) {
 }
 
 func (l *Log) Count() (int, error) {
+	if l == nil {
+		return 0, nil
+	}
 	var n int
 	err := l.db.QueryRow(`SELECT COUNT(*) FROM entries`).Scan(&n)
 	return n, err
 }
 
-func (l *Log) Close() error { return l.db.Close() }
+func (l *Log) Close() error {
+	if l == nil {
+		return nil
+	}
+	return l.db.Close()
+}
 
 func boolToInt(b bool) int {
 	if b {

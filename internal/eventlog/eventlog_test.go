@@ -169,3 +169,25 @@ func TestReopenPersists(t *testing.T) {
 		t.Fatalf("entries = %+v, want the persisted manual play", got)
 	}
 }
+
+// A nil *Log stands in for an event log that could not be opened — a corrupt
+// database or a read-only SD card. Every method must be a no-op, because the
+// daemon carries on without one rather than refusing to announce alerts.
+func TestNilLogIsSafe(t *testing.T) {
+	var l *eventlog.Log
+
+	if err := l.Append(eventlog.Entry{Kind: eventlog.KindAlert}); err != nil {
+		t.Fatalf("Append on a nil log: %v", err)
+	}
+	entries, err := l.Recent(10)
+	if err != nil || entries != nil {
+		t.Fatalf("Recent on a nil log = %v, %v", entries, err)
+	}
+	n, err := l.Count()
+	if err != nil || n != 0 {
+		t.Fatalf("Count on a nil log = %d, %v", n, err)
+	}
+	if err := l.Close(); err != nil {
+		t.Fatalf("Close on a nil log: %v", err)
+	}
+}

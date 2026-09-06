@@ -83,9 +83,16 @@ func run(configPath, dataDir string) error {
 		return fmt.Errorf("install default sounds: %w", err)
 	}
 
+	// A SQLite file corrupted by a power cut, or an SD card the kernel has
+	// remounted read-only — the classic Pi failure — must not crash-loop the
+	// daemon: it can still poll upstream and still sound the siren from files
+	// already on disk. The event log is a diagnostic subsystem and must never
+	// be the reason the device is silent. A nil *eventlog.Log is valid and
+	// does nothing, which is exactly what every consumer wants here.
 	lg, err := eventlog.Open(filepath.Join(dataDir, "spoloh.db"), logCapacity)
 	if err != nil {
-		return err
+		logger.Warn("could not open the event log; continuing without it", "err", err)
+		lg = nil
 	}
 	defer lg.Close()
 
