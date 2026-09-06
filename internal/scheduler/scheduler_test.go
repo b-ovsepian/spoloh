@@ -236,6 +236,44 @@ func TestRunnerDoesNotDoubleFireOnDSTFallback(t *testing.T) {
 	}
 }
 
+// TestRunnerDoesNotDoubleFireOnDSTFallback only ticks the two occurrence
+// instants directly, with nothing in between — it never gives a pruning
+// window the chance to run, so it cannot catch a prune that deletes the first
+// occurrence's record before the second arrives an hour later. This test
+// drives Tick once per simulated second across the whole Europe/Berlin
+// fall-back window, the way the real daemon's tick loop would, and is the
+// actual regression guard for that failure mode.
+func TestRunnerTicksThroughEntireDSTFallbackWindowFiresOnce(t *testing.T) {
+	loc := berlin(t)
+
+	ev := config.Event{
+		ID: "fallback-window-test", Trigger: config.TriggerScheduled, Time: "02:15",
+		Weekdays: []int{1, 2, 3, 4, 5, 6, 7}, Sound: "test.wav", Volume: 80, Enabled: true,
+	}
+
+	var fired []time.Time
+	r := scheduler.NewRunner(
+		&clock.FakeSync{Value: true},
+		cfgWith(ev),
+		func(_ config.Event, at time.Time) { fired = append(fired, at) },
+	)
+
+	// Europe/Berlin falls back on 2025-10-26 at 03:00 CEST (01:00 UTC) to
+	// 02:00 CET. Tick every second from 23:00 UTC the previous day (01:00
+	// CEST) through 03:00 UTC (04:00 CET), covering the repeated 02:00..02:59
+	// hour twice.
+	start := time.Date(2025, 10, 25, 23, 0, 0, 0, time.UTC).In(loc)
+	end := time.Date(2025, 10, 26, 3, 0, 0, 0, time.UTC).In(loc)
+
+	for at := start; at.Before(end); at = at.Add(time.Second) {
+		r.Tick(at)
+	}
+
+	if len(fired) != 1 {
+		t.Fatalf("fired %d times across the full DST fall-back window, want 1; fired at %v", len(fired), fired)
+	}
+}
+
 // NextFire must compute times correctly across DST transitions, particularly
 // for transitions that occur during the event's scheduled time window.
 func TestNextFireComputesCorrectlyAcrossDSTTransition(t *testing.T) {
