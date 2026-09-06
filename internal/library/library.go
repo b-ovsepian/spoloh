@@ -208,8 +208,17 @@ func (l *Library) convert(ctx context.Context, src, dst string) error {
 	if err := l.conv.ToWAV(ctx, src, tmpName); err != nil {
 		return err
 	}
-	if _, err := parseWAV(tmpName); err != nil {
+	format, err := parseWAV(tmpName)
+	if err != nil {
 		return fmt.Errorf("converter produced an invalid WAV: %w", err)
+	}
+	// The conforming-shape invariant is a property of what lands in the
+	// library, not of one Converter implementation's command-line flags: a
+	// different backend, a misconfigured FFmpeg.Bin, or any other Converter
+	// could emit a structurally valid but non-conforming WAV, so it is
+	// checked here rather than trusted.
+	if !format.conforms() {
+		return fmt.Errorf("converter produced %s, but the library requires PCM 16-bit 44100 Hz stereo", format.describe())
 	}
 	return os.Rename(tmpName, dst)
 }
@@ -295,8 +304,19 @@ func parseWAV(path string) (wavFormat, error) {
 		size := binary.LittleEndian.Uint32(head[4:8])
 
 		if id == "fmt " {
+			// A real fmt chunk is 16 (PCM), 18 (extensible with a zero
+			// extension) or 40 bytes (WAVE_FORMAT_EXTENSIBLE). Cap well
+			// above that, before allocating: a malformed or hostile upload
+			// declaring a huge chunk size must not be able to force a
+			// large allocation. On the 32-bit ARM boards this daemon
+			// targets, that can panic (makeslice: len out of range) or
+			// throw a fatal OOM that bypasses panic/recover entirely.
+			const maxFmtChunkSize = 64
 			if size < 16 {
 				return wavFormat{}, errors.New("not a WAV file: fmt chunk too short")
+			}
+			if size > maxFmtChunkSize {
+				return wavFormat{}, fmt.Errorf("not a WAV file: fmt chunk size %d exceeds the maximum expected size (%d bytes)", size, maxFmtChunkSize)
 			}
 			body := make([]byte, size)
 			if _, err := io.ReadFull(f, body); err != nil {

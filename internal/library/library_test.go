@@ -317,3 +317,66 @@ func TestEnsureDefaultsDoesNotOverwrite(t *testing.T) {
 		t.Fatal("EnsureDefaults overwrote an operator's own siren")
 	}
 }
+
+// A malformed upload must be rejected by a cheap, explicit size check before
+// its declared fmt-chunk length is ever used for an allocation. On a 32-bit
+// ARM board, a few-hundred-megabyte (let alone multi-gigabyte) allocation
+// forced by a hostile or corrupt file can panic or OOM the daemon outright,
+// bypassing panic/recover entirely.
+func TestAddRejectsOversizedFmtChunk(t *testing.T) {
+	lib := library.New(t.TempDir(), &fakeConv{available: false})
+
+	var buf bytes.Buffer
+	buf.WriteString("RIFF")
+	binary.Write(&buf, binary.LittleEndian, uint32(999999)) // arbitrary; not validated
+	buf.WriteString("WAVE")
+	buf.WriteString("fmt ")
+	// Declare a huge fmt chunk with no such data actually following. Chosen
+	// large enough to be an obvious attack (a real fmt chunk is 16, 18 or 40
+	// bytes) while staying cheap enough to allocate that the RED run of this
+	// test against the pre-fix code does not itself stress the test runner.
+	binary.Write(&buf, binary.LittleEndian, uint32(100_000_000))
+
+	_, err := lib.Add(context.Background(), "huge.wav", bytes.NewReader(buf.Bytes()))
+	if err == nil {
+		t.Fatal("expected rejection of a WAV declaring an oversized fmt chunk")
+	}
+	// "exceeds" only appears in the capped-size rejection message; the old,
+	// uncapped code fails later with a different ("truncated fmt chunk")
+	// message after already having sized the allocation off the file.
+	if !strings.Contains(err.Error(), "exceeds") {
+		t.Fatalf("error should reject the chunk on its declared size, got: %v", err)
+	}
+}
+
+// nonConformingConv always succeeds but emits a WAV in the wrong format,
+// modeling a Converter backend that does not guarantee the required shape
+// the way FFmpeg's hard-coded flags do (a different backend, a misconfigured
+// FFmpeg{Bin: ...} wrapper, or any other Converter implementation).
+type nonConformingConv struct{}
+
+func (nonConformingConv) Available() bool { return true }
+
+func (nonConformingConv) ToWAV(_ context.Context, _, dst string) error {
+	return os.WriteFile(dst, makeWAV(1, 1, 22050, 16, []byte("payload")), 0o644) // mono, 22050 Hz
+}
+
+// The conforming-shape invariant is a property of what ends up on disk, not
+// of one Converter implementation's command line: convert must re-check its
+// own output and refuse to publish a structurally valid but non-conforming
+// WAV, whatever produced it.
+func TestAddRejectsNonConformingConverterOutput(t *testing.T) {
+	dir := t.TempDir()
+	lib := library.New(dir, nonConformingConv{})
+
+	_, err := lib.Add(context.Background(), "chime.mp3", bytes.NewReader([]byte("fake mp3")))
+	if err == nil {
+		t.Fatal("expected rejection of non-conforming converter output")
+	}
+	if !strings.Contains(err.Error(), "22050") || !strings.Contains(err.Error(), "mono") {
+		t.Fatalf("error should name the format the converter actually produced, got: %v", err)
+	}
+	if lib.Has("chime.wav") {
+		t.Fatal("non-conforming converter output must not be published to the library")
+	}
+}
