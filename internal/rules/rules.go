@@ -57,10 +57,21 @@ func ForEvent(cfg *config.Config, ev config.Event, at time.Time) (Decision, bool
 		priority = player.PriorityAlert
 	}
 
+	// Calculate volume: round to nearest, and clamp non-zero inputs to minimum 1.
+	// Zero volume (explicit mute) must stay zero, but any non-zero request must not
+	// become silent through truncation (e.g., 90*1/100 would truncate to 0).
+	volume := 0
+	if ev.Volume != 0 && cfg.Audio.MasterVolume != 0 {
+		volume = (ev.Volume*cfg.Audio.MasterVolume + 50) / 100
+		if volume == 0 {
+			volume = 1
+		}
+	}
+
 	return Decision{
 		EventID:  ev.ID,
 		Sound:    ev.Sound,
-		Volume:   ev.Volume * cfg.Audio.MasterVolume / 100,
+		Volume:   volume,
 		Priority: priority,
 	}, true
 }

@@ -132,3 +132,98 @@ func TestResolveIgnoresOtherTriggers(t *testing.T) {
 		t.Fatalf("decisions = %+v, want only alert-end", got)
 	}
 }
+
+func TestVolumeRoundsInsteadOfTruncating(t *testing.T) {
+	cfg := config.Default()
+	// alert-end has default volume 90; master volume 1 would truncate to 0.
+	// Rounding must produce a non-zero result instead.
+	cfg.Audio.MasterVolume = 1
+
+	got := rules.Resolve(cfg, config.TriggerAlertEnd, at(12, 0))
+	if len(got) != 1 {
+		t.Fatalf("decisions = %d, want 1", len(got))
+	}
+	// 90 * 1 / 100: truncates to 0, but (90*1+50)/100 = 140/100 = 1
+	if got[0].Volume != 1 {
+		t.Fatalf("volume = %d, want 1 (rounded from 0.9)", got[0].Volume)
+	}
+}
+
+func TestVolumeClampedToOneWhenBothNonZero(t *testing.T) {
+	cfg := config.Default()
+	// Craft an event with volume 1, master volume 1.
+	cfg.Events = []config.Event{
+		{ID: "test", Trigger: config.TriggerScheduled, Sound: "test.wav", Volume: 1, Enabled: true},
+	}
+	cfg.Audio.MasterVolume = 1
+
+	got := rules.Resolve(cfg, config.TriggerScheduled, at(12, 0))
+	if len(got) != 1 {
+		t.Fatalf("decisions = %d, want 1", len(got))
+	}
+	// 1 * 1 / 100: truncates to 0, but (1*1+50)/100 = 51/100 = 0, then clamped to 1
+	if got[0].Volume != 1 {
+		t.Fatalf("volume = %d, want 1 (clamped from rounding)", got[0].Volume)
+	}
+}
+
+func TestVolumeZeroWhenMasterZero(t *testing.T) {
+	cfg := config.Default()
+	cfg.Audio.MasterVolume = 0
+
+	got := rules.Resolve(cfg, config.TriggerAlertStart, at(12, 0))
+	if len(got) != 1 {
+		t.Fatalf("decisions = %d, want 1", len(got))
+	}
+	if got[0].Volume != 0 {
+		t.Fatalf("volume = %d, want 0 (explicit mute)", got[0].Volume)
+	}
+}
+
+func TestVolumeZeroWhenEventZero(t *testing.T) {
+	cfg := config.Default()
+	// Set alert-start volume to 0 (explicit mute).
+	cfg.Events[0].Volume = 0
+	cfg.Audio.MasterVolume = 100
+
+	got := rules.Resolve(cfg, config.TriggerAlertStart, at(12, 0))
+	if len(got) != 1 {
+		t.Fatalf("decisions = %d, want 1", len(got))
+	}
+	if got[0].Volume != 0 {
+		t.Fatalf("volume = %d, want 0 (explicit event mute)", got[0].Volume)
+	}
+}
+
+func TestVolumeExactCalculationPreserved(t *testing.T) {
+	cfg := config.Default()
+	cfg.Audio.MasterVolume = 50 // alert-start volume is 100
+
+	got := rules.Resolve(cfg, config.TriggerAlertStart, at(12, 0))
+	if len(got) != 1 {
+		t.Fatalf("decisions = %d, want 1", len(got))
+	}
+	if got[0].Volume != 50 {
+		t.Fatalf("volume = %d, want 50 (100*50/100)", got[0].Volume)
+	}
+}
+
+// The shipped default configuration protects alerts from quiet hours. This test
+// pins that protection to the actual default values, so changes to config.Default()
+// that remove alerts from the safety guarantee will fail here.
+func TestShippedDefaultDoesNotSuppressAlertsInQuietHours(t *testing.T) {
+	cfg := config.Default()
+	// Only change: enable quiet hours that contain the test time.
+	cfg.QuietHours.Enabled = true
+	cfg.QuietHours.From = "22:00"
+	cfg.QuietHours.To = "07:00"
+	// Do not touch AppliesTo — test the shipped default.
+
+	got := rules.Resolve(cfg, config.TriggerAlertStart, at(2, 0))
+	if len(got) != 1 {
+		t.Fatalf("shipped default: alert decisions at 02:00 = %d, want 1", len(got))
+	}
+	if got[0].Priority != player.PriorityAlert {
+		t.Fatalf("priority = %v, want PriorityAlert", got[0].Priority)
+	}
+}
