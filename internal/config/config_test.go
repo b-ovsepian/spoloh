@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/spoloh/spoloh/internal/config"
+	"github.com/b-ovsepian/spoloh/internal/config"
 )
 
 func TestDurationRoundTrip(t *testing.T) {

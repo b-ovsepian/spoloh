@@ -6,7 +6,7 @@ import (
 	"runtime"
 	"testing"
 
-	"github.com/spoloh/spoloh/internal/atomicfile"
+	"github.com/b-ovsepian/spoloh/internal/atomicfile"
 )
 
 func TestWriteCreatesFileWithContentAndMode(t *testing.T) {

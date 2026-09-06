@@ -4,9 +4,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/spoloh/spoloh/internal/config"
-	"github.com/spoloh/spoloh/internal/player"
-	"github.com/spoloh/spoloh/internal/rules"
+	"github.com/b-ovsepian/spoloh/internal/config"
+	"github.com/b-ovsepian/spoloh/internal/player"
+	"github.com/b-ovsepian/spoloh/internal/rules"
 )
 
 func at(hh, mm int) time.Time {

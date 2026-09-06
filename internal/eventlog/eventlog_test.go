@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/spoloh/spoloh/internal/eventlog"
+	"github.com/b-ovsepian/spoloh/internal/eventlog"
 )
 
 func openLog(t *testing.T, capacity int) (*eventlog.Log, string) {

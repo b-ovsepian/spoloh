@@ -5,7 +5,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/spoloh/spoloh/internal/atomicfile"
+	"github.com/b-ovsepian/spoloh/internal/atomicfile"
 )
 
 //go:embed assets/*.wav

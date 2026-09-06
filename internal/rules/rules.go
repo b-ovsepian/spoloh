@@ -5,8 +5,8 @@ import (
 	"slices"
 	"time"
 
-	"github.com/spoloh/spoloh/internal/config"
-	"github.com/spoloh/spoloh/internal/player"
+	"github.com/b-ovsepian/spoloh/internal/config"
+	"github.com/b-ovsepian/spoloh/internal/player"
 )
 
 // Decision is a resolved instruction, ready to hand to the player.

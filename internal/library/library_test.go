@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/spoloh/spoloh/internal/library"
+	"github.com/b-ovsepian/spoloh/internal/library"
 )
 
 // fakeConv simulates ffmpeg: whatever it is given, it always emits a

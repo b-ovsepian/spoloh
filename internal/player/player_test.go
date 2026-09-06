@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/spoloh/spoloh/internal/player"
+	"github.com/b-ovsepian/spoloh/internal/player"
 )
 
 type fakeBackend struct {

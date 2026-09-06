@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/spoloh/spoloh/internal/watchdog"
+	"github.com/b-ovsepian/spoloh/internal/watchdog"
 )
 
 func TestIntervalIsHalfTheSystemdPeriod(t *testing.T) {

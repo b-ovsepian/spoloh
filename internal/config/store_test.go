@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/spoloh/spoloh/internal/config"
+	"github.com/b-ovsepian/spoloh/internal/config"
 )
 
 func TestSaveLoadRoundTrip(t *testing.T) {

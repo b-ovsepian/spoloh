@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/spoloh/spoloh/internal/alertsource"
+	"github.com/b-ovsepian/spoloh/internal/alertsource"
 )
 
 func kyiv(t *testing.T) *time.Location {

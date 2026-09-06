@@ -7,9 +7,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/spoloh/spoloh/internal/clock"
-	"github.com/spoloh/spoloh/internal/config"
-	"github.com/spoloh/spoloh/internal/scheduler"
+	"github.com/b-ovsepian/spoloh/internal/clock"
+	"github.com/b-ovsepian/spoloh/internal/config"
+	"github.com/b-ovsepian/spoloh/internal/scheduler"
 )
 
 func kyiv(t *testing.T) *time.Location {

@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/spoloh/spoloh/internal/atomicfile"
+	"github.com/b-ovsepian/spoloh/internal/atomicfile"
 )
 
 // Load reads and validates a config file. A missing file returns an error for

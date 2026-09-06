@@ -19,15 +19,15 @@ import (
 	// image that has no tzdata package installed.
 	_ "time/tzdata"
 
-	"github.com/spoloh/spoloh/internal/alertsource"
-	"github.com/spoloh/spoloh/internal/alertstate"
-	"github.com/spoloh/spoloh/internal/clock"
-	"github.com/spoloh/spoloh/internal/config"
-	"github.com/spoloh/spoloh/internal/engine"
-	"github.com/spoloh/spoloh/internal/eventlog"
-	"github.com/spoloh/spoloh/internal/library"
-	"github.com/spoloh/spoloh/internal/player"
-	"github.com/spoloh/spoloh/internal/watchdog"
+	"github.com/b-ovsepian/spoloh/internal/alertsource"
+	"github.com/b-ovsepian/spoloh/internal/alertstate"
+	"github.com/b-ovsepian/spoloh/internal/clock"
+	"github.com/b-ovsepian/spoloh/internal/config"
+	"github.com/b-ovsepian/spoloh/internal/engine"
+	"github.com/b-ovsepian/spoloh/internal/eventlog"
+	"github.com/b-ovsepian/spoloh/internal/library"
+	"github.com/b-ovsepian/spoloh/internal/player"
+	"github.com/b-ovsepian/spoloh/internal/watchdog"
 )
 
 // version is overwritten at build time with -ldflags.

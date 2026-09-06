@@ -85,7 +85,7 @@ func (c *Client) fetchOne(ctx context.Context, source string) (Snapshot, error) 
 		return Snapshot{}, err
 	}
 	req.Header.Set("Accept", "application/json")
-	req.Header.Set("User-Agent", "spoloh/1.0 (+https://github.com/spoloh/spoloh)")
+	req.Header.Set("User-Agent", "spoloh/1.0 (+https://github.com/b-ovsepian/spoloh)")
 
 	resp, err := c.hc.Do(req)
 	if err != nil {

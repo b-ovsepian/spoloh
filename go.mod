@@ -1,4 +1,4 @@
-module github.com/spoloh/spoloh
+module github.com/b-ovsepian/spoloh
 
 go 1.25.0
 

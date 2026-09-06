@@ -7,8 +7,8 @@ import (
 	"os"
 	"time"
 
-	"github.com/spoloh/spoloh/internal/alertsource"
-	"github.com/spoloh/spoloh/internal/atomicfile"
+	"github.com/b-ovsepian/spoloh/internal/alertsource"
+	"github.com/b-ovsepian/spoloh/internal/atomicfile"
 )
 
 type Transition int

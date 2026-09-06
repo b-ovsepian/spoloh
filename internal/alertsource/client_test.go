@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/spoloh/spoloh/internal/alertsource"
+	"github.com/b-ovsepian/spoloh/internal/alertsource"
 )
 
 func TestFetchSuccess(t *testing.T) {

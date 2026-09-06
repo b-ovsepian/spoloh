@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/spoloh/spoloh/internal/clock"
+	"github.com/b-ovsepian/spoloh/internal/clock"
 )
 
 func TestTimedatectlSynced(t *testing.T) {

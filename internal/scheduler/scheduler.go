@@ -6,8 +6,8 @@ import (
 	"slices"
 	"time"
 
-	"github.com/spoloh/spoloh/internal/clock"
-	"github.com/spoloh/spoloh/internal/config"
+	"github.com/b-ovsepian/spoloh/internal/clock"
+	"github.com/b-ovsepian/spoloh/internal/config"
 )
 
 // ISOWeekday returns Monday=1 .. Sunday=7, matching the config format.

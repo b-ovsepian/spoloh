@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/spoloh/spoloh/internal/alertsource"
-	"github.com/spoloh/spoloh/internal/alertstate"
+	"github.com/b-ovsepian/spoloh/internal/alertsource"
+	"github.com/b-ovsepian/spoloh/internal/alertstate"
 )
 
 func state(alert bool, changed time.Time) alertsource.RegionState {
