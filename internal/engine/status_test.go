@@ -12,9 +12,6 @@ func TestStatusBeforeAnyPoll(t *testing.T) {
 	h := newHarness(t)
 
 	got := h.eng.Status()
-	if got.Region == "" {
-		t.Error("Region should come from the configuration even before the first poll")
-	}
 	if got.Alert {
 		t.Error("no poll has happened, so nothing should be reported as alerting")
 	}
@@ -108,15 +105,20 @@ func TestStatusIsSafeForConcurrentUse(t *testing.T) {
 	<-done
 }
 
-func TestStatusReportsTheNextScheduledEvent(t *testing.T) {
+// Region and the next scheduled event are the presentation layer's to fill:
+// internal/web computes both from the configuration in the configured
+// location, and internal/web's own tests are what cover them. The engine
+// deliberately leaves them zero rather than offering a second answer read
+// from a different clock.
+func TestStatusLeavesThePresentationFieldsToTheWebLayer(t *testing.T) {
 	h := newHarness(t)
 
 	got := h.eng.Status()
-	if got.NextEventName == "" {
-		t.Fatal("the default configuration has a daily event, so one should be upcoming")
+	if got.Region != "" {
+		t.Errorf("Region = %q, want the engine to leave it to the presentation layer", got.Region)
 	}
-	if got.NextEventAt.Before(time.Now().Add(-24 * time.Hour)) {
-		t.Fatalf("NextEventAt = %v, which is not a plausible upcoming time", got.NextEventAt)
+	if got.NextEventName != "" || !got.NextEventAt.IsZero() {
+		t.Errorf("NextEvent = %q at %v, want the engine to leave both to the presentation layer", got.NextEventName, got.NextEventAt)
 	}
 }
 
