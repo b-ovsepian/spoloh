@@ -5,6 +5,7 @@ package library
 
 import (
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
@@ -156,10 +157,23 @@ func (l *Library) Add(ctx context.Context, filename string, r io.Reader) (string
 	dst := filepath.Join(l.dir, target)
 
 	if ext == ".wav" {
-		if err := checkRIFF(tmpName); err != nil {
+		format, err := parseWAV(tmpName)
+		if err != nil {
 			return "", err
 		}
-		if err := os.Rename(tmpName, dst); err != nil {
+		if format.conforms() {
+			if err := os.Rename(tmpName, dst); err != nil {
+				return "", err
+			}
+			return target, nil
+		}
+		// A WAV container that is not PCM 16-bit 44.1 kHz stereo still needs
+		// the same codec normalisation a non-WAV upload would get: aplay
+		// must never be the thing that discovers the format is wrong.
+		if !l.conv.Available() {
+			return "", fmt.Errorf("%s is %s, but the library requires PCM 16-bit 44100 Hz stereo: %w", base, format.describe(), ErrConversionUnavailable)
+		}
+		if err := l.convert(ctx, tmpName, dst); err != nil {
 			return "", err
 		}
 		return target, nil
@@ -168,29 +182,142 @@ func (l *Library) Add(ctx context.Context, filename string, r io.Reader) (string
 	if !l.conv.Available() {
 		return "", ErrConversionUnavailable
 	}
-	if err := l.conv.ToWAV(ctx, tmpName, dst); err != nil {
+	if err := l.convert(ctx, tmpName, dst); err != nil {
 		return "", err
 	}
 	return target, nil
 }
 
-// checkRIFF rejects a file that claims to be a WAV but is not, so that aplay
-// never fails at the moment an alert fires.
-func checkRIFF(path string) error {
-	f, err := os.Open(path)
+// convert runs the converter into a scratch file inside the library
+// directory and only publishes the result to dst, via rename, once it has
+// been validated as a complete WAV. A converter killed mid-write — context
+// cancellation, a crash, a full disk — then leaves nothing at dst for
+// Has/List/aplay to trip over.
+func (l *Library) convert(ctx context.Context, src, dst string) error {
+	tmp, err := os.CreateTemp(l.dir, ".convert-*")
 	if err != nil {
 		return err
 	}
+	tmpName := tmp.Name()
+	if err := tmp.Close(); err != nil {
+		os.Remove(tmpName)
+		return err
+	}
+	defer os.Remove(tmpName)
+
+	if err := l.conv.ToWAV(ctx, src, tmpName); err != nil {
+		return err
+	}
+	if _, err := parseWAV(tmpName); err != nil {
+		return fmt.Errorf("converter produced an invalid WAV: %w", err)
+	}
+	return os.Rename(tmpName, dst)
+}
+
+// wavFormat is the audio format declared by a WAV file's fmt chunk.
+type wavFormat struct {
+	FormatTag     uint16
+	Channels      uint16
+	SampleRate    uint32
+	BitsPerSample uint16
+}
+
+// requiredFormat is the only format the playback pipeline is guaranteed to
+// handle without decoding: PCM 16-bit 44.1 kHz stereo (spec §5.4). Add
+// accepts a WAV upload as-is only when it already matches this exactly;
+// anything else is routed through the converter like a non-WAV upload.
+var requiredFormat = wavFormat{FormatTag: 1, Channels: 2, SampleRate: 44100, BitsPerSample: 16}
+
+func (f wavFormat) conforms() bool {
+	return f == requiredFormat
+}
+
+// describe renders the format for an operator-facing error message.
+func (f wavFormat) describe() string {
+	return fmt.Sprintf("%s, %s, %d Hz, %d-bit", formatTagName(f.FormatTag), channelWord(f.Channels), f.SampleRate, f.BitsPerSample)
+}
+
+func channelWord(channels uint16) string {
+	switch channels {
+	case 1:
+		return "mono"
+	case 2:
+		return "stereo"
+	default:
+		return fmt.Sprintf("%d channels", channels)
+	}
+}
+
+func formatTagName(tag uint16) string {
+	switch tag {
+	case 1:
+		return "PCM"
+	case 2:
+		return "ADPCM"
+	case 3:
+		return "IEEE float"
+	case 6:
+		return "A-law"
+	case 7:
+		return "mu-law"
+	case 0xFFFE:
+		return "extensible"
+	default:
+		return fmt.Sprintf("format tag %d", tag)
+	}
+}
+
+// parseWAV reads a WAV file's RIFF/WAVE header and walks its chunks to find
+// "fmt ", from which it reports the declared audio format. This is also the
+// package's WAV-validity check: a file whose header or chunk structure does
+// not hold together is rejected here, before it is ever trusted as playable.
+func parseWAV(path string) (wavFormat, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return wavFormat{}, err
+	}
 	defer f.Close()
 
-	head := make([]byte, 12)
-	if _, err := io.ReadFull(f, head); err != nil {
-		return fmt.Errorf("not a WAV file: %w", err)
+	var riff [12]byte
+	if _, err := io.ReadFull(f, riff[:]); err != nil {
+		return wavFormat{}, fmt.Errorf("not a WAV file: %w", err)
 	}
-	if string(head[0:4]) != "RIFF" || string(head[8:12]) != "WAVE" {
-		return errors.New("not a WAV file: missing RIFF/WAVE header")
+	if string(riff[0:4]) != "RIFF" || string(riff[8:12]) != "WAVE" {
+		return wavFormat{}, errors.New("not a WAV file: missing RIFF/WAVE header")
 	}
-	return nil
+
+	for {
+		var head [8]byte
+		if _, err := io.ReadFull(f, head[:]); err != nil {
+			return wavFormat{}, errors.New("not a WAV file: missing fmt chunk")
+		}
+		id := string(head[0:4])
+		size := binary.LittleEndian.Uint32(head[4:8])
+
+		if id == "fmt " {
+			if size < 16 {
+				return wavFormat{}, errors.New("not a WAV file: fmt chunk too short")
+			}
+			body := make([]byte, size)
+			if _, err := io.ReadFull(f, body); err != nil {
+				return wavFormat{}, fmt.Errorf("not a WAV file: truncated fmt chunk: %w", err)
+			}
+			return wavFormat{
+				FormatTag:     binary.LittleEndian.Uint16(body[0:2]),
+				Channels:      binary.LittleEndian.Uint16(body[2:4]),
+				SampleRate:    binary.LittleEndian.Uint32(body[4:8]),
+				BitsPerSample: binary.LittleEndian.Uint16(body[14:16]),
+			}, nil
+		}
+
+		skip := int64(size)
+		if size%2 == 1 {
+			skip++ // RIFF chunks are padded to an even number of bytes.
+		}
+		if _, err := f.Seek(skip, io.SeekCurrent); err != nil {
+			return wavFormat{}, fmt.Errorf("not a WAV file: malformed %q chunk: %w", id, err)
+		}
+	}
 }
 
 func sanitise(name string) (string, error) {
