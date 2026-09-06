@@ -4,8 +4,21 @@ package player
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"sync"
+	"time"
 )
+
+// defaultMaxPlayback caps how long one request may hold the single voice.
+// aplay can block indefinitely on a disconnected USB card or a PCM another
+// process has open, and preemption is no rescue: Play only cancels the current
+// request for a strictly higher priority, so a wedged alert_start would block
+// the alert_end behind it and every alert after that. The device would then be
+// silent forever while systemd, which is pinged from the engine's tick and not
+// from here, still saw a healthy daemon. Library sounds are at most a minute
+// long, so five minutes is generous by any measure.
+const defaultMaxPlayback = 5 * time.Minute
 
 type Priority int
 
@@ -38,8 +51,14 @@ type Player struct {
 	backend Backend
 	device  string
 
-	// OnError reports a failed stage ("volume" or "play"). Set it before Run.
+	// OnError reports a failed stage: "volume" or "play", or "volume_timeout"
+	// or "play_timeout" when the stage was abandoned for exceeding
+	// MaxPlayback. Set it before Run.
 	OnError func(r Request, stage string, err error)
+
+	// MaxPlayback caps one request. Zero means defaultMaxPlayback. Set it
+	// before Run; tests inject a short limit.
+	MaxPlayback time.Duration
 
 	mu    sync.Mutex
 	queue []Request
@@ -142,17 +161,39 @@ func (p *Player) playOne(ctx context.Context, cancel context.CancelFunc, r Reque
 		p.mu.Unlock()
 	}()
 
-	// A card without a Master control must not stop the sound from playing.
-	if err := p.backend.SetVolume(ctx, p.device, r.Volume); err != nil && ctx.Err() == nil {
-		p.reportError(r, "volume", err)
+	limit := p.MaxPlayback
+	if limit <= 0 {
+		limit = defaultMaxPlayback
 	}
-	// Cancelled while setting the volume (a preemption or Stop landed in that
-	// window): the request is dead, do not hand it to Play at all.
+	ctx, expire := context.WithTimeout(ctx, limit)
+	defer expire()
+
+	// A card without a Master control must not stop the sound from playing.
+	if err := p.backend.SetVolume(ctx, p.device, r.Volume); err != nil {
+		p.reportStageError(r, "volume", limit, ctx.Err(), err)
+	}
+	// Cancelled while setting the volume (a preemption, a Stop, or the limit
+	// above): the request is dead, do not hand it to Play at all.
 	if ctx.Err() != nil {
 		return
 	}
-	if err := p.backend.Play(ctx, p.device, r.Path); err != nil && ctx.Err() == nil {
-		p.reportError(r, "play", err)
+	if err := p.backend.Play(ctx, p.device, r.Path); err != nil {
+		p.reportStageError(r, "play", limit, ctx.Err(), err)
+	}
+}
+
+// reportStageError reports a stage failure, except when the request was
+// deliberately cancelled by a preemption or Stop — there the error is the
+// cancellation itself and says nothing. A timeout gets its own stage name:
+// it means something is wedged in front of the speaker, which is a different
+// diagnosis from a card that answered with an error, and the operator has to
+// be able to tell the two apart.
+func (p *Player) reportStageError(r Request, stage string, limit time.Duration, ctxErr, err error) {
+	switch {
+	case errors.Is(ctxErr, context.DeadlineExceeded):
+		p.reportError(r, stage+"_timeout", fmt.Errorf("the %s stage exceeded %s and was abandoned: %w", stage, limit, err))
+	case ctxErr == nil:
+		p.reportError(r, stage, err)
 	}
 }
 

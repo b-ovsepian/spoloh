@@ -311,3 +311,87 @@ func TestStopCancelsWhileSettingVolume(t *testing.T) {
 	case <-time.After(200 * time.Millisecond):
 	}
 }
+
+// A stuck aplay — a disconnected USB card, a PCM another process holds open —
+// used to silence the device permanently: preemption only cancels the current
+// request for a strictly HIGHER priority, so a wedged alert_start blocked the
+// alert_end behind it and every alert after that, while systemd, pinged from
+// the engine's tick rather than from here, still saw a healthy daemon.
+func TestStuckPlaybackTimesOutAndTheQueueMovesOn(t *testing.T) {
+	f := newFake() // f.hold is never closed: every Play blocks until cancelled
+	p := player.New(f, "default")
+	p.MaxPlayback = 100 * time.Millisecond
+
+	var (
+		mu     sync.Mutex
+		stages []string
+	)
+	p.OnError = func(_ player.Request, stage string, _ error) {
+		mu.Lock()
+		stages = append(stages, stage)
+		mu.Unlock()
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go p.Run(ctx)
+
+	// Same priority as the first, so preemption cannot be what rescues this.
+	p.Play(player.Request{EventID: "alert-start", Path: "/s/siren.wav", Volume: 100, Priority: player.PriorityAlert})
+	waitStart(t, f)
+	p.Play(player.Request{EventID: "alert-end", Path: "/s/all-clear.wav", Volume: 90, Priority: player.PriorityAlert})
+
+	waitStartFor(t, f, "/s/all-clear.wav")
+
+	// And the timeout must be reported under a stage of its own, so that a
+	// wedged card is distinguishable in the log from one that errored.
+	deadline := time.After(2 * time.Second)
+	for {
+		mu.Lock()
+		got := append([]string(nil), stages...)
+		mu.Unlock()
+		for _, s := range got {
+			if s == "play_timeout" {
+				return
+			}
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("no play_timeout reported, got stages %v", got)
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+}
+
+// The timeout must not turn an ordinary preemption into a timeout report: a
+// cancelled request is not a wedged one.
+func TestPreemptionIsNotReportedAsATimeout(t *testing.T) {
+	f := newFake()
+	p := player.New(f, "default")
+	p.MaxPlayback = 5 * time.Second
+
+	var (
+		mu     sync.Mutex
+		stages []string
+	)
+	p.OnError = func(_ player.Request, stage string, _ error) {
+		mu.Lock()
+		stages = append(stages, stage)
+		mu.Unlock()
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go p.Run(ctx)
+
+	p.Play(player.Request{EventID: "silence", Path: "/s/metronome.wav", Volume: 85, Priority: player.PriorityScheduled})
+	waitStart(t, f)
+	p.Play(player.Request{EventID: "alert-start", Path: "/s/siren.wav", Volume: 100, Priority: player.PriorityAlert})
+	waitStartFor(t, f, "/s/siren.wav")
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(stages) != 0 {
+		t.Fatalf("a preemption reported %v, want nothing", stages)
+	}
+}
