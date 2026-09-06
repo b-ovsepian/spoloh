@@ -107,3 +107,32 @@ func TestPublishDoesNotBlockOnAStalledSubscriber(t *testing.T) {
 		t.Fatal("Publish blocked on a subscriber that is not reading")
 	}
 }
+
+// publishLoop skips the whole sample when nobody is subscribed, and Len is
+// what tells it so. The count has to track both ends of a subscription, since
+// a stale non-zero count would keep the loop working for an audience that
+// left.
+func TestBroadcasterCountsItsSubscribers(t *testing.T) {
+	b := web.NewBroadcaster()
+	if got := b.Len(); got != 0 {
+		t.Fatalf("Len = %d on a fresh broadcaster, want 0", got)
+	}
+
+	first := b.Subscribe()
+	second := b.Subscribe()
+	if got := b.Len(); got != 2 {
+		t.Fatalf("Len = %d with two subscribers, want 2", got)
+	}
+
+	b.Unsubscribe(first)
+	if got := b.Len(); got != 1 {
+		t.Fatalf("Len = %d after one unsubscribed, want 1", got)
+	}
+	// Unsubscribe is documented as safe to repeat; repeating it must not
+	// drive the count below what is actually listening.
+	b.Unsubscribe(first)
+	b.Unsubscribe(second)
+	if got := b.Len(); got != 0 {
+		t.Fatalf("Len = %d once everyone left, want 0", got)
+	}
+}

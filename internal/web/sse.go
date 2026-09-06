@@ -55,6 +55,15 @@ func (b *Broadcaster) Unsubscribe(ch chan []byte) {
 	}
 }
 
+// Len reports how many subscribers are listening right now. publishLoop uses
+// it to skip sampling altogether when nobody is, which on a wall-mounted
+// appliance is most of the time.
+func (b *Broadcaster) Len() int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return len(b.subs)
+}
+
 // Publish delivers to every subscriber that can take it right now and drops
 // the frame for any that cannot. It never blocks, so one stalled subscriber
 // can never wedge delivery to the rest.
@@ -89,13 +98,31 @@ type statusFrame struct {
 // location returns the device's configured time zone, falling back to UTC if
 // it is unset or fails to load rather than letting a bad configuration value
 // take down the status stream.
+//
+// The result is cached, keyed by the configured name so that changing the
+// zone in the dashboard still takes effect. time.LoadLocation caches nothing
+// of its own: it re-reads and re-parses the zoneinfo on every call, off the
+// SD card whenever the OS has a zoneinfo directory of its own. Doing that
+// once a second forever, for a value that changes about never, is the kind
+// of write-adjacent churn spec §5.7 exists to avoid. Caching the failed
+// lookup as UTC is deliberate too — a misconfigured zone must not turn into
+// a retry loop.
 func (s *Server) location() *time.Location {
-	if tz := s.deps.Config.Get().Device.Timezone; tz != "" {
-		if loc, err := time.LoadLocation(tz); err == nil {
-			return loc
+	tz := s.deps.Config.Get().Device.Timezone
+
+	s.locMu.Lock()
+	defer s.locMu.Unlock()
+	if s.loc != nil && s.locTZ == tz {
+		return s.loc
+	}
+	loc := time.UTC
+	if tz != "" {
+		if resolved, err := time.LoadLocation(tz); err == nil {
+			loc = resolved
 		}
 	}
-	return time.UTC
+	s.locTZ, s.loc = tz, loc
+	return loc
 }
 
 func (s *Server) currentFrame() ([]byte, error) {
@@ -180,6 +207,15 @@ func (s *Server) publishLoop(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-t.C:
+			// With nobody subscribed there is nobody to publish to, and
+			// sampling anyway is not free: currentFrame clones the
+			// configuration, resolves a time zone, walks the event list,
+			// then allocates and marshals a frame — once a second, for the
+			// whole life of a daemon that spends most of its time with no
+			// browser attached.
+			if s.events.Len() == 0 {
+				continue
+			}
 			if frame, err := s.currentFrame(); err == nil {
 				s.events.Publish(frame)
 			}

@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/b-ovsepian/spoloh/internal/configstore"
@@ -44,6 +45,14 @@ type Server struct {
 	// nothing can enumerate is a route table nothing can check against the
 	// authentication exemption list — see routes_test.go.
 	patterns []string
+	// loc caches the resolved configured time zone; see location() in sse.go.
+	// It is keyed by the configured name, so a zone changed in the dashboard
+	// still takes effect. The mutex is its own: this is read from the publish
+	// loop and from every request handler.
+	locMu sync.Mutex
+	locTZ string
+	loc   *time.Location
+
 	// now stands in for time.Now so session expiry is testable from outside
 	// the package via the SetNow helper in export_test.go; it defaults to
 	// time.Now for every real caller. It lives on Server, not Deps, which is
