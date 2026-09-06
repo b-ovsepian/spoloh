@@ -1,0 +1,11 @@
+{
+  "source": "Mørk Skogen API (default)",
+  "cachedat": "2026-09-06 15:39:05",
+  "states": {
+    "Вінницька область": { "alertnow": false, "changed": "2026-09-05 16:39:50" },
+    "Дніпропетровська область": { "alertnow": true, "changed": "2026-09-06 02:41:57" },
+    "Львівська область": { "alertnow": false, "changed": "1970-01-01 03:00:00" },
+    "Харківська область": { "alertnow": true, "changed": "2026-09-06 07:32:08" },
+    "м. Київ": { "alertnow": false, "changed": "2026-09-06 02:44:20" }
+  }
+}
