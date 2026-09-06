@@ -73,21 +73,27 @@ type Engine struct {
 	pollWait time.Duration // the wait Tick most recently scheduled nextPoll for
 	attempt  int
 
-	firstPollLogged bool
-	nextHeartbeat   time.Time
+	nextHeartbeat time.Time
 
 	// mu guards the fields below, which the dashboard reads from an HTTP
 	// goroutine while the engine writes them from its own. alertstate.Machine
 	// is single-goroutine by contract, so the two values the dashboard needs
 	// from it are mirrored here at the moment they change rather than read
 	// across the boundary.
-	mu          sync.RWMutex
-	alert       bool
-	alertSince  time.Time
-	failing     bool
-	lastError   string
-	lastSuccess time.Time
-	sourceName  string
+	//
+	// firstPollLogged is guarded by mu too, like its neighbours below, even
+	// though it is not itself exposed on Status: it is read-then-written by
+	// the same reportHealth call that reads/writes failing, and living
+	// outside the lock would be an easy thing to miss the next time someone
+	// reaches for it.
+	mu              sync.RWMutex
+	firstPollLogged bool
+	alert           bool
+	alertSince      time.Time
+	failing         bool
+	lastError       string
+	lastSuccess     time.Time
+	sourceName      string
 }
 
 func New(d Deps) *Engine {
@@ -329,20 +335,27 @@ func (e *Engine) play(d rules.Decision, kind string, at time.Time) {
 // heartbeatInterval's comment for why logging all of them would be worse
 // than logging none.
 func (e *Engine) reportHealth(cfg *config.Config, snap alertsource.Snapshot, st alertsource.RegionState) {
-	e.mu.RLock()
+	// All the state this decides on and updates is guarded by mu, so it is
+	// read and written under one lock and released before logging — logging
+	// while holding the lock would be a worse habit than the one this task
+	// exists to fix.
+	e.mu.Lock()
 	wasFailing := e.failing
-	e.mu.RUnlock()
+	firstPoll := !e.firstPollLogged
+	if firstPoll {
+		e.firstPollLogged = true
+	}
+	e.mu.Unlock()
 
 	switch {
-	case !e.firstPollLogged:
+	case firstPoll:
 		e.d.Logger.Info("alert source reachable", "source", snap.Source, "region", cfg.Alerts.Region, "alert", st.Alert)
-		e.firstPollLogged = true
 	case wasFailing:
 		e.d.Logger.Info("alert source recovered", "source", snap.Source, "region", cfg.Alerts.Region, "alert", st.Alert)
 	}
-	// The reset to false is recorded once, uniformly, in PollOnce's mirror
-	// block right after this returns — not here, so there is a single place
-	// that clears a failure on success.
+	// The reset of failing to false is recorded once, uniformly, in
+	// PollOnce's mirror block right after this returns — not here, so there
+	// is a single place that clears a failure on success.
 }
 
 func (e *Engine) record(entry eventlog.Entry) {
