@@ -37,6 +37,7 @@ type Server struct {
 	mux      *http.ServeMux
 	sessions *sessions
 	limiter  *loginLimiter
+	events   *Broadcaster
 	// now stands in for time.Now so session expiry is testable from outside
 	// the package via the SetNow helper in export_test.go; it defaults to
 	// time.Now for every real caller. It lives on Server, not Deps, which is
@@ -59,6 +60,7 @@ func New(d Deps) (*Server, error) {
 		mux:      http.NewServeMux(),
 		sessions: newSessions(),
 		limiter:  newLoginLimiter(),
+		events:   NewBroadcaster(),
 		now:      time.Now,
 	}
 
@@ -72,6 +74,7 @@ func New(d Deps) (*Server, error) {
 	s.mux.HandleFunc("GET /login", s.handleLogin)
 	s.mux.HandleFunc("POST /login", s.handleLogin)
 	s.mux.HandleFunc("POST /logout", s.handleLogout)
+	s.mux.HandleFunc("GET /events", s.handleEvents)
 	s.mux.HandleFunc("GET /{$}", s.handleIndex)
 
 	return s, nil
@@ -125,6 +128,11 @@ func (s *Server) ListenAndServe(ctx context.Context, addr string) error {
 		// No WriteTimeout: the SSE stream added in Task 5 is a long-lived
 		// response and a write deadline would sever it every minute.
 	}
+
+	// publishLoop is tied to the same ctx that governs this call, so it never
+	// outlives the server it feeds: when ctx is done, the loop's own select
+	// returns in the same tick that triggers shutdown below.
+	go s.publishLoop(ctx)
 
 	done := make(chan error, 1)
 	go func() { done <- srv.ListenAndServe() }()

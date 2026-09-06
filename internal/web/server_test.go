@@ -46,6 +46,13 @@ func setPassword(t *testing.T, srv *web.Server, password string) {
 	}
 }
 
+func login(t *testing.T, srv *web.Server, password string) *http.Cookie {
+	t.Helper()
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, postForm("/login", url.Values{"password": {password}}))
+	return sessionCookie(t, rec)
+}
+
 func sessionCookie(t *testing.T, rec *httptest.ResponseRecorder) *http.Cookie {
 	t.Helper()
 	for _, c := range rec.Result().Cookies() {
