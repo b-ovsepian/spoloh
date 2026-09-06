@@ -173,3 +173,27 @@ func TestLogMarksFailuresWithMoreThanColour(t *testing.T) {
 		t.Error("the log has only one layout, so a phone gets the six-column table")
 	}
 }
+
+// The page shows the most recent rows out of a database that holds many times
+// as many. Listing them with nothing said reads as "this is everything that
+// ever happened", which is precisely the wrong conclusion to draw when the
+// event being looked for has already scrolled off.
+func TestLogPageSaysItIsTruncated(t *testing.T) {
+	srv, _, lg := newServerWithLog(t)
+	setPassword(t, srv, "correct horse battery staple")
+	cookie := login(t, srv, "correct horse battery staple")
+	appendAlert(t, lg, "siren.wav")
+
+	req := httptest.NewRequest(http.MethodGet, "/log", nil)
+	req.AddCookie(cookie)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+
+	body := rec.Body.String()
+	if !strings.Contains(body, "найновіших записів") {
+		t.Errorf("the log page does not say that it shows only the most recent rows; body: %q", body)
+	}
+	if !strings.Contains(body, "200") {
+		t.Error("the log page does not say how many rows it shows")
+	}
+}

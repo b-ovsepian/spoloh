@@ -4,6 +4,14 @@
 <div class="card p-4 sm:p-6">
   <header class="mb-4">
     <h1 class="text-lg font-semibold">Журнал подій</h1>
+    {{/*
+    Say that this is a window, not the archive. The page reads the most recent
+    rows out of a database that holds many times as many, and listing them
+    without saying so reads as "this is everything that ever happened" — which
+    is exactly the wrong thing to conclude when looking for an event that is
+    no longer on the page.
+    */}}
+    {{if .Entries}}<p class="text-sm text-muted-foreground">Показано щонайбільше {{.Limit}} найновіших записів; давніші зберігаються, але тут не відображаються.</p>{{end}}
   </header>
   {{if .Notice}}
   <p class="text-muted-foreground">{{.Notice}}</p>

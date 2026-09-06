@@ -158,6 +158,10 @@ type logEntryView struct {
 type logView struct {
 	Entries []logEntryView
 	Notice  string
+	// Limit is how many rows a page load reads. It is shown, because the
+	// page otherwise implies that what it lists is the whole history — and
+	// the database holds ten times as much.
+	Limit int
 }
 
 // kindLabel translates an eventlog.Kind constant into the Ukrainian label
@@ -188,7 +192,7 @@ func kindLabel(kind string) string {
 // fatal to this page either.
 func (s *Server) handleLog(w http.ResponseWriter, r *http.Request) {
 	loc := s.location()
-	var view logView
+	view := logView{Limit: recentLogEntries}
 
 	switch {
 	case s.deps.Log == nil:
