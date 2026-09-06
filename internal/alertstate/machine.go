@@ -36,15 +36,29 @@ type Machine struct {
 	baselined bool
 	alert     bool
 	since     time.Time
+
+	// restored is true between Restore and the first Apply, so that the first
+	// observation can be compared against what the previous process knew.
+	restored bool
 }
 
 func New() *Machine { return &Machine{} }
 
 // Apply folds one observation into the machine and reports what changed.
 //
-// The first observation after start is always a silent baseline: if an alert
+// The first observation after start is normally a silent baseline: if an alert
 // was already running before a reboot it was announced then, and repeating the
-// siren only confuses people.
+// siren only confuses people (spec §5.2).
+//
+// The exception is a transition that provably happened while the device was
+// down — the five to ten seconds of a systemd restart, or however long a power
+// cut lasted. Restore hands us what the previous process knew and when it knew
+// it; upstream hands us when the state last flipped. When the observed state
+// disagrees with the restored one AND upstream says the flip came after our
+// last knowledge, that is a real transition nobody heard, and it is announced.
+// Anything less than proof — no restored timestamp, or a zero Changed, which
+// means upstream has never observed a change or sent something unparseable —
+// falls back to the silent baseline. The device never announces on a guess.
 func (m *Machine) Apply(st alertsource.RegionState, now time.Time) Transition {
 	since := st.Changed
 	if since.IsZero() {
@@ -52,9 +66,23 @@ func (m *Machine) Apply(st alertsource.RegionState, now time.Time) Transition {
 	}
 
 	if !m.baselined {
+		restored, restoredAlert, restoredSince := m.restored, m.alert, m.since
 		m.baselined = true
+		m.restored = false
 		m.alert = st.Alert
 		m.since = since
+
+		missed := restored &&
+			st.Alert != restoredAlert &&
+			!restoredSince.IsZero() &&
+			!st.Changed.IsZero() &&
+			st.Changed.After(restoredSince)
+		if missed {
+			if st.Alert {
+				return Started
+			}
+			return Ended
+		}
 		return NoChange
 	}
 	if st.Alert == m.alert {
@@ -75,10 +103,15 @@ func (m *Machine) Baselined() bool      { return m.baselined }
 func (m *Machine) Persisted() Persisted { return Persisted{Alert: m.alert, Since: m.since} }
 
 // Restore seeds the machine from disk so the dashboard can show an alert as
-// ongoing straight after boot. It deliberately leaves the machine un-baselined.
+// ongoing straight after boot. It deliberately leaves the machine un-baselined,
+// so the first poll cannot replay a siren for an alert that was already
+// running — but it does record that the state came from disk, which is what
+// lets the first Apply recognise a transition that happened while the device
+// was down. See Apply.
 func (m *Machine) Restore(p Persisted) {
 	m.alert = p.Alert
 	m.since = p.Since
+	m.restored = true
 }
 
 // Persisted is the slice of state that survives a restart.

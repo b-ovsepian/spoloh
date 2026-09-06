@@ -122,6 +122,102 @@ func TestRestoreDoesNotBaseline(t *testing.T) {
 	}
 }
 
+// The five to ten seconds of a systemd restart are a window in which upstream
+// can flip without anyone hearing it. Restore's silent baseline is right for an
+// alert that was already running — it was announced before the reboot — and
+// wrong for one that started during the window. Upstream's own "changed"
+// timestamp is what tells the two apart, and only a timestamp strictly newer
+// than what the previous process knew counts as proof.
+func TestRestoreWindowTransitions(t *testing.T) {
+	lastKnown := now.Add(-time.Hour)
+
+	tests := []struct {
+		name          string
+		restoredAlert bool
+		restoredSince time.Time
+		observed      bool
+		changed       time.Time
+		want          alertstate.Transition
+	}{
+		{
+			name:          "alert began while the daemon was down",
+			restoredAlert: false, restoredSince: lastKnown,
+			observed: true, changed: now.Add(-30 * time.Second),
+			want: alertstate.Started,
+		},
+		{
+			name:          "alert ended while the daemon was down",
+			restoredAlert: true, restoredSince: lastKnown,
+			observed: false, changed: now.Add(-30 * time.Second),
+			want: alertstate.Ended,
+		},
+		{
+			name:          "the same alert is still running: no replay",
+			restoredAlert: true, restoredSince: lastKnown,
+			observed: true, changed: now.Add(-30 * time.Second),
+			want: alertstate.NoChange,
+		},
+		{
+			name:          "quiet before, quiet now",
+			restoredAlert: false, restoredSince: lastKnown,
+			observed: false, changed: now.Add(-30 * time.Second),
+			want: alertstate.NoChange,
+		},
+		{
+			name:          "a zero changed proves nothing, so stay silent (start)",
+			restoredAlert: false, restoredSince: lastKnown,
+			observed: true, changed: time.Time{},
+			want: alertstate.NoChange,
+		},
+		{
+			name:          "a zero changed proves nothing, so stay silent (end)",
+			restoredAlert: true, restoredSince: lastKnown,
+			observed: false, changed: time.Time{},
+			want: alertstate.NoChange,
+		},
+		{
+			name:          "a flip older than what we knew is not ours to announce",
+			restoredAlert: true, restoredSince: lastKnown,
+			observed: false, changed: lastKnown.Add(-time.Minute),
+			want: alertstate.NoChange,
+		},
+		{
+			name:          "no restored timestamp is no knowledge at all",
+			restoredAlert: false, restoredSince: time.Time{},
+			observed: true, changed: now.Add(-30 * time.Second),
+			want: alertstate.NoChange,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			m := alertstate.New()
+			m.Restore(alertstate.Persisted{Alert: tc.restoredAlert, Since: tc.restoredSince})
+
+			if got := m.Apply(state(tc.observed, tc.changed), now); got != tc.want {
+				t.Fatalf("first Apply after Restore = %v, want %v", got, tc.want)
+			}
+			if m.Alert() != tc.observed {
+				t.Fatalf("Alert() = %v, want the observed %v", m.Alert(), tc.observed)
+			}
+			// Whatever the first Apply decided, the machine is baselined
+			// afterwards and a second identical poll must be silent.
+			if got := m.Apply(state(tc.observed, tc.changed), now); got != alertstate.NoChange {
+				t.Fatalf("second Apply = %v, want NoChange", got)
+			}
+		})
+	}
+}
+
+// A machine that was never restored — the true first boot, with no state file —
+// keeps the unconditional silent baseline: there is nothing to compare against.
+func TestFirstBootWithoutRestoreIsAlwaysSilent(t *testing.T) {
+	m := alertstate.New()
+	if got := m.Apply(state(true, now.Add(-30*time.Second)), now); got != alertstate.NoChange {
+		t.Fatalf("first Apply with no Restore = %v, want NoChange", got)
+	}
+}
+
 func TestPersistedRoundTrip(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state.json")
 	want := alertstate.Persisted{Alert: true, Since: now}

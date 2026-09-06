@@ -345,16 +345,21 @@ func TestBootWithRestoredActiveAlertStaysSilent(t *testing.T) {
 	}
 }
 
-// TestBootWithRestoredActiveAlertIgnoresContradictingFirstPoll is the
+// TestBootWithRestoredActiveAlertIgnoresUndatedContradiction is the
 // discriminating case the test above cannot be: it restores an active alert,
-// then polls a state that DISAGREES with it. A correctly un-baselined machine
-// treats this as a silent baseline, same as any first poll. A Restore that
-// (incorrectly) set baselined too would instead see a mismatch against the
-// restored alert and fire alertstate.Ended — a phantom all-clear announced
-// on every reboot whose alert has since ended.
-func TestBootWithRestoredActiveAlertIgnoresContradictingFirstPoll(t *testing.T) {
+// then polls a state that DISAGREES with it, with an upstream timestamp OLDER
+// than what we last knew — so nothing proves the flip happened while we were
+// down. A correctly un-baselined machine treats that as a silent baseline,
+// same as any first poll. A Restore that (incorrectly) set baselined too would
+// instead see a mismatch against the restored alert and fire alertstate.Ended
+// — a phantom all-clear announced on every reboot whose alert has since ended.
+//
+// The other half of the rule, where the timestamp DOES prove a transition
+// during the restart window, is TestBootAnnouncesATransitionMissedWhileDown.
+func TestBootWithRestoredActiveAlertIgnoresUndatedContradiction(t *testing.T) {
 	m := alertstate.New()
-	m.Restore(alertstate.Persisted{Alert: true, Since: time.Date(2026, 9, 6, 12, 0, 0, 0, time.UTC)})
+	// Later than the snapshot's "changed" (15:38 Kyiv = 12:38 UTC).
+	m.Restore(alertstate.Persisted{Alert: true, Since: time.Date(2026, 9, 6, 18, 0, 0, 0, time.UTC)})
 
 	h := newHarnessWithMachine(t, m)
 	h.set(false) // the fresh poll disagrees with the restored state
@@ -366,6 +371,27 @@ func TestBootWithRestoredActiveAlertIgnoresContradictingFirstPoll(t *testing.T) 
 
 	if got := h.rec.Played(); len(got) != 0 {
 		t.Fatalf("played %v after a first poll contradicting the restored state, want nothing (silent baseline, not a phantom all-clear)", got)
+	}
+}
+
+// The watchdog kills a wedged daemon and systemd restarts it five seconds
+// later. An alert that began in that window would never be announced at all if
+// the first poll after a Restore were unconditionally silent — the device
+// would come back up showing an alert nobody in the building had heard.
+func TestBootAnnouncesATransitionMissedWhileDown(t *testing.T) {
+	m := alertstate.New()
+	// Earlier than the snapshot's "changed" (15:38 Kyiv = 12:38 UTC), so
+	// upstream's timestamp proves the flip came after we last knew anything.
+	m.Restore(alertstate.Persisted{Alert: false, Since: time.Date(2026, 9, 6, 11, 0, 0, 0, time.UTC)})
+
+	h := newHarnessWithMachine(t, m)
+	h.set(true)
+
+	if err := h.eng.PollOnce(context.Background()); err != nil {
+		t.Fatalf("PollOnce: %v", err)
+	}
+	if got := waitPlayed(t, h.rec); got != "siren.wav" {
+		t.Fatalf("played %q, want siren.wav for an alert that began while the daemon was restarting", got)
 	}
 }
 
