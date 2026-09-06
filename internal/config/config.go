@@ -107,6 +107,18 @@ func (e Event) Category() string {
 
 type Auth struct {
 	PasswordHash string `json:"password_hash"`
+
+	// SessionSecret signs the dashboard's session cookies. It is generated
+	// once, when the administrator password is first set, and lives here
+	// rather than in memory so that sessions survive a restart of the
+	// daemon — systemd restarts this unit routinely (Restart=always,
+	// WatchdogSec, self-update), and an operator logged out by every one of
+	// them would leave a wall-mounted dashboard sitting on a login page.
+	//
+	// It is a credential, not a setting: no editing screen may render it,
+	// and a device rebuilt from an exported configuration inherits the
+	// sessions of the device it was exported from.
+	SessionSecret string `json:"session_secret,omitempty"`
 }
 
 type Network struct {

@@ -1,12 +1,16 @@
 package web
 
 import (
+	"crypto/hmac"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
 	"errors"
 	"net"
 	"net/http"
 	"net/url"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 	"unicode/utf8"
@@ -20,6 +24,13 @@ const (
 	sessionCookieName = "spoloh_session"
 	sessionLifetime   = 30 * 24 * time.Hour
 	minPasswordLength = 10 // in runes: the page and the input's minlength both count characters, not bytes.
+
+	// sessionCookieVersion prefixes every cookie this build issues, so a
+	// later change to the format can be told apart from a forgery instead
+	// of being guessed at.
+	sessionCookieVersion = "v1"
+	sessionSecretBytes   = 32
+	sessionNonceBytes    = 16
 
 	// bcrypt truncates (in some implementations) or refuses (this one) input
 	// over 72 bytes. Cyrillic is two bytes per character, so a plausible
@@ -38,49 +49,149 @@ const (
 // device. It never reaches a client directly.
 var errPasswordAlreadySet = errors.New("password already set")
 
+// errNoSessionKey is startSession's signal that the device has no signing
+// key yet — no password, or a secret that could not be generated. It never
+// reaches a client directly.
+var errNoSessionKey = errors.New("no session signing key")
+
+// sessions issues and verifies stateless session cookies.
+//
+// Nothing about a live session is held in memory, deliberately. The map that
+// used to hold them died with every process, and systemd restarts this unit
+// as a matter of routine — Restart=always, the watchdog, and self-update later
+// — so a wall-mounted dashboard was logged out several times a week. Worse,
+// its SSE stream reconnected into a 303 to /login, which an EventSource treats
+// as a failed connection and does not retry, leaving the wall frozen on a
+// stale frame. A signed cookie removes the cause: the daemon can restart as
+// often as it likes and the browser stays logged in.
+//
+// A cookie is "<version>.<issued unix>.<nonce>.<signature>", signed with a
+// key derived from the persisted secret and the current password hash. The
+// nonce makes two logins in the same second distinguishable, which is what
+// lets one of them be revoked without touching the other.
+//
+// revoked is the one piece of memory left, and it is a deny list rather than
+// the source of truth: empty means "every cookie I signed is still good",
+// which is exactly the behaviour a restart should have. A logout therefore
+// invalidates that cookie for the life of this process, on top of deleting it
+// from the browser. What invalidates a session everywhere, permanently and
+// across restarts, is changing the administrator password: the signing key is
+// derived from the hash, so every cookie signed under the old one stops
+// verifying. That is the lever to reach for if a cookie is believed stolen,
+// and it is the one an operator would expect to work.
 type sessions struct {
-	mu   sync.Mutex
-	live map[string]time.Time // session id -> expiry
+	mu      sync.Mutex
+	revoked map[string]time.Time // cookie value -> when the entry may be forgotten
 }
 
-func newSessions() *sessions { return &sessions{live: map[string]time.Time{}} }
+func newSessions() *sessions { return &sessions{revoked: map[string]time.Time{}} }
 
-func (s *sessions) issue(now time.Time) (string, error) {
-	raw := make([]byte, 32)
+// newSessionSecret returns a fresh signing secret to persist in the config.
+func newSessionSecret() (string, error) {
+	raw := make([]byte, sessionSecretBytes)
 	if _, err := rand.Read(raw); err != nil {
 		return "", err
 	}
-	id := base64.RawURLEncoding.EncodeToString(raw)
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	for existing, expiry := range s.live {
-		if now.After(expiry) {
-			delete(s.live, existing)
-		}
-	}
-	s.live[id] = now.Add(sessionLifetime)
-	return id, nil
+	return base64.RawURLEncoding.EncodeToString(raw), nil
 }
 
-func (s *sessions) valid(id string, now time.Time) bool {
+// sessionKey derives the cookie signing key. Mixing the password hash into
+// it is what makes a password change log every device out; an empty secret or
+// an empty hash yields no key at all, so no cookie can verify against a
+// device that is not commissioned yet.
+func sessionKey(secret, passwordHash string) []byte {
+	if secret == "" || passwordHash == "" {
+		return nil
+	}
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write([]byte(passwordHash))
+	return mac.Sum(nil)
+}
+
+func signSession(key []byte, payload string) string {
+	mac := hmac.New(sha256.New, key)
+	mac.Write([]byte(payload))
+	return base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
+}
+
+func (s *sessions) issue(key []byte, now time.Time) (string, error) {
+	if len(key) == 0 {
+		return "", errNoSessionKey
+	}
+	nonce := make([]byte, sessionNonceBytes)
+	if _, err := rand.Read(nonce); err != nil {
+		return "", err
+	}
+	payload := sessionCookieVersion + "." +
+		strconv.FormatInt(now.Unix(), 10) + "." +
+		base64.RawURLEncoding.EncodeToString(nonce)
+	return payload + "." + signSession(key, payload), nil
+}
+
+// valid reports whether value is a cookie this device signed, still inside
+// its lifetime, and not revoked.
+//
+// Only an age past the lifetime is rejected, never a cookie dated in the
+// future. These boards have no RTC: after a power cut the clock reads
+// whatever the filesystem last recorded until systemd-timesyncd catches up,
+// so a perfectly good cookie can legitimately look newer than "now" for the
+// first minute of every boot. Rejecting it would log the operator out during
+// exactly the window this whole change exists to protect.
+func (s *sessions) valid(key []byte, value string, now time.Time) bool {
+	if len(key) == 0 {
+		return false
+	}
+	cut := strings.LastIndexByte(value, '.')
+	if cut < 0 {
+		return false
+	}
+	payload, sig := value[:cut], value[cut+1:]
+	if !hmac.Equal([]byte(sig), []byte(signSession(key, payload))) {
+		return false
+	}
+	parts := strings.Split(payload, ".")
+	if len(parts) != 3 || parts[0] != sessionCookieVersion {
+		return false
+	}
+	issued, err := strconv.ParseInt(parts[1], 10, 64)
+	if err != nil {
+		return false
+	}
+	if now.Sub(time.Unix(issued, 0)) > sessionLifetime {
+		return false
+	}
+	return !s.isRevoked(value, now)
+}
+
+func (s *sessions) isRevoked(value string, now time.Time) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	expiry, ok := s.live[id]
+	until, ok := s.revoked[value]
 	if !ok {
 		return false
 	}
-	if now.After(expiry) {
-		delete(s.live, id)
+	if now.After(until) {
+		delete(s.revoked, value)
 		return false
 	}
 	return true
 }
 
-func (s *sessions) revoke(id string) {
+// revoke denies one cookie for the rest of this process's life. Callers must
+// verify the cookie first: an unauthenticated /logout is otherwise a way for
+// anyone on the LAN to grow this map without bound.
+func (s *sessions) revoke(value string, now time.Time) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	delete(s.live, id)
+	for existing, until := range s.revoked {
+		if now.After(until) {
+			delete(s.revoked, existing)
+		}
+	}
+	// A cookie can never outlive its own issue time plus the lifetime, and
+	// it was issued no later than now, so this is a safe upper bound on how
+	// long the entry has to be kept.
+	s.revoked[value] = now.Add(sessionLifetime)
 }
 
 type loginLimiter struct {
@@ -178,7 +289,7 @@ func (s *Server) requireAuth(mux *http.ServeMux) http.Handler {
 			return
 		}
 		cookie, err := r.Cookie(sessionCookieName)
-		if err != nil || !s.sessions.valid(cookie.Value, s.now()) {
+		if err != nil || !s.sessions.valid(s.sessionKey(), cookie.Value, s.now()) {
 			http.Redirect(w, r, "/login", http.StatusSeeOther)
 			return
 		}
@@ -229,6 +340,15 @@ func (s *Server) handleSetup(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
+	// The session signing secret is born here, with the password, and is
+	// written in the same atomic update: a device that has a hash but no
+	// secret could issue no cookie anyone could use.
+	secret, err := newSessionSecret()
+	if err != nil {
+		s.deps.Logger.Error("could not generate the session secret", "err", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
 
 	err = s.deps.Config.Update(func(c *config.Config) error {
 		// The authoritative check: it runs while Update holds the store's
@@ -238,6 +358,7 @@ func (s *Server) handleSetup(w http.ResponseWriter, r *http.Request) {
 			return errPasswordAlreadySet
 		}
 		c.Auth.PasswordHash = string(hash)
+		c.Auth.SessionSecret = secret
 		return nil
 	})
 	switch {
@@ -289,15 +410,51 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	s.startSession(w, r)
 }
 
-func (s *Server) startSession(w http.ResponseWriter, r *http.Request) {
-	id, err := s.sessions.issue(s.now())
+// sessionKey returns the current cookie signing key, or nil when the device
+// cannot have any valid session (no password, or no secret yet).
+func (s *Server) sessionKey() []byte {
+	cfg := s.deps.Config.Get()
+	return sessionKey(cfg.Auth.SessionSecret, cfg.Auth.PasswordHash)
+}
+
+// ensureSessionSecret backfills the secret on a device commissioned by an
+// older build, which stored a password hash and kept its sessions in memory.
+// handleSetup writes both at once, so this finds nothing to do on any device
+// commissioned by this build.
+func (s *Server) ensureSessionSecret() error {
+	if s.deps.Config.Get().Auth.SessionSecret != "" {
+		return nil
+	}
+	secret, err := newSessionSecret()
 	if err != nil {
+		return err
+	}
+	return s.deps.Config.Update(func(c *config.Config) error {
+		// Another request may have won the race while we were generating;
+		// its secret is as good as ours, and overwriting it would log that
+		// request's own session straight back out.
+		if c.Auth.SessionSecret == "" {
+			c.Auth.SessionSecret = secret
+		}
+		return nil
+	})
+}
+
+func (s *Server) startSession(w http.ResponseWriter, r *http.Request) {
+	if err := s.ensureSessionSecret(); err != nil {
+		s.deps.Logger.Error("could not persist the session secret", "err", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	value, err := s.sessions.issue(s.sessionKey(), s.now())
+	if err != nil {
+		s.deps.Logger.Error("could not issue a session", "err", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
 	http.SetCookie(w, &http.Cookie{
 		Name:     sessionCookieName,
-		Value:    id,
+		Value:    value,
 		Path:     "/",
 		HttpOnly: true,
 		SameSite: http.SameSiteLaxMode,
@@ -308,9 +465,22 @@ func (s *Server) startSession(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/", http.StatusSeeOther)
 }
 
+// handleLogout ends the session in the browser and denies that exact cookie
+// for the rest of this process's life. The cookie is verified first: /logout
+// needs no session of its own, so accepting any string here would let anyone
+// on the LAN grow the deny list without bound.
+//
+// A cookie signed by this device but revoked here does become usable again
+// after a restart, if someone kept a copy of it — that is the price of
+// sessions that survive a restart at all. The lever that invalidates a
+// session everywhere and permanently is changing the administrator password,
+// which changes the signing key with it.
 func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
+	now := s.now()
 	if cookie, err := r.Cookie(sessionCookieName); err == nil {
-		s.sessions.revoke(cookie.Value)
+		if s.sessions.valid(s.sessionKey(), cookie.Value, now) {
+			s.sessions.revoke(cookie.Value, now)
+		}
 	}
 	http.SetCookie(w, &http.Cookie{Name: sessionCookieName, Value: "", Path: "/", MaxAge: -1})
 	http.Redirect(w, r, "/login", http.StatusSeeOther)

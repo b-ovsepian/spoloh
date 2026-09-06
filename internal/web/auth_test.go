@@ -5,12 +5,16 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"golang.org/x/crypto/bcrypt"
+
+	"github.com/b-ovsepian/spoloh/internal/config"
+	"github.com/b-ovsepian/spoloh/internal/web"
 )
 
 func TestUnauthenticatedRequestRedirectsToSetupWhenNoPasswordIsSet(t *testing.T) {
@@ -380,5 +384,153 @@ func TestSetupRejectsACrossSiteOrigin(t *testing.T) {
 	}
 	if store.Get().Auth.PasswordHash != "" {
 		t.Fatal("a cross-site setup still stored a hash")
+	}
+}
+
+// The whole reason sessions moved out of memory: systemd restarts this unit
+// as routine maintenance (Restart=always, WatchdogSec, self-update later),
+// and every restart used to invalidate every cookie. A wall-mounted dashboard
+// then reconnected its SSE stream into a 303 to /login, which an EventSource
+// treats as a failed connection and never retries — leaving the wall frozen
+// on a stale frame with no sign that it was stale.
+func TestASessionSurvivesADaemonRestart(t *testing.T) {
+	srv, store := newServerWithStore(t)
+	setPassword(t, srv, "correct horse battery staple")
+	cookie := login(t, srv, "correct horse battery staple")
+
+	// A brand-new Server over the same configuration file is exactly what
+	// the next process is: nothing carries over but what was persisted.
+	restarted, err := web.New(web.Deps{Config: store})
+	if err != nil {
+		t.Fatalf("web.New: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.AddCookie(cookie)
+	rec := httptest.NewRecorder()
+	restarted.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: the session did not survive the restart", rec.Code)
+	}
+}
+
+func TestSetupPersistsASessionSecretThatIsNotTheCookie(t *testing.T) {
+	srv, store := newServerWithStore(t)
+	setPassword(t, srv, "correct horse battery staple")
+
+	secret := store.Get().Auth.SessionSecret
+	if secret == "" {
+		t.Fatal("setup did not persist a session signing secret")
+	}
+	cookie := login(t, srv, "correct horse battery staple")
+	if strings.Contains(cookie.Value, secret) {
+		t.Fatal("the session cookie carries the signing secret itself")
+	}
+}
+
+// The stateless cookie cannot be revoked by deleting a server-side entry, so
+// the lever that logs every device out — the one to reach for if a cookie is
+// believed stolen — is changing the administrator password. The signing key
+// is derived from the hash, so it has to move with it.
+func TestChangingThePasswordInvalidatesEverySession(t *testing.T) {
+	srv, store := newServerWithStore(t)
+	setPassword(t, srv, "correct horse battery staple")
+	cookie := login(t, srv, "correct horse battery staple")
+
+	hash, err := bcrypt.GenerateFromPassword([]byte("a different passphrase"), bcrypt.MinCost)
+	if err != nil {
+		t.Fatalf("GenerateFromPassword: %v", err)
+	}
+	if err := store.Update(func(c *config.Config) error {
+		c.Auth.PasswordHash = string(hash)
+		return nil
+	}); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.AddCookie(cookie)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("status = %d, want 303: the old session survived a password change", rec.Code)
+	}
+}
+
+// The cookie carries its own issue time in the clear, so the signature is the
+// only thing stopping a client from granting itself an unexpiring session.
+func TestATamperedSessionCookieIsRejected(t *testing.T) {
+	srv, _ := newServerWithStore(t)
+	setPassword(t, srv, "correct horse battery staple")
+	cookie := login(t, srv, "correct horse battery staple")
+
+	parts := strings.Split(cookie.Value, ".")
+	if len(parts) != 4 {
+		t.Fatalf("cookie has %d parts (%q), want version.issued.nonce.signature", len(parts), cookie.Value)
+	}
+	forged := make([]string, len(parts))
+	copy(forged, parts)
+	forged[1] = strconv.FormatInt(time.Now().Add(365*24*time.Hour).Unix(), 10)
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.AddCookie(&http.Cookie{Name: "spoloh_session", Value: strings.Join(forged, ".")})
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("status = %d, want 303 for a cookie whose issue time was edited", rec.Code)
+	}
+}
+
+// These boards have no RTC. After a power cut the clock reads whatever the
+// filesystem last recorded until systemd-timesyncd catches up, so a perfectly
+// good cookie can look newer than "now" for the first minute of every boot.
+// Rejecting it would log the operator out during exactly the window this
+// change exists to protect.
+func TestASessionIssuedAheadOfAnUnsyncedClockIsAccepted(t *testing.T) {
+	srv, _ := newServerWithStore(t)
+	setPassword(t, srv, "correct horse battery staple")
+
+	now := time.Now()
+	srv.SetNow(func() time.Time { return now })
+	cookie := login(t, srv, "correct horse battery staple")
+
+	now = now.Add(-2 * time.Hour) // the clock steps backwards, as it does on boot
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.AddCookie(cookie)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: a backwards clock step logged the operator out", rec.Code)
+	}
+}
+
+// /logout needs no session of its own, so a cookie it cannot verify must not
+// be allowed to leave anything behind in the deny list — that would be an
+// unauthenticated way to grow the daemon's memory from the LAN.
+func TestLogoutIgnoresACookieItDidNotSign(t *testing.T) {
+	srv, _ := newServerWithStore(t)
+	setPassword(t, srv, "correct horse battery staple")
+	cookie := login(t, srv, "correct horse battery staple")
+
+	req := httptest.NewRequest(http.MethodPost, "/logout", nil)
+	req.AddCookie(&http.Cookie{Name: "spoloh_session", Value: "v1.1.forged.signature"})
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("logout status = %d, want 303 even for an unrecognised cookie", rec.Code)
+	}
+
+	// The real session must be untouched by someone else's logout.
+	req = httptest.NewRequest(http.MethodGet, "/", nil)
+	req.AddCookie(cookie)
+	rec = httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: a forged logout ended a real session", rec.Code)
 	}
 }
