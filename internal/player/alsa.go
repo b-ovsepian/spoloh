@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os/exec"
+	"strings"
 )
 
 // ALSA shells out to alsa-utils. Exec is deliberate: it keeps the binary free
@@ -35,6 +36,42 @@ func (a ALSA) mixer() string {
 	return "Master"
 }
 
+// ctlDevice derives the amixer control name from an aplay PCM device name.
+// aplay -D takes a PCM ("plughw:1,0", "sysdefault:CARD=Headphones"); amixer
+// -D takes a control ("hw:1", "hw:CARD=Headphones"). Handing the PCM name to
+// amixer fails on any non-default card, so volume is silently never applied.
+// An empty result means "pass no -D at all and let amixer use the default
+// card" — used both for "" / "default" and for anything unrecognised.
+func ctlDevice(pcm string) string {
+	if pcm == "" || pcm == "default" {
+		return ""
+	}
+	idx := strings.IndexByte(pcm, ':')
+	if idx < 0 {
+		return ""
+	}
+	seg := pcm[idx+1:]
+	if c := strings.IndexByte(seg, ','); c >= 0 {
+		seg = seg[:c]
+	}
+	if strings.HasPrefix(seg, "CARD=") {
+		return "hw:" + seg
+	}
+	if seg != "" && isDigits(seg) {
+		return "hw:" + seg
+	}
+	return ""
+}
+
+func isDigits(s string) bool {
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
+}
+
 func (a ALSA) SetVolume(ctx context.Context, device string, pct int) error {
 	if pct < 0 {
 		pct = 0
@@ -43,8 +80,8 @@ func (a ALSA) SetVolume(ctx context.Context, device string, pct int) error {
 		pct = 100
 	}
 	args := []string{"-q"}
-	if device != "" && device != "default" {
-		args = append(args, "-D", device)
+	if ctl := ctlDevice(device); ctl != "" {
+		args = append(args, "-D", ctl)
 	}
 	args = append(args, "sset", a.mixer(), fmt.Sprintf("%d%%", pct))
 

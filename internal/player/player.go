@@ -103,7 +103,7 @@ func (p *Player) Run(ctx context.Context) {
 		if ctx.Err() != nil {
 			return
 		}
-		r, ok := p.pop()
+		r, playCtx, cancel, ok := p.start(ctx)
 		if !ok {
 			select {
 			case <-ctx.Done():
@@ -112,27 +112,29 @@ func (p *Player) Run(ctx context.Context) {
 			}
 			continue
 		}
-		p.playOne(ctx, r)
+		p.playOne(playCtx, cancel, r)
 	}
 }
 
-func (p *Player) pop() (Request, bool) {
+// start pops the next request off the queue and installs it as current in a
+// single lock hold. Popping and installing must be atomic: a request that is
+// off the queue but not yet current is invisible to both Play's preemption
+// check and Stop, so it would play to completion no matter which of the two
+// is called in that gap.
+func (p *Player) start(parent context.Context) (Request, context.Context, context.CancelFunc, bool) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if len(p.queue) == 0 {
-		return Request{}, false
+		return Request{}, nil, nil, false
 	}
 	r := p.queue[0]
 	p.queue = p.queue[1:]
-	return r, true
+	ctx, cancel := context.WithCancel(parent)
+	p.cur = &current{req: r, cancel: cancel}
+	return r, ctx, cancel, true
 }
 
-func (p *Player) playOne(parent context.Context, r Request) {
-	ctx, cancel := context.WithCancel(parent)
-	p.mu.Lock()
-	p.cur = &current{req: r, cancel: cancel}
-	p.mu.Unlock()
-
+func (p *Player) playOne(ctx context.Context, cancel context.CancelFunc, r Request) {
 	defer func() {
 		cancel()
 		p.mu.Lock()
@@ -141,8 +143,13 @@ func (p *Player) playOne(parent context.Context, r Request) {
 	}()
 
 	// A card without a Master control must not stop the sound from playing.
-	if err := p.backend.SetVolume(ctx, p.device, r.Volume); err != nil {
+	if err := p.backend.SetVolume(ctx, p.device, r.Volume); err != nil && ctx.Err() == nil {
 		p.reportError(r, "volume", err)
+	}
+	// Cancelled while setting the volume (a preemption or Stop landed in that
+	// window): the request is dead, do not hand it to Play at all.
+	if ctx.Err() != nil {
+		return
 	}
 	if err := p.backend.Play(ctx, p.device, r.Path); err != nil && ctx.Err() == nil {
 		p.reportError(r, "play", err)

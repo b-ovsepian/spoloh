@@ -15,10 +15,20 @@ type fakeBackend struct {
 	calls   []string
 	started chan string
 	hold    chan struct{}
+
+	volStarted chan struct{}
+	volHold    chan struct{}
 }
 
 func newFake() *fakeBackend {
-	return &fakeBackend{started: make(chan string, 8), hold: make(chan struct{})}
+	closed := make(chan struct{})
+	close(closed)
+	return &fakeBackend{
+		started:    make(chan string, 8),
+		hold:       make(chan struct{}),
+		volStarted: make(chan struct{}, 8),
+		volHold:    closed, // SetVolume does not block by default
+	}
 }
 
 func (f *fakeBackend) record(s string) {
@@ -35,9 +45,44 @@ func (f *fakeBackend) Calls() []string {
 	return out
 }
 
-func (f *fakeBackend) SetVolume(_ context.Context, _ string, pct int) error {
+// blockVolume makes the next SetVolume call park until its context is
+// cancelled or releaseVolume is called. It must be set up before the Play
+// request that should be held is submitted. Only the one call that consumes
+// the block is affected; SetVolume resets to non-blocking for calls after it.
+func (f *fakeBackend) blockVolume() {
+	f.mu.Lock()
+	f.volHold = make(chan struct{})
+	f.mu.Unlock()
+}
+
+func (f *fakeBackend) releaseVolume() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	close(f.volHold)
+}
+
+func (f *fakeBackend) SetVolume(ctx context.Context, _ string, pct int) error {
 	f.record(fmt.Sprintf("volume=%d", pct))
-	return nil
+
+	f.mu.Lock()
+	hold := f.volHold
+	closed := make(chan struct{})
+	close(closed)
+	f.volHold = closed // only the call that grabbed `hold` blocks
+	f.mu.Unlock()
+
+	select {
+	case f.volStarted <- struct{}{}:
+	default:
+	}
+
+	select {
+	case <-ctx.Done():
+		f.record(fmt.Sprintf("volcancelled=%d", pct))
+		return ctx.Err()
+	case <-hold:
+		return nil
+	}
 }
 
 func (f *fakeBackend) Play(ctx context.Context, _, path string) error {
@@ -61,6 +106,33 @@ func waitStart(t *testing.T, f *fakeBackend) string {
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for playback to start")
 		return ""
+	}
+}
+
+// waitStartFor drains f.started until it sees want, ignoring any other path
+// (a request whose volume stage was cancelled still makes a fleeting, already
+// cancelled entry into Play).
+func waitStartFor(t *testing.T, f *fakeBackend, want string) {
+	t.Helper()
+	deadline := time.After(2 * time.Second)
+	for {
+		select {
+		case p := <-f.started:
+			if p == want {
+				return
+			}
+		case <-deadline:
+			t.Fatalf("timed out waiting for %q to start", want)
+		}
+	}
+}
+
+func waitVolStart(t *testing.T, f *fakeBackend) {
+	t.Helper()
+	select {
+	case <-f.volStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for SetVolume to start")
 	}
 }
 
@@ -183,5 +255,59 @@ func TestCurrentReportsPlayingRequest(t *testing.T) {
 	got, ok := p.Current()
 	if !ok || got.EventID != "alert-start" {
 		t.Fatalf("Current() = %+v, %v", got, ok)
+	}
+}
+
+// Regression test for a logic race between popping a request off the queue
+// and installing it as current: if that step is not atomic, a concurrent
+// Play with a higher priority can find nothing installed to cancel and the
+// popped request plays to completion regardless.
+func TestAlertPreemptsWhileSettingVolume(t *testing.T) {
+	f := newFake()
+	f.blockVolume()
+	p := player.New(f, "default")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go p.Run(ctx)
+
+	p.Play(player.Request{EventID: "silence", Path: "/s/metronome.wav", Volume: 85, Priority: player.PriorityScheduled})
+	waitVolStart(t, f) // scheduled request is now current, parked in SetVolume
+
+	p.Play(player.Request{EventID: "alert-start", Path: "/s/siren.wav", Volume: 100, Priority: player.PriorityAlert})
+
+	waitStartFor(t, f, "/s/siren.wav")
+
+	var sawCancel bool
+	for _, c := range f.Calls() {
+		if c == "volcancelled=85" {
+			sawCancel = true
+		}
+	}
+	if !sawCancel {
+		t.Fatalf("the scheduled request's volume stage was not cancelled: %v", f.Calls())
+	}
+}
+
+// Same root cause, from Stop's side: a request parked in its volume stage
+// must still be cancelled by Stop rather than being allowed to reach Play.
+func TestStopCancelsWhileSettingVolume(t *testing.T) {
+	f := newFake()
+	f.blockVolume()
+	p := player.New(f, "default")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go p.Run(ctx)
+
+	p.Play(player.Request{EventID: "silence", Path: "/s/metronome.wav", Volume: 85})
+	waitVolStart(t, f) // request is now current, parked in SetVolume
+
+	p.Stop()
+
+	select {
+	case path := <-f.started:
+		t.Fatalf("Stop must prevent playback, but got play=%q", path)
+	case <-time.After(200 * time.Millisecond):
 	}
 }
