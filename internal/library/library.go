@@ -223,6 +223,43 @@ func (l *Library) convert(ctx context.Context, src, dst string) error {
 	return os.Rename(tmpName, dst)
 }
 
+// checkStoredWAV validates a file that is already sitting in the library. It
+// is stricter than parseWAV alone: as well as requiring a header that holds
+// together, it requires the file to be at least as long as its own RIFF header
+// says it is. That second check is the one that matters here — a power cut
+// partway through writing a 15 MB default leaves a file whose header parses
+// perfectly well and whose audio simply stops halfway.
+//
+// A file LONGER than its declared size passes: trailing chunks are legal and
+// common, and being wrong in that direction would delete an operator's own
+// recording. Uploads deliberately do not go through this check; Add's contract
+// is about the declared format, and a stricter reading of RIFF sizes there
+// would reject the streamed-WAV encoders that write a placeholder length.
+func checkStoredWAV(path string) error {
+	if _, err := parseWAV(path); err != nil {
+		return err
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	var riff [8]byte
+	if _, err := io.ReadFull(f, riff[:]); err != nil {
+		return fmt.Errorf("not a WAV file: %w", err)
+	}
+	declared := int64(binary.LittleEndian.Uint32(riff[4:8])) + 8
+	info, err := f.Stat()
+	if err != nil {
+		return err
+	}
+	if info.Size() < declared {
+		return fmt.Errorf("truncated WAV: %d bytes on disk, the header declares %d", info.Size(), declared)
+	}
+	return nil
+}
+
 // wavFormat is the audio format declared by a WAV file's fmt chunk.
 type wavFormat struct {
 	FormatTag     uint16

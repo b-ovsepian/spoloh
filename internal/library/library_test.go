@@ -301,7 +301,11 @@ func TestEnsureDefaultsDoesNotOverwrite(t *testing.T) {
 		t.Fatalf("EnsureDefaults: %v", err)
 	}
 
-	custom := []byte("operator recording, definitely not the default siren")
+	// A complete WAV, because that is what an operator's own recording is.
+	// EnsureDefaults now validates before it skips, so the thing being pinned
+	// here is "a usable file is left alone", not "any bytes are left alone" —
+	// see TestEnsureDefaultsReplacesATruncatedDefault for the other half.
+	custom := makeWAV(1, 2, 44100, 16, []byte("operator recording, not the default siren"))
 	if err := os.WriteFile(filepath.Join(dir, "siren.wav"), custom, 0o644); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
@@ -315,6 +319,66 @@ func TestEnsureDefaultsDoesNotOverwrite(t *testing.T) {
 	}
 	if !bytes.Equal(got, custom) {
 		t.Fatal("EnsureDefaults overwrote an operator's own siren")
+	}
+}
+
+// The defaults are about 15 MB written on first boot, so a power cut leaves a
+// truncated one behind — the exact scenario the spec's success criteria name.
+// Checking only for existence meant it was skipped forever, Has() called it
+// usable, and every alert handed the wreckage to aplay.
+func TestEnsureDefaultsReplacesATruncatedDefault(t *testing.T) {
+	dir := t.TempDir()
+	lib := library.New(dir, &fakeConv{available: false})
+	if err := lib.EnsureDefaults(); err != nil {
+		t.Fatalf("EnsureDefaults: %v", err)
+	}
+	path := filepath.Join(dir, "siren.wav")
+	full, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+
+	// Cut it off mid-audio: the RIFF and fmt headers survive intact, which is
+	// what a power cut during a sequential write actually leaves.
+	truncated := full[:len(full)/2]
+	if err := os.WriteFile(path, truncated, 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	if err := lib.EnsureDefaults(); err != nil {
+		t.Fatalf("second EnsureDefaults: %v", err)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if !bytes.Equal(got, full) {
+		t.Fatalf("a truncated default was not healed: %d bytes on disk, want the full %d", len(got), len(full))
+	}
+}
+
+// A default that is not a WAV at all — a zero-length file from a failed write,
+// say — is wreckage too, and must be replaced rather than served.
+func TestEnsureDefaultsReplacesAFileThatIsNotAWAV(t *testing.T) {
+	dir := t.TempDir()
+	lib := library.New(dir, &fakeConv{available: false})
+	path := filepath.Join(dir, "siren.wav")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(path, nil, 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	if err := lib.EnsureDefaults(); err != nil {
+		t.Fatalf("EnsureDefaults: %v", err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("Stat: %v", err)
+	}
+	if info.Size() == 0 {
+		t.Fatal("a zero-length siren.wav survived EnsureDefaults")
 	}
 }
 
