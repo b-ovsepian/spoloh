@@ -4,7 +4,9 @@ After=network-online.target sound.target
 Wants=network-online.target
 
 [Service]
-Type=simple
+Type=notify
+NotifyAccess=main
+WatchdogSec=60
 # The spoloh user must exist before this unit starts. Install it with
 # deploy/spoloh.sysusers (see that file's header for the exact command);
 # ProtectHome/ProtectSystem below give it no other way onto the box.

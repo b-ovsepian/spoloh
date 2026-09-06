@@ -26,6 +26,7 @@ import (
 	"github.com/spoloh/spoloh/internal/eventlog"
 	"github.com/spoloh/spoloh/internal/library"
 	"github.com/spoloh/spoloh/internal/player"
+	"github.com/spoloh/spoloh/internal/watchdog"
 )
 
 // version is overwritten at build time with -ldflags.
@@ -105,6 +106,12 @@ func run(configPath, dataDir string) error {
 	}
 	machine.Restore(p)
 
+	wd, err := watchdog.Open()
+	if err != nil {
+		logger.Warn("could not open the systemd notify socket", "err", err)
+	}
+	defer wd.Close()
+
 	eng := engine.New(engine.Deps{
 		Config:    func() *config.Config { return cfg },
 		StatePath: statePath,
@@ -116,6 +123,7 @@ func run(configPath, dataDir string) error {
 		Clock:     clock.System{Loc: loc},
 		Sync:      clock.Timedatectl{},
 		Logger:    logger,
+		Watchdog:  wd,
 	})
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -128,8 +136,11 @@ func run(configPath, dataDir string) error {
 		"sounds", soundsDir,
 		"audio_device", cfg.Audio.Device,
 	)
+	wd.Ready()
 
-	if err := eng.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
+	err = eng.Run(ctx)
+	wd.Stopping()
+	if err != nil && !errors.Is(err, context.Canceled) {
 		return err
 	}
 	logger.Info("spoloh stopped cleanly")

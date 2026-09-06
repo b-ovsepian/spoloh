@@ -18,6 +18,7 @@ import (
 	"github.com/spoloh/spoloh/internal/player"
 	"github.com/spoloh/spoloh/internal/rules"
 	"github.com/spoloh/spoloh/internal/scheduler"
+	"github.com/spoloh/spoloh/internal/watchdog"
 )
 
 type Deps struct {
@@ -31,6 +32,11 @@ type Deps struct {
 	Clock     clock.Clock
 	Sync      clock.SyncChecker
 	Logger    *slog.Logger
+
+	// Watchdog, when non-nil, is pinged at the end of every completed tick.
+	// Pinging from the loop rather than from a timer is the point: a stalled
+	// loop stops pinging and systemd restarts the daemon.
+	Watchdog *watchdog.Notifier
 }
 
 // heartbeatInterval bounds how often the liveness line is written. Without
@@ -104,6 +110,7 @@ func (e *Engine) Tick(ctx context.Context) {
 	}
 
 	if now.Before(e.nextPoll) {
+		e.d.Watchdog.Alive()
 		return
 	}
 	if err := e.PollOnce(ctx); err != nil {
@@ -116,12 +123,17 @@ func (e *Engine) Tick(ctx context.Context) {
 		e.nextPoll = now.Add(wait)
 		e.pollWait = wait
 		e.d.Logger.Warn("alert poll failed", "err", err, "retry_in", wait, "attempt", e.attempt)
+		// A failed poll still counts as progress: upstream being down is not
+		// the daemon being stuck, and restarting on it would turn an outage
+		// into a reboot loop.
+		e.d.Watchdog.Alive()
 		return
 	}
 	e.attempt = 0
 	wait := e.pollInterval()
 	e.nextPoll = now.Add(wait)
 	e.pollWait = wait
+	e.d.Watchdog.Alive()
 }
 
 // heartbeat writes a low-rate liveness line: the time of the last successful
