@@ -3,19 +3,58 @@ package web_test
 import (
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/b-ovsepian/spoloh/internal/configstore"
 	"github.com/b-ovsepian/spoloh/internal/web"
 )
 
-func newServer(t *testing.T) *web.Server {
+func newServerWithStore(t *testing.T) (*web.Server, *configstore.Store) {
 	t.Helper()
-	srv, err := web.New(web.Deps{})
+	store, err := configstore.Open(filepath.Join(t.TempDir(), "config.json"))
+	if err != nil {
+		t.Fatalf("configstore.Open: %v", err)
+	}
+	srv, err := web.New(web.Deps{Config: store})
 	if err != nil {
 		t.Fatalf("web.New: %v", err)
 	}
+	return srv, store
+}
+
+func newServer(t *testing.T) *web.Server {
+	t.Helper()
+	srv, _ := newServerWithStore(t)
 	return srv
+}
+
+func postForm(path string, form url.Values) *http.Request {
+	req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	return req
+}
+
+func setPassword(t *testing.T, srv *web.Server, password string) {
+	t.Helper()
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, postForm("/setup", url.Values{"password": {password}, "confirm": {password}}))
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("setup failed: status %d", rec.Code)
+	}
+}
+
+func sessionCookie(t *testing.T, rec *httptest.ResponseRecorder) *http.Cookie {
+	t.Helper()
+	for _, c := range rec.Result().Cookies() {
+		if c.Name == "spoloh_session" {
+			return c
+		}
+	}
+	t.Fatal("no session cookie was issued")
+	return nil
 }
 
 func TestStaticAssetsAreServedFromTheBinary(t *testing.T) {

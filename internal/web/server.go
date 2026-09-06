@@ -32,9 +32,15 @@ type Deps struct {
 }
 
 type Server struct {
-	deps Deps
-	tmpl *template.Template
-	mux  *http.ServeMux
+	deps     Deps
+	tmpl     *template.Template
+	mux      *http.ServeMux
+	sessions *sessions
+	limiter  *loginLimiter
+	// now stands in for time.Now so session expiry is testable; it is
+	// unexported because nothing outside this package needs to set it, and
+	// Deps is frozen for this task.
+	now func() time.Time
 }
 
 func New(d Deps) (*Server, error) {
@@ -46,15 +52,32 @@ func New(d Deps) (*Server, error) {
 		return nil, err
 	}
 
-	s := &Server{deps: d, tmpl: tmpl, mux: http.NewServeMux()}
+	s := &Server{
+		deps:     d,
+		tmpl:     tmpl,
+		mux:      http.NewServeMux(),
+		sessions: newSessions(),
+		limiter:  newLoginLimiter(),
+		now:      time.Now,
+	}
 
 	static, err := fs.Sub(staticFS, "static")
 	if err != nil {
 		return nil, err
 	}
 	s.mux.Handle("GET /static/", http.StripPrefix("/static/", http.FileServer(http.FS(static))))
+	s.mux.HandleFunc("/setup", s.handleSetup)
+	s.mux.HandleFunc("/login", s.handleLogin)
+	s.mux.HandleFunc("POST /logout", s.handleLogout)
+	s.mux.Handle("GET /{$}", s.requireAuth(http.HandlerFunc(s.handleIndex)))
 
 	return s, nil
+}
+
+// handleIndex is a placeholder for the dashboard's home page: authentication
+// is the only thing this task adds behind it. Later tasks replace the body.
+func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusOK)
 }
 
 // Handler returns the fully wrapped handler, middleware included.

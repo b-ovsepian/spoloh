@@ -1,0 +1,24 @@
+{{define "title"}}Налаштування — Spoloh{{end}}
+{{define "content"}}
+<div class="card mx-auto max-w-sm p-6">
+  <header class="mb-4">
+    <h1 class="text-lg font-semibold">Створення пароля адміністратора</h1>
+  </header>
+  {{if .Error}}
+  <div class="alert mb-4" data-variant="destructive" role="alert">
+    <section><p>{{.Error}}</p></section>
+  </div>
+  {{end}}
+  <form method="post" action="/setup" class="grid gap-4">
+    <div class="field">
+      <label for="password">Пароль</label>
+      <input class="input" type="password" id="password" name="password" minlength="10" required autofocus>
+    </div>
+    <div class="field">
+      <label for="confirm">Підтвердження пароля</label>
+      <input class="input" type="password" id="confirm" name="confirm" minlength="10" required>
+    </div>
+    <button class="btn" type="submit">Зберегти</button>
+  </form>
+</div>
+{{end}}
