@@ -27,7 +27,7 @@
           <td>{{.EventID}}</td>
           <td>{{.Sound}}</td>
           <td>{{if .OK}}<span class="text-sm">ОК</span>{{else}}<span class="text-destructive font-semibold">Помилка</span>{{end}}</td>
-          <td class="text-sm text-muted-foreground break-all">{{.Err}}</td>
+          <td class="text-sm text-muted-foreground whitespace-normal wrap-break-word">{{.Err}}</td>
         </tr>
         {{end}}
       </tbody>
