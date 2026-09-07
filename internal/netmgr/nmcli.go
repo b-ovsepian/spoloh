@@ -295,6 +295,13 @@ func (m NMCLI) Connect(ctx context.Context, ssid, psk string) error {
 
 // StartHotspot raises a local access point with the given SSID and
 // passphrase, under a fixed connection name so StopHotspot can find it again.
+//
+// The command carries no --wait 0, so nmcli activates the connection
+// synchronously: a nil error means the interface is already on the hotspot
+// profile by the time this call returns, not merely that activation was
+// requested. netmgr.Supervisor's "raise it once, not every tick" behaviour
+// depends on that — the very next Status call is expected to report
+// HotspotUp true.
 func (m NMCLI) StartHotspot(ctx context.Context, ssid, psk string) error {
 	args := []string{"device", "wifi", "hotspot", "con-name", hotspotConnID, "ssid", ssid}
 	if psk != "" {
