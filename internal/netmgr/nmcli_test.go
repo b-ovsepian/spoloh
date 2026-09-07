@@ -359,3 +359,26 @@ func TestStatusEscapedColonInConnectionName(t *testing.T) {
 		t.Error("got HotspotUp = true, want false")
 	}
 }
+
+func TestStatusDoesNotTreatAMalformedEscapeAsTheHotspot(t *testing.T) {
+	// nmcli escapes ':' and '\' and nothing else, so a backslash before any
+	// other character is not an escape it wrote. Swallowing it anyway would
+	// make "spoloh\-hotspot" decode to the hotspot connection name, and this
+	// device would report an access point it is not running.
+	rec := &recorder{out: []byte("wlan0:wifi:connected:spoloh\\-hotspot\n")}
+	m := netmgr.NMCLI{Run: rec.run}
+
+	got, err := m.Status(context.Background())
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	if got.HotspotUp {
+		t.Error(`"spoloh\-hotspot" is not the hotspot connection, so HotspotUp must be false`)
+	}
+	if !got.Connected {
+		t.Error("wlan0 is joined to an upstream connection, so Connected must be true")
+	}
+	if want := `spoloh\-hotspot`; got.SSID != want {
+		t.Errorf("SSID = %q, want %q — the backslash is not an nmcli escape", got.SSID, want)
+	}
+}

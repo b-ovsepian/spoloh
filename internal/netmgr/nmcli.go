@@ -237,7 +237,10 @@ func splitLines(out []byte) []string {
 // a field's value as \: and \\, so this splits only on colons that are not
 // preceded by a backslash, and unescapes each field as it goes — an escaped
 // colon becomes a literal colon in the field, not a field boundary, and an
-// escaped backslash collapses to one backslash.
+// escaped backslash collapses to one backslash. A backslash before any
+// other byte is not an escape nmcli would have written, so it is kept
+// literally rather than dropped: silently dropping it would let a
+// malformed value decode into a string it is not.
 //
 // This does not by itself guarantee the right number of fields: if a caller
 // somehow receives a value with an unescaped colon in it (nmcli not
@@ -250,21 +253,28 @@ func splitLines(out []byte) []string {
 func splitTerseFields(line string) []string {
 	var fields []string
 	var cur strings.Builder
-	escaped := false
-	for _, r := range line {
-		if escaped {
-			cur.WriteRune(r)
-			escaped = false
-			continue
-		}
-		switch r {
+	// Bytes, not runes: ':' and '\\' are ASCII and cannot occur inside a
+	// multi-byte UTF-8 sequence, so scanning bytes leaves every other
+	// character untouched while making the one-byte lookahead below trivial.
+	for i := 0; i < len(line); i++ {
+		switch c := line[i]; c {
 		case '\\':
-			escaped = true
+			// nmcli escapes ':' and '\\' and nothing else. A backslash before
+			// any other byte is therefore not an escape nmcli wrote, so it is
+			// kept literally instead of being swallowed. Swallowing it would
+			// let a malformed "spoloh\\-hotspot" decode to hotspotConnID and be
+			// mistaken for this device's own access point.
+			if i+1 < len(line) && (line[i+1] == ':' || line[i+1] == '\\') {
+				cur.WriteByte(line[i+1])
+				i++
+				continue
+			}
+			cur.WriteByte(c)
 		case ':':
 			fields = append(fields, cur.String())
 			cur.Reset()
 		default:
-			cur.WriteRune(r)
+			cur.WriteByte(c)
 		}
 	}
 	fields = append(fields, cur.String())
