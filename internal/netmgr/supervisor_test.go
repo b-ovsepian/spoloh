@@ -320,3 +320,46 @@ func TestRunReturnsOnContextCancellation(t *testing.T) {
 		t.Fatal("Run did not return after its context was cancelled")
 	}
 }
+
+// deadlineProbe records whether the context a Supervisor hands to the manager
+// carries a deadline. It reports a disconnected device so Tick takes its
+// longest path, through StartHotspot.
+type deadlineProbe struct {
+	statusHadDeadline  bool
+	hotspotHadDeadline bool
+}
+
+func (p *deadlineProbe) Status(ctx context.Context) (netmgr.Status, error) {
+	_, p.statusHadDeadline = ctx.Deadline()
+	return netmgr.Status{Connected: false}, nil
+}
+
+func (p *deadlineProbe) StartHotspot(ctx context.Context, ssid, psk string) error {
+	_, p.hotspotHadDeadline = ctx.Deadline()
+	return nil
+}
+
+func (p *deadlineProbe) Scan(context.Context) ([]netmgr.Network, error) { return nil, nil }
+func (p *deadlineProbe) Connect(context.Context, string, string) error  { return nil }
+func (p *deadlineProbe) StopHotspot(context.Context) error              { return nil }
+
+func TestTickBoundsEveryCommand(t *testing.T) {
+	// A wedged NetworkManager must not stop the supervisor for good. Tick runs
+	// in Run's only goroutine, so an unbounded nmcli call ends the supervision
+	// of a device whose access point is its last way back.
+	p := &deadlineProbe{}
+	clk := clock.NewFake(boot)
+	cfg := config.Default()
+	logger := slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil))
+	s := netmgr.NewSupervisor(p, func() *config.Config { return cfg }, clk, logger)
+
+	clk.Advance(46 * time.Second)
+	s.Tick(context.Background())
+
+	if !p.statusHadDeadline {
+		t.Error("Status ran on a context with no deadline; a hung nmcli would stall the supervisor forever")
+	}
+	if !p.hotspotHadDeadline {
+		t.Error("StartHotspot ran on a context with no deadline")
+	}
+}

@@ -24,6 +24,19 @@ const tickInterval = 5 * time.Second
 // off SD cards that wear out (spec §5.7).
 const failureLogInterval = 5 * time.Minute
 
+// tickDeadline caps the nmcli work of one tick. NetworkManager can block for
+// a long time or forever — a wedged wpa_supplicant, a scan that never comes
+// back, an activation waiting on a DHCP lease — and Tick runs synchronously in
+// Run's only goroutine. Without a bound, one hung command stops the supervisor
+// permanently, and a device that stops supervising itself never raises the
+// access point that is its last way back. internal/engine bounds its poll the
+// same way and for the same reason.
+//
+// It is deliberately much larger than tickInterval: raising an access point
+// legitimately takes several seconds, and Run's ticker drops ticks it cannot
+// deliver, so a slow tick costs cadence rather than correctness.
+const tickDeadline = 30 * time.Second
+
 // Supervisor keeps the device reachable. It holds no belief about whether the
 // hotspot is up — it reads that from the manager each tick, because a belief
 // the world can contradict is a bug waiting to happen.
@@ -79,6 +92,9 @@ func (s *Supervisor) Run(ctx context.Context) {
 }
 
 func (s *Supervisor) Tick(ctx context.Context) {
+	ctx, cancel := context.WithTimeout(ctx, tickDeadline)
+	defer cancel()
+
 	st, err := s.mgr.Status(ctx)
 	if err != nil {
 		// Unknown is not the same as disconnected. Raising an access point on a
