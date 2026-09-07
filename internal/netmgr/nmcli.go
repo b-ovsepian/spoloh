@@ -2,6 +2,7 @@ package netmgr
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os/exec"
 	"sort"
@@ -106,6 +107,16 @@ func redactPassword(args []string) (secret string, redacted []string) {
 func execRun(ctx context.Context, name string, args ...string) ([]byte, error) {
 	return exec.CommandContext(ctx, name, args...).CombinedOutput()
 }
+
+// errEmptyAPPassword is returned rather than raising an open access point.
+// nmcli takes "password" as an optional argument, so omitting it produces an
+// AP anyone within range can join — and joining this one reaches a dashboard
+// that drives a school's public address system. An unreachable device costs a
+// site visit; an open one lets a stranger sound an air raid alert or silence a
+// real one. config.Validate deliberately still accepts an empty password as
+// the "not generated yet" state, and netmgr.EnsureAPPassword fills it in at
+// startup, so this guard is the backstop for a path that gets past both.
+var errEmptyAPPassword = errors.New("refusing to raise an open access point: no password is set")
 
 // Scan lists visible Wi-Fi networks, one per SSID, strongest signal first.
 func (m NMCLI) Scan(ctx context.Context) ([]Network, error) {
@@ -303,10 +314,10 @@ func (m NMCLI) Connect(ctx context.Context, ssid, psk string) error {
 // depends on that — the very next Status call is expected to report
 // HotspotUp true.
 func (m NMCLI) StartHotspot(ctx context.Context, ssid, psk string) error {
-	args := []string{"device", "wifi", "hotspot", "con-name", hotspotConnID, "ssid", ssid}
-	if psk != "" {
-		args = append(args, "password", psk)
+	if psk == "" {
+		return errEmptyAPPassword
 	}
+	args := []string{"device", "wifi", "hotspot", "con-name", hotspotConnID, "ssid", ssid, "password", psk}
 	_, err := m.run(ctx, args...)
 	return err
 }

@@ -382,3 +382,43 @@ func TestStatusDoesNotTreatAMalformedEscapeAsTheHotspot(t *testing.T) {
 		t.Errorf("SSID = %q, want %q — the backslash is not an nmcli escape", got.SSID, want)
 	}
 }
+
+func TestStartHotspotRefusesAnEmptyPassword(t *testing.T) {
+	// nmcli treats "password" as optional, so an empty one raises an access
+	// point anyone in range can join — reaching a dashboard that drives a
+	// school's public address system. Refusing is the safer failure: an
+	// unreachable device costs a site visit, an open one costs control of the
+	// alerts themselves.
+	rec := &recorder{}
+	m := netmgr.NMCLI{Run: rec.run}
+
+	err := m.StartHotspot(context.Background(), "Spoloh-Setup", "")
+	if err == nil {
+		t.Fatal("StartHotspot with no password must be an error, not an open access point")
+	}
+	if len(rec.argv) != 0 {
+		t.Errorf("nmcli ran %v; nothing may be executed when the password is missing", rec.argv)
+	}
+}
+
+func TestStartHotspotPassesThePasswordWithoutAShell(t *testing.T) {
+	rec := &recorder{}
+	m := netmgr.NMCLI{Run: rec.run}
+
+	if err := m.StartHotspot(context.Background(), "Spoloh Setup", "sp0lohTest42"); err != nil {
+		t.Fatalf("StartHotspot: %v", err)
+	}
+	if len(rec.argv) != 1 {
+		t.Fatalf("nmcli ran %d times, want 1", len(rec.argv))
+	}
+	got := rec.argv[0]
+	want := []string{"nmcli", "device", "wifi", "hotspot", "con-name", "spoloh-hotspot", "ssid", "Spoloh Setup", "password", "sp0lohTest42"}
+	if len(got) != len(want) {
+		t.Fatalf("argv = %q, want %q", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("argv = %q, want %q", got, want)
+		}
+	}
+}

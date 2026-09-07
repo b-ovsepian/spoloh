@@ -88,6 +88,12 @@ func (f *Fake) StartHotspot(ctx context.Context, ssid, psk string) error {
 	if f.StartHotspotErr != nil {
 		return f.StartHotspotErr
 	}
+	// NMCLI refuses an empty password rather than raising an open access
+	// point; a fake that accepted one would let a test pass against a device
+	// configuration that cannot work.
+	if psk == "" {
+		return errEmptyAPPassword
+	}
 	f.CurrentStatus.HotspotUp = true
 	return nil
 }

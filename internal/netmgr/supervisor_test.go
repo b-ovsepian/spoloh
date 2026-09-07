@@ -14,10 +14,18 @@ import (
 	"github.com/b-ovsepian/spoloh/internal/netmgr"
 )
 
+// testAPPassword stands in for the password EnsureAPPassword writes at
+// startup. config.Default() ships the field empty — the "not generated yet"
+// state — and StartHotspot refuses that rather than raising an open access
+// point, so a supervisor test running on the bare default would be exercising
+// a configuration no real device ever reaches.
+const testAPPassword = "sp0lohTest42"
+
 func supervisor(t *testing.T, f *netmgr.Fake, start time.Time) (*netmgr.Supervisor, *clock.Fake) {
 	t.Helper()
 	clk := clock.NewFake(start)
 	cfg := config.Default() // APFallbackAfter is 45s
+	cfg.Network.APPassword = testAPPassword
 	return netmgr.NewSupervisor(f, func() *config.Config { return cfg }, clk, nil), clk
 }
 
@@ -27,6 +35,7 @@ func supervisorWithLog(t *testing.T, f *netmgr.Fake, start time.Time) (*netmgr.S
 	t.Helper()
 	clk := clock.NewFake(start)
 	cfg := config.Default()
+	cfg.Network.APPassword = testAPPassword
 	var buf bytes.Buffer
 	logger := slog.New(slog.NewTextHandler(&buf, nil))
 	return netmgr.NewSupervisor(f, func() *config.Config { return cfg }, clk, logger), clk, &buf
@@ -350,6 +359,7 @@ func TestTickBoundsEveryCommand(t *testing.T) {
 	p := &deadlineProbe{}
 	clk := clock.NewFake(boot)
 	cfg := config.Default()
+	cfg.Network.APPassword = testAPPassword
 	logger := slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil))
 	s := netmgr.NewSupervisor(p, func() *config.Config { return cfg }, clk, logger)
 
