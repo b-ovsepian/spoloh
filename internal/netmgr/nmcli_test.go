@@ -232,3 +232,107 @@ func TestCommandFailureIsReported(t *testing.T) {
 		t.Errorf("err = %v, want it to carry nmcli's own message", err)
 	}
 }
+
+// A supervisor built on top of this package will plausibly log err.Error()
+// to an event log the dashboard renders. Neither the argv echo nor nmcli's
+// own output (which can itself quote the failing invocation) may carry the
+// Wi-Fi password back out through that error.
+func TestConnectFailureRedactsPassword(t *testing.T) {
+	const psk = "s3cr3t"
+	rec := &recorder{
+		err: errors.New("exit status 1"),
+		out: []byte("Error: Connection activation failed: Secrets were required, but not provided (password s3cr3t)."),
+	}
+	m := netmgr.NMCLI{Run: rec.run}
+
+	err := m.Connect(context.Background(), "SchoolWiFi", psk)
+	if err == nil {
+		t.Fatal("a failed Connect must return an error")
+	}
+	msg := err.Error()
+	if strings.Contains(msg, psk) {
+		t.Errorf("err = %q, must not contain the password", msg)
+	}
+	if strings.Contains(msg, "password "+psk) {
+		t.Errorf("err = %q, must not contain the argv password pair", msg)
+	}
+	if !strings.Contains(msg, "Secrets were required") {
+		t.Errorf("err = %q, want it to still carry nmcli's own message", msg)
+	}
+}
+
+// SSID is the first field of SSID:SIGNAL:SECURITY, so a bounded split that
+// protects the last field does not protect it. An SSID containing an
+// unescaped colon must not be silently misread as two fields.
+func TestScanUnescapedColonInSSID(t *testing.T) {
+	rec := &recorder{out: []byte("12:34:64:WPA2\n")}
+	m := netmgr.NMCLI{Run: rec.run}
+
+	got, err := m.Scan(context.Background())
+	if err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("got %d networks, want 1: %+v", len(got), got)
+	}
+	if got[0].SSID != "12:34" || got[0].Signal != 64 || !got[0].Secured {
+		t.Errorf("got %+v, want {SSID: \"12:34\", Signal: 64, Secured: true}", got[0])
+	}
+}
+
+// On real hardware nmcli's terse output most likely arrives with the colon
+// escaped as \: ; the parser must handle that form too, and must unescape it
+// rather than leaving a stray backslash in the SSID.
+func TestScanEscapedColonInSSID(t *testing.T) {
+	rec := &recorder{out: []byte(`The\:5G Network:64:WPA2` + "\n")}
+	m := netmgr.NMCLI{Run: rec.run}
+
+	got, err := m.Scan(context.Background())
+	if err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("got %d networks, want 1: %+v", len(got), got)
+	}
+	if got[0].SSID != "The:5G Network" || got[0].Signal != 64 {
+		t.Errorf(`got %+v, want SSID "The:5G Network", signal 64`, got[0])
+	}
+}
+
+// nmcli also escapes a literal backslash as \\ ; that must be unescaped back
+// to a single backslash, not left doubled or passed through raw.
+func TestScanEscapedBackslashInSSID(t *testing.T) {
+	rec := &recorder{out: []byte(`Wi\\Fi:50:` + "\n")}
+	m := netmgr.NMCLI{Run: rec.run}
+
+	got, err := m.Scan(context.Background())
+	if err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("got %d networks, want 1: %+v", len(got), got)
+	}
+	if got[0].SSID != `Wi\Fi` || got[0].Secured {
+		t.Errorf(`got %+v, want SSID "Wi\Fi", Secured false`, got[0])
+	}
+}
+
+// CONNECTION is the variable, trailing field of DEVICE:TYPE:STATE:CONNECTION.
+// An escaped colon in the connection name must not break the field count nor
+// leave the name un-unescaped, since it also feeds the hotspotConnID
+// comparison and would otherwise wrongly report HotspotUp.
+func TestStatusEscapedColonInConnectionName(t *testing.T) {
+	rec := &recorder{out: []byte(`wlan0:wifi:connected:Guest\:Net` + "\n")}
+	m := netmgr.NMCLI{Run: rec.run}
+
+	got, err := m.Status(context.Background())
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	if !got.Connected || got.SSID != "Guest:Net" {
+		t.Errorf("got %+v, want Connected true, SSID \"Guest:Net\"", got)
+	}
+	if got.HotspotUp {
+		t.Error("got HotspotUp = true, want false")
+	}
+}
