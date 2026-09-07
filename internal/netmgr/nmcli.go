@@ -83,18 +83,22 @@ func (m NMCLI) run(ctx context.Context, args ...string) ([]byte, error) {
 	return out, nil
 }
 
-// redactPassword returns the value that followed a "password" argument, if
-// any, and a copy of args with that value replaced by "***". Connect and
-// StartHotspot are the only callers that ever put a secret in args, and both
-// do it as the literal pair "password", <psk>.
+// redactPassword returns the PSK from args, if any, and a copy of args with
+// that value replaced by "***". This relies on an exact property of the two
+// callers that ever put a secret in args, Connect and StartHotspot: when a
+// PSK is present, it is always the last element of args, and it is always
+// immediately preceded by the literal "password". Because that pair is
+// always appended last, redaction anchors on the end of args rather than
+// searching for the first element equal to "password" — the SSID is
+// operator-typed and can itself be "password", and a left-to-right search
+// would then redact the wrong element and let the real secret leak. Any
+// future caller that puts a secret in args must preserve this "password",
+// <psk> as its final two elements, or update this function.
 func redactPassword(args []string) (secret string, redacted []string) {
 	redacted = append([]string(nil), args...)
-	for i, a := range redacted {
-		if a == "password" && i+1 < len(redacted) {
-			secret = redacted[i+1]
-			redacted[i+1] = "***"
-			break
-		}
+	if n := len(redacted); n >= 2 && redacted[n-2] == "password" {
+		secret = redacted[n-1]
+		redacted[n-1] = "***"
 	}
 	return secret, redacted
 }

@@ -261,6 +261,29 @@ func TestConnectFailureRedactsPassword(t *testing.T) {
 	}
 }
 
+// The SSID is operator-typed and "password" is a real, plausible network
+// name. redactPassword must not be fooled by an SSID that happens to equal
+// the keyword into redacting the SSID slot and leaving the real, final PSK
+// untouched — it must anchor on the last two argv elements, not on the
+// first element that happens to read "password".
+func TestConnectFailureRedactsPasswordWhenSSIDIsPassword(t *testing.T) {
+	const psk = "s3cr3t"
+	rec := &recorder{
+		err: errors.New("exit status 1"),
+		out: []byte("Error: Secrets were required, but not provided."),
+	}
+	m := netmgr.NMCLI{Run: rec.run}
+
+	err := m.Connect(context.Background(), "password", psk)
+	if err == nil {
+		t.Fatal("a failed Connect must return an error")
+	}
+	msg := err.Error()
+	if strings.Contains(msg, psk) {
+		t.Errorf("err = %q, must not contain the password", msg)
+	}
+}
+
 // SSID is the first field of SSID:SIGNAL:SECURITY, so a bounded split that
 // protects the last field does not protect it. An SSID containing an
 // unescaped colon must not be silently misread as two fields.
