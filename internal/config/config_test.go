@@ -69,6 +69,9 @@ func TestValidate(t *testing.T) {
 		}},
 		{"volume out of range", func(c *config.Config) { c.Events[0].Volume = 300 }},
 		{"empty sound", func(c *config.Config) { c.Events[0].Sound = "" }},
+		{"ap password shorter than WPA2's minimum", func(c *config.Config) {
+			c.Network.APPassword = "short1"
+		}},
 	}
 
 	for _, tc := range tests {
@@ -79,6 +82,25 @@ func TestValidate(t *testing.T) {
 				t.Fatalf("expected Validate to reject %s", tc.name)
 			}
 		})
+	}
+}
+
+// An empty ap_password is the "not generated yet" state, not an error:
+// config.Default() ships it empty, and it must stay valid so a device with no
+// installer yet (Plan 3b) can still boot and generate one for itself.
+func TestValidateAllowsEmptyAPPassword(t *testing.T) {
+	c := config.Default()
+	c.Network.APPassword = ""
+	if err := c.Validate(); err != nil {
+		t.Fatalf("Validate rejected an empty ap_password: %v", err)
+	}
+}
+
+func TestValidateAllowsAnAPPasswordAtTheWPA2Minimum(t *testing.T) {
+	c := config.Default()
+	c.Network.APPassword = "eightchr"
+	if err := c.Validate(); err != nil {
+		t.Fatalf("Validate rejected an 8-character ap_password: %v", err)
 	}
 }
 

@@ -210,6 +210,13 @@ func (c *Config) Validate() error {
 		}
 		seen[e.ID] = true
 	}
+	// Empty is the "not generated yet" state: config.Default() ships it
+	// empty, and netmgr.EnsureAPPassword fills it in on first run. Only a
+	// non-empty value gets checked against WPA2's floor, so a hand-edited
+	// config cannot produce a hotspot that refuses every connection.
+	if pw := c.Network.APPassword; pw != "" && len(pw) < 8 {
+		return fmt.Errorf("network.ap_password is %d characters, WPA2 requires at least 8", len(pw))
+	}
 	return nil
 }
 

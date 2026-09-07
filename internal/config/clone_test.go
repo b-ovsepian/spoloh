@@ -36,14 +36,14 @@ func TestCloneIsDeep(t *testing.T) {
 func TestCloneRoundTripsEveryField(t *testing.T) {
 	original := config.Default()
 	original.Auth.PasswordHash = "hash"
-	original.Network.APPassword = "secret"
+	original.Network.APPassword = "secret12"
 
 	clone := original.Clone()
 
 	if err := clone.Validate(); err != nil {
 		t.Fatalf("a clone of a valid config must validate: %v", err)
 	}
-	if clone.Auth.PasswordHash != "hash" || clone.Network.APPassword != "secret" {
+	if clone.Auth.PasswordHash != "hash" || clone.Network.APPassword != "secret12" {
 		t.Fatal("clone dropped a field")
 	}
 	if clone.Alerts.PollInterval != original.Alerts.PollInterval {

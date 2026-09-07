@@ -26,6 +26,7 @@ import (
 	"github.com/b-ovsepian/spoloh/internal/engine"
 	"github.com/b-ovsepian/spoloh/internal/eventlog"
 	"github.com/b-ovsepian/spoloh/internal/library"
+	"github.com/b-ovsepian/spoloh/internal/netmgr"
 	"github.com/b-ovsepian/spoloh/internal/player"
 	"github.com/b-ovsepian/spoloh/internal/watchdog"
 	"github.com/b-ovsepian/spoloh/internal/web"
@@ -76,6 +77,31 @@ func run(configPath, dataDir, listen string) error {
 	if err != nil {
 		return err
 	}
+
+	// The password has to exist before the supervisor's first tick can raise
+	// a hotspot with it — a device installed before Plan 3b's installer
+	// exists to generate and print one at install time still needs to reach
+	// this on first boot. hadAPPassword is read before EnsureAPPassword so
+	// the log line below fires only the one time the field was actually
+	// filled in, never on a boot that finds it already set.
+	hadAPPassword := store.Get().Network.APPassword != ""
+	apPassword, err := netmgr.EnsureAPPassword(store)
+	if err != nil {
+		return fmt.Errorf("ensure access point password: %w", err)
+	}
+	if !hadAPPassword {
+		// The one place this password is ever logged. Everywhere else in
+		// this branch treats it as a credential that must never be logged,
+		// formatted into an error, or put in a URL — internal/netmgr was
+		// hardened twice for exactly that. This line exists only because the
+		// alternative is worse: the Plan 3b installer that will print it and
+		// the Task 4 dashboard page that will show it do not exist yet, and a
+		// generated password nobody can read leaves the device unjoinable
+		// with no way back short of a site visit. Delete this once both of
+		// those land.
+		logger.Info("generated the access point password", "password", apPassword)
+	}
+
 	// cfgFn is handed to the engine so every tick reads the live
 	// configuration; cfg below is a single snapshot used only to set up
 	// values fixed for the life of this process (the timezone, the initial
