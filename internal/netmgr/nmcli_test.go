@@ -117,10 +117,32 @@ func TestStatusParsesRealOutput(t *testing.T) {
 		t.Fatalf("Status: %v", err)
 	}
 	if !got.Connected {
-		t.Error("wlan0 is connected, so the device is connected")
+		t.Error("wlan0 is joined to an upstream network, so Connected must be true")
 	}
 	if got.SSID != "Kyivstar_Home" {
 		t.Errorf("SSID = %q, want Kyivstar_Home", got.SSID)
+	}
+	if got.HotspotUp {
+		t.Error("HotspotUp = true while joined to an upstream network, want false")
+	}
+}
+
+// While the device is only serving its own access point, that is not an
+// upstream connection: the supervisor's decision to call StopHotspot once an
+// operator joins the school network depends on Connected being false here.
+func TestStatusReportsHotspotUp(t *testing.T) {
+	rec := &recorder{out: fixture(t, "nmcli-status-hotspot.txt")}
+	m := netmgr.NMCLI{Run: rec.run}
+
+	got, err := m.Status(context.Background())
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	if got.Connected {
+		t.Error("wlan0 is only serving the hotspot, so Connected must be false")
+	}
+	if !got.HotspotUp {
+		t.Error("wlan0 is connected to the hotspot connection, so HotspotUp must be true")
 	}
 }
 

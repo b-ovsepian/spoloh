@@ -15,9 +15,17 @@ import (
 type RunFunc func(ctx context.Context, name string, args ...string) ([]byte, error)
 
 // hotspotConnID is the connection profile name NMCLI gives every hotspot it
-// starts. Naming it ourselves, rather than relying on nmcli's own default,
-// is what lets StopHotspot bring the right profile down deterministically.
-const hotspotConnID = "Hotspot"
+// starts. Naming it ourselves, rather than relying on nmcli's own default, is
+// what lets StopHotspot bring the right profile down deterministically, and
+// what lets Status tell a hotspot apart from an ordinary upstream connection
+// by name. "Hotspot" was rejected as a plausible name an operator could
+// already have configured before this daemon ever ran; namespacing it like
+// the rest of the project avoids that collision.
+//
+// All three of StartHotspot, StopHotspot and Status read this one constant.
+// Naming the same connection by a literal in more than one place is how they
+// drift apart.
+const hotspotConnID = "spoloh-hotspot"
 
 // NMCLI drives NetworkManager through the nmcli binary. It holds no state of
 // its own beyond its configuration, so a value is fine to pass around.
@@ -127,10 +135,14 @@ func (m NMCLI) Status(ctx context.Context) (Status, error) {
 
 // parseStatus reads `nmcli -t -f DEVICE,TYPE,STATE,CONNECTION device status`.
 //
-// This command does not carry an IP address or report a hotspot as distinct
-// from any other active connection, so Status.IPv4 and Status.HotspotUp are
-// left at their zero values here; populating them needs a different nmcli
-// query and is out of scope for this parser.
+// A wifi device connected to hotspotConnID is serving the device's own
+// access point, not joined to anything upstream; that yields HotspotUp true
+// and Connected false. Any other connected wifi device is on an upstream
+// network: Connected true, SSID set, HotspotUp false. Telling these two
+// apart by connection name is exactly why StartHotspot pins that name rather
+// than accepting nmcli's default — without it this line could not tell "the
+// operator joined the school network" from "the hotspot is still up", which
+// is the one distinction the supervisor built on top of this package needs.
 func parseStatus(out []byte) Status {
 	var st Status
 	for _, line := range splitLines(out) {
@@ -142,10 +154,15 @@ func parseStatus(out []byte) Status {
 			continue
 		}
 		devType, state, conn := fields[1], fields[2], fields[3]
-		if devType == "wifi" && state == "connected" {
-			st.Connected = true
-			st.SSID = conn
+		if devType != "wifi" || state != "connected" {
+			continue
 		}
+		if conn == hotspotConnID {
+			st.HotspotUp = true
+			continue
+		}
+		st.Connected = true
+		st.SSID = conn
 	}
 	return st
 }

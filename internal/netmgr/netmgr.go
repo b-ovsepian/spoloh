@@ -14,10 +14,19 @@ type Network struct {
 }
 
 // Status is what the device's networking looks like right now.
+//
+// Connected means joined to an upstream network — not merely that the wifi
+// device is active. It is specifically false while the device is only
+// serving its own hotspot, because that is the distinction a caller deciding
+// whether to keep the hotspot up actually needs.
+//
+// There is no address field here on purpose. internal/web.LocalAddresses
+// already answers "what IP does this device have" by reading Go's own net
+// package; it needs no NetworkManager and keeps working even when nmcli is
+// broken, so this type does not duplicate it.
 type Status struct {
 	Connected bool
 	SSID      string
-	IPv4      string
 	HotspotUp bool
 }
 
