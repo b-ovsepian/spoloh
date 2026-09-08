@@ -181,6 +181,17 @@ func (s *Supervisor) Tick(ctx context.Context) {
 		return
 	}
 
+	// Asked again, because the gate check at the top of this tick is stale by
+	// now: the status read between them is an nmcli invocation bounded only by
+	// tickDeadline, and an operator pressing Подключити during it would find
+	// this tick raising an access point on top of their join — the exact
+	// defect the gate exists to prevent, narrowed to one status call wide
+	// rather than removed. Only the raise needs the second look; lowering a
+	// hotspot mid-join is harmless.
+	if s.join.Held(s.clk.Now()) {
+		return
+	}
+
 	cfg := s.cfg()
 	if err := s.mgr.StartHotspot(ctx, cfg.Network.APSSID, cfg.Network.APPassword); err != nil {
 		// Left for the next tick to retry: a device that hit a transient error

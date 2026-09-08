@@ -42,28 +42,41 @@ type JoinGate struct {
 	until time.Time
 }
 
-// HoldUntil holds the gate until t. The most recent call wins, whether it
-// extends or shortens the hold: the caller that just set it is the one that
-// knows what it is about to do.
-func (g *JoinGate) HoldUntil(t time.Time) {
+// HoldUntil holds the gate until t and returns that deadline as a token for
+// Release. The most recent call wins, whether it extends or shortens the
+// hold: the caller that just set it is the one that knows what it is about to
+// do.
+func (g *JoinGate) HoldUntil(t time.Time) time.Time {
 	if g == nil {
-		return
+		return time.Time{}
 	}
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.until = t
+	return t
 }
 
-// Release drops the hold immediately. Callers release on every path out of a
-// join, success and failure alike — the deadline is the backstop for the
-// paths nobody thought of, not the ordinary way a hold ends.
-func (g *JoinGate) Release() {
+// Release drops the hold that HoldUntil returned, and only that one. Callers
+// release on every path out of a join, success and failure alike — the
+// deadline is the backstop for the paths nobody thought of, not the ordinary
+// way a hold ends.
+//
+// It is scoped to its own token because two joins can overlap: an operator
+// double-submitting, or two people on the access point at once. An
+// unconditional release would let the first join to finish drop the hold
+// protecting the second, handing the supervisor back exactly the mid-join
+// moment this gate exists to cover. A release whose token is no longer the
+// live deadline has been superseded and does nothing; the newer hold expires
+// on its own.
+func (g *JoinGate) Release(token time.Time) {
 	if g == nil {
 		return
 	}
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	g.until = time.Time{}
+	if g.until.Equal(token) {
+		g.until = time.Time{}
+	}
 }
 
 // Held reports whether a join is in flight as of now.

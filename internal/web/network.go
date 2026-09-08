@@ -259,9 +259,14 @@ func (s *Server) handleNetworkConnect(w http.ResponseWriter, r *http.Request) {
 	// hotspot, on top of the join the operator is standing there waiting for.
 	// The deadline is the backstop for a path that never reaches the Release
 	// below; see netmgr.JoinGate for why it is a deadline and not a flag.
-	s.deps.JoinGate.HoldUntil(time.Now().Add(networkConnectTimeout + joinGateSlack))
+	// Deferred, not released inline: a panic inside Connect would otherwise
+	// skip the release and leave the supervisor standing down for the whole
+	// deadline. The extra time the hold covers — a config write and a render
+	// — is microseconds.
+	join := s.deps.JoinGate.HoldUntil(time.Now().Add(networkConnectTimeout + joinGateSlack))
+	defer s.deps.JoinGate.Release(join)
+
 	err := s.deps.Network.Connect(connectCtx, ssid, password)
-	s.deps.JoinGate.Release()
 	if err != nil {
 		s.renderNetworkRejected(w, r, http.StatusBadGateway, cfg, ssid, region, err.Error())
 		return

@@ -500,8 +500,8 @@ func TestAReleasedJoinGateLetsTheSupervisorRaiseAnAccessPoint(t *testing.T) {
 	s, clk := supervisorWithGate(t, f, boot, gate)
 
 	clk.Advance(5 * time.Minute)
-	gate.HoldUntil(clk.Now().Add(time.Minute))
-	gate.Release()
+	token := gate.HoldUntil(clk.Now().Add(time.Minute))
+	gate.Release(token)
 
 	s.Tick(context.Background())
 
@@ -518,7 +518,7 @@ func TestANilJoinGateIsNeverHeld(t *testing.T) {
 		t.Error("a nil gate reported itself held")
 	}
 	g.HoldUntil(boot.Add(time.Minute)) // must not panic
-	g.Release()                        // must not panic
+	g.Release(boot.Add(time.Minute))   // must not panic
 
 	var zero netmgr.JoinGate
 	if zero.Held(boot) {
@@ -557,3 +557,74 @@ func TestABackwardsClockStepDoesNotDelayTheAccessPoint(t *testing.T) {
 		t.Fatalf("StartHotspot called %d times in the minute after a one-hour backwards step, want 1: the grace period must be measured against the corrected clock, not the whole step", got)
 	}
 }
+
+// The gate check at the top of a tick is stale by the time the tick decides to
+// raise: the status read between them is an nmcli call bounded only by
+// tickDeadline. An operator pressing the button during that read must not find
+// this tick raising an access point on top of their join.
+func TestAJoinBeginningDuringTheStatusReadStopsTheRaise(t *testing.T) {
+	gate := &netmgr.JoinGate{}
+	clk := clock.NewFake(boot)
+
+	// Takes the gate from inside Status, which is where the real handler's
+	// hold lands when it arrives mid-tick.
+	m := &statusHookManager{
+		status: midJoin,
+		hook:   func() { gate.HoldUntil(clk.Now().Add(time.Minute)) },
+	}
+	cfg := config.Default()
+	cfg.Network.APPassword = testAPPassword
+	logger := slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil))
+	s := netmgr.NewSupervisor(m, func() *config.Config { return cfg }, clk, logger, gate)
+
+	// Constructed first, then advanced: downSince is anchored at construction,
+	// so advancing before it would leave this tick short of the grace period
+	// and it would return without ever reaching the raise this test is about.
+	clk.Advance(5 * time.Minute)
+
+	s.Tick(context.Background())
+
+	if m.hotspots != 0 {
+		t.Fatalf("StartHotspot called %d times for a join that began during the status read, want 0", m.hotspots)
+	}
+}
+
+// A release only ends the hold it was given. Two joins can overlap — an
+// operator double-submitting, or two people on the access point — and the
+// first to finish must not drop the hold protecting the second.
+func TestReleasingASupersededHoldLeavesTheLiveOneStanding(t *testing.T) {
+	gate := &netmgr.JoinGate{}
+	now := boot
+
+	first := gate.HoldUntil(now.Add(time.Minute))
+	gate.HoldUntil(now.Add(2 * time.Minute)) // a second join arrives
+	gate.Release(first)                      // the first one finishes
+
+	if !gate.Held(now) {
+		t.Error("releasing a superseded hold dropped the live one; the supervisor could raise an AP on top of the second join")
+	}
+}
+
+// statusHookManager runs hook during Status, so a test can make something
+// happen in the window between a tick's gate check and its decision to raise.
+type statusHookManager struct {
+	status   netmgr.Status
+	hook     func()
+	hotspots int
+}
+
+func (m *statusHookManager) Status(context.Context) (netmgr.Status, error) {
+	if m.hook != nil {
+		m.hook()
+	}
+	return m.status, nil
+}
+
+func (m *statusHookManager) StartHotspot(context.Context, string, string) error {
+	m.hotspots++
+	return nil
+}
+
+func (m *statusHookManager) Scan(context.Context) ([]netmgr.Network, error) { return nil, nil }
+func (m *statusHookManager) Connect(context.Context, string, string) error  { return nil }
+func (m *statusHookManager) StopHotspot(context.Context) error              { return nil }

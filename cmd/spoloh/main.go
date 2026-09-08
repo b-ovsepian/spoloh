@@ -262,7 +262,9 @@ func run(configPath, dataDir, listen string) error {
 	// three see ctx cancelled at once and eng.Run below can return while
 	// ListenAndServe is still draining an in-flight request within its own
 	// five-second grace period: ListenAndServe's own shutdown does not
-	// return until its handlers have, and players.Wait() below does not
+	// return until its handlers have — except when the five-second backstop
+	// in server.go fires and Close() gives up on them, which is the exception
+	// named below — and players.Wait() below does not
 	// return until ListenAndServe has, so nothing a *handler* can reach
 	// (Engine, Player, the event log) is torn down while that handler is
 	// still running, whichever of the three goroutines finishes first.
