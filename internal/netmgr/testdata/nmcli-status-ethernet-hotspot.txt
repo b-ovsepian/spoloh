@@ -1,0 +1,3 @@
+eth0:ethernet:connected:Wired connection 1
+wlan0:wifi:connected:spoloh-hotspot
+lo:loopback:connected:lo

@@ -189,6 +189,27 @@ func (m NMCLI) Status(ctx context.Context) (Status, error) {
 	return parseStatus(out), nil
 }
 
+// nonUpstreamTypes are the nmcli device types that can report "connected"
+// without that meaning the device has a way off the board. loopback is the
+// one that matters: modern NetworkManager manages lo and reports it
+// connected on every machine, so counting it would make every board look
+// joined and none would ever raise its access point. The rest are local or
+// virtual links — a peer-to-peer Wi-Fi association, a tunnel or bridge that
+// is carried by some other device that is itself the real upstream.
+//
+// It is a list of exclusions rather than a list of allowed types on purpose:
+// the failure that matters here is reading a genuinely connected board as
+// disconnected and leaving a WPA2 access point up for good, so an unfamiliar
+// device type counts as an upstream rather than being silently ignored.
+var nonUpstreamTypes = map[string]bool{
+	"loopback": true,
+	"wifi-p2p": true,
+	"tun":      true,
+	"bridge":   true,
+	"dummy":    true,
+	"veth":     true,
+}
+
 // parseStatus reads `nmcli -t -f DEVICE,TYPE,STATE,CONNECTION device status`.
 //
 // CONNECTION is the variable field here, and unlike SSID above it trails:
@@ -199,14 +220,22 @@ func (m NMCLI) Status(ctx context.Context) (Status, error) {
 //
 // A wifi device connected to hotspotConnID is serving the device's own
 // access point, not joined to anything upstream; that yields HotspotUp true
-// and Connected false. Any other connected wifi device is on an upstream
-// network: Connected true, SSID set, HotspotUp false. Telling these two
-// apart by connection name is exactly why StartHotspot pins that name rather
-// than accepting nmcli's default — without it this line could not tell "the
-// operator joined the school network" from "the hotspot is still up", which
-// is the one distinction the supervisor built on top of this package needs.
-// The comparison runs against the unescaped connection name, same as the
-// name compared everywhere else in this package.
+// and Connected false. Telling those two apart by connection name is exactly
+// why StartHotspot pins that name rather than accepting nmcli's default —
+// without it this could not tell "the operator joined the school network"
+// from "the hotspot is still up", which is the one distinction the
+// supervisor built on top of this package needs. The comparison runs against
+// the unescaped connection name, same as the name compared everywhere else
+// in this package.
+//
+// Every other connected device that could be an upstream sets Connected,
+// wifi or not. A board on a wall port in a PA closet is an ordinary install,
+// and reading it as disconnected is what made it raise Spoloh-Setup after 45
+// seconds and never lower it — a WPA2 access point broadcasting forever whose
+// password reaches a dashboard that drives the school's speakers. SSID is
+// still only ever a wifi device's network name: a wired profile is called
+// something like "Wired connection 1", and putting that in front of an
+// operator as an SSID would be a plain lie.
 func parseStatus(out []byte) Status {
 	var st Status
 	for _, line := range splitLines(out) {
@@ -219,15 +248,20 @@ func parseStatus(out []byte) Status {
 		}
 		devType, state := fields[1], fields[2]
 		conn := strings.Join(fields[3:], ":")
-		if devType != "wifi" || state != "connected" {
+		if state != "connected" {
 			continue
 		}
-		if conn == hotspotConnID {
+		if devType == "wifi" && conn == hotspotConnID {
 			st.HotspotUp = true
 			continue
 		}
+		if nonUpstreamTypes[devType] {
+			continue
+		}
 		st.Connected = true
-		st.SSID = conn
+		if devType == "wifi" {
+			st.SSID = conn
+		}
 	}
 	return st
 }

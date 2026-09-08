@@ -146,6 +146,66 @@ func TestStatusReportsHotspotUp(t *testing.T) {
 	}
 }
 
+// A PA closet with an Ethernet port is an ordinary install. Status.Connected
+// means "joined to an upstream network", and a board on a wall port is joined
+// to one — reading it as disconnected raised Spoloh-Setup after 45 seconds and
+// never lowered it, broadcasting a WPA2 access point indefinitely whose
+// password reaches a dashboard that drives the school's speakers.
+func TestStatusReportsAnEthernetUpstreamAsConnected(t *testing.T) {
+	rec := &recorder{out: fixture(t, "nmcli-status-ethernet.txt")}
+	m := netmgr.NMCLI{Run: rec.run}
+
+	got, err := m.Status(context.Background())
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	if !got.Connected {
+		t.Error("eth0 is joined to an upstream network, so Connected must be true")
+	}
+	if got.HotspotUp {
+		t.Error("HotspotUp = true with no hotspot running, want false")
+	}
+	// lo is connected on any modern NetworkManager. If it counted as an
+	// upstream, every board would look joined and none would ever raise an
+	// access point.
+	if got.SSID != "" {
+		t.Errorf("SSID = %q, want empty: a wired profile name is not an SSID", got.SSID)
+	}
+}
+
+// Ethernet upstream plus the device's own access point still running: both
+// flags at once, which is what makes the supervisor lower the access point
+// instead of leaving it up over a working network.
+func TestStatusReportsAnEthernetUpstreamAndAHotspotTogether(t *testing.T) {
+	rec := &recorder{out: fixture(t, "nmcli-status-ethernet-hotspot.txt")}
+	m := netmgr.NMCLI{Run: rec.run}
+
+	got, err := m.Status(context.Background())
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	if !got.Connected {
+		t.Error("eth0 is joined to an upstream network, so Connected must be true")
+	}
+	if !got.HotspotUp {
+		t.Error("wlan0 is serving spoloh-hotspot, so HotspotUp must be true")
+	}
+}
+
+// A loopback device on its own is not an upstream, whatever its state says.
+func TestStatusIgnoresLoopback(t *testing.T) {
+	rec := &recorder{out: []byte("lo:loopback:connected:lo\nwlan0:wifi:disconnected:\n")}
+	m := netmgr.NMCLI{Run: rec.run}
+
+	got, err := m.Status(context.Background())
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	if got.Connected {
+		t.Error("a connected loopback device was read as an upstream network")
+	}
+}
+
 // A password is a secret and an SSID is operator input; neither may be pasted
 // into a shell. Confirm the implementation passes an argv, never a string.
 func TestConnectPassesArgumentsWithoutAShell(t *testing.T) {

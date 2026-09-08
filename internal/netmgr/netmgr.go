@@ -15,18 +15,26 @@ type Network struct {
 
 // Status is what the device's networking looks like right now.
 //
-// Connected means joined to an upstream network — not merely that the wifi
-// device is active. It is specifically false while the device is only
-// serving its own hotspot, because that is the distinction a caller deciding
-// whether to keep the hotspot up actually needs.
-//
 // There is no address field here on purpose. internal/web.LocalAddresses
 // already answers "what IP does this device have" by reading Go's own net
 // package; it needs no NetworkManager and keeps working even when nmcli is
 // broken, so this type does not duplicate it.
 type Status struct {
+	// Connected means joined to an upstream network — not merely that the
+	// wifi device is active, and not only over Wi-Fi: a board on a wall port
+	// in a PA closet is joined to one just as much as a board on the school
+	// Wi-Fi is. It is specifically false while the device is only serving
+	// its own hotspot, because that is the distinction a caller deciding
+	// whether to keep the hotspot up actually needs.
 	Connected bool
-	SSID      string
+	// SSID is the Wi-Fi network the device is joined to, and is empty when it
+	// is connected some other way. A wired connection has no SSID, and its
+	// NetworkManager profile name ("Wired connection 1") is not one.
+	SSID string
+	// HotspotUp means a wifi device is serving this daemon's own access
+	// point. It is independent of Connected: a board with a wired upstream
+	// can report both, which is exactly when the supervisor lowers the
+	// access point.
 	HotspotUp bool
 }
 
