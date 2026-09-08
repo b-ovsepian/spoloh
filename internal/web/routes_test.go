@@ -29,11 +29,12 @@ func TestEveryRouteIsPublicOrPrivateAsIntended(t *testing.T) {
 		"/logout":  true,
 		"/static/": true,
 
-		"/":       false,
-		"/events": false,
-		"/log":    false,
-		"/play":   false,
-		"/stop":   false,
+		"/":        false,
+		"/events":  false,
+		"/log":     false,
+		"/play":    false,
+		"/stop":    false,
+		"/network": false,
 	}
 
 	seen := map[string]bool{}

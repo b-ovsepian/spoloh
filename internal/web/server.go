@@ -17,6 +17,7 @@ import (
 	"github.com/b-ovsepian/spoloh/internal/engine"
 	"github.com/b-ovsepian/spoloh/internal/eventlog"
 	"github.com/b-ovsepian/spoloh/internal/library"
+	"github.com/b-ovsepian/spoloh/internal/netmgr"
 	"github.com/b-ovsepian/spoloh/internal/player"
 )
 
@@ -30,6 +31,11 @@ type Deps struct {
 	Log     *eventlog.Log
 	Player  *player.Player
 	Library *library.Library
+	// Network drives the device's Wi-Fi: the /network page's scan, connect
+	// and access-point details all read this. Task 5 wires it up from
+	// main.go; nil until then, and in this package's own tests that don't
+	// need it — same tolerance every other optional dependency gets.
+	Network netmgr.Manager
 	Logger  *slog.Logger
 }
 
@@ -93,6 +99,8 @@ func New(d Deps) (*Server, error) {
 	s.handle("GET /log", http.HandlerFunc(s.handleLog))
 	s.handle("POST /play", http.HandlerFunc(s.handlePlay))
 	s.handle("POST /stop", http.HandlerFunc(s.handleStop))
+	s.handle("GET /network", http.HandlerFunc(s.handleNetwork))
+	s.handle("POST /network", http.HandlerFunc(s.handleNetworkConnect))
 	s.handle("GET /{$}", http.HandlerFunc(s.handleHome))
 
 	return s, nil

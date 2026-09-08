@@ -1,0 +1,105 @@
+{{define "title"}}Мережа — Сполох{{end}}
+{{define "content"}}
+{{if .Connected}}
+{{/*
+The connect that just succeeded killed the access point the operator was
+using to load this page. There is nothing to redirect to — they cannot load
+a destination over a connection that no longer exists — so this is the page
+they land on: it repeats the one thing they now need, the device's address on
+the network it just joined.
+*/}}
+<div class="card p-6 grid gap-4">
+  <header>
+    <h1 class="text-lg font-semibold">Пристрій підключено</h1>
+  </header>
+  <p>Точку доступу пристрою вимкнено. Підключіть телефон до тієї самої мережі Wi-Fi і відкрийте одну з цих адрес:</p>
+  {{if .Addresses}}
+  {{range .Addresses}}<p class="font-mono text-2xl">{{.}}</p>{{end}}
+  {{else}}
+  <p class="text-lg">Адресу пристрою поки не визначено. Зачекайте кілька секунд, підключіть телефон до тієї самої мережі й оновіть цю сторінку ще раз.</p>
+  {{end}}
+</div>
+{{else}}
+<div class="grid gap-4">
+  {{/*
+  Shown deliberately: an operator who lost the installer's printed output has
+  nowhere else to find this. It is behind the session this page already
+  requires, and it is display-only — see network.go's doc comment on why it
+  must never be logged.
+  */}}
+  <section class="card p-4">
+    <h2 class="text-sm font-semibold text-muted-foreground">Точка доступу пристрою</h2>
+    <p>SSID: <span class="font-mono">{{.APSSID}}</span></p>
+    <p>Пароль: <span class="font-mono">{{.APPassword}}</span></p>
+  </section>
+
+  <section class="card p-4">
+    <h2 class="text-sm font-semibold text-muted-foreground">Адреса пристрою</h2>
+    {{if .Addresses}}
+    {{range .Addresses}}<p class="font-mono text-2xl">{{.}}</p>{{end}}
+    {{else}}
+    <p class="text-lg">Адресу не визначено — пристрій не в мережі.</p>
+    {{end}}
+  </section>
+
+  <div class="card p-6">
+    <header class="mb-4">
+      <h1 class="text-lg font-semibold">Підключення до Wi-Fi</h1>
+    </header>
+
+    {{if .Error}}
+    <div class="alert mb-4" data-variant="destructive" role="alert">
+      <section><p>{{.Error}}</p></section>
+    </div>
+    {{end}}
+
+    <form method="post" action="/network" class="grid gap-4">
+      <fieldset class="field">
+        <legend>Мережа Wi-Fi</legend>
+        {{if .Networks}}
+        <div class="grid gap-2">
+          {{range .Networks}}
+          <label class="flex items-center justify-between gap-2 rounded-md border border-border p-3">
+            <span class="flex items-center gap-2">
+              <input type="radio" name="ssid" value="{{.SSID}}"{{if eq .SSID $.SelectedSSID}} checked{{end}} required>
+              <span>{{.SSID}}</span>
+            </span>
+            <span class="text-sm text-muted-foreground">{{.Signal}}%{{if .Secured}} · 🔒{{end}}</span>
+          </label>
+          {{end}}
+        </div>
+        {{else}}
+        <p class="text-muted-foreground">{{if .ScanNotice}}{{.ScanNotice}}{{else}}Мереж поблизу не знайдено.{{end}}</p>
+        {{end}}
+      </fieldset>
+
+      <div class="field">
+        <label for="password">Пароль мережі</label>
+        <input class="input" type="password" id="password" name="password" autocomplete="off">
+      </div>
+
+      <div class="field">
+        <label for="region">Область для сповіщень</label>
+        <select class="select" id="region" name="region" required>
+          {{range .Regions}}<option value="{{.}}"{{if eq . $.CurrentRegion}} selected{{end}}>{{.}}</option>{{end}}
+        </select>
+      </div>
+
+      {{/*
+      Said above the button, not after: pressing it closes the access point
+      the operator is using to read this very page. They need the address
+      below before they press it, not after their phone has already fallen
+      back to something else.
+      */}}
+      <div class="alert" data-variant="destructive" role="alert">
+        <section>
+          <p>Після натискання кнопки точка доступу пристрою вимкнеться, і ваш телефон втратить із нею зв'язок. Щоб знайти пристрій далі, підключіть телефон до тієї самої мережі Wi-Fi і відкрийте одну з адрес пристрою вище.</p>
+        </section>
+      </div>
+
+      <button class="btn" type="submit">Підключити</button>
+    </form>
+  </div>
+</div>
+{{end}}
+{{end}}

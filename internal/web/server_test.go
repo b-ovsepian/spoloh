@@ -19,6 +19,7 @@ import (
 	"github.com/b-ovsepian/spoloh/internal/engine"
 	"github.com/b-ovsepian/spoloh/internal/eventlog"
 	"github.com/b-ovsepian/spoloh/internal/library"
+	"github.com/b-ovsepian/spoloh/internal/netmgr"
 	"github.com/b-ovsepian/spoloh/internal/player"
 	"github.com/b-ovsepian/spoloh/internal/web"
 )
@@ -96,6 +97,23 @@ func newServerWithPlayer(t *testing.T) (*web.Server, *configstore.Store, *fakePl
 		t.Fatalf("web.New: %v", err)
 	}
 	return srv, store, backend
+}
+
+// newServerWithNetwork wires a *netmgr.Fake in as Deps.Network, for
+// network_test.go's exercise of the /network page against a scripted network
+// manager rather than real nmcli.
+func newServerWithNetwork(t *testing.T) (*web.Server, *configstore.Store, *netmgr.Fake) {
+	t.Helper()
+	store, err := configstore.Open(filepath.Join(t.TempDir(), "config.json"))
+	if err != nil {
+		t.Fatalf("configstore.Open: %v", err)
+	}
+	fake := &netmgr.Fake{}
+	srv, err := web.New(web.Deps{Config: store, Network: fake})
+	if err != nil {
+		t.Fatalf("web.New: %v", err)
+	}
+	return srv, store, fake
 }
 
 func appendAlert(t *testing.T, lg *eventlog.Log, sound string) {

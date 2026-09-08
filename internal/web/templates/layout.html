@@ -31,6 +31,7 @@ would have to be handed from Go.
     <nav aria-label="Розділи" class="flex items-center gap-1" x-data>
       <a href="/" class="rounded-md px-3 py-2 text-sm hover:bg-accent aria-[current=page]:bg-accent aria-[current=page]:font-semibold" :aria-current="location.pathname === '/' ? 'page' : null">Головна</a>
       <a href="/log" class="rounded-md px-3 py-2 text-sm hover:bg-accent aria-[current=page]:bg-accent aria-[current=page]:font-semibold" :aria-current="location.pathname === '/log' ? 'page' : null">Журнал</a>
+      <a href="/network" class="rounded-md px-3 py-2 text-sm hover:bg-accent aria-[current=page]:bg-accent aria-[current=page]:font-semibold" :aria-current="location.pathname === '/network' ? 'page' : null">Мережа</a>
     </nav>
     <form method="post" action="/logout" class="ms-auto">
       <button class="btn" data-variant="outline" data-size="sm" type="submit">Вийти</button>
