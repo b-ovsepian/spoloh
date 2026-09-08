@@ -12,6 +12,19 @@ the network it just joined.
   <header>
     <h1 class="text-lg font-semibold">Пристрій підключено</h1>
   </header>
+  {{/*
+  A distinct warning, not a reuse of .Error: the join genuinely succeeded —
+  this is still the success view — but the config write that was meant to
+  follow it did not, and there is no settings screen to fall back on
+  (Plan 2b has not shipped). /network is the only place Alerts.Region is
+  ever written, so this is the operator's only way to learn the device
+  still cannot do its job and come back to fix it.
+  */}}
+  {{if .RegionSaveFailed}}
+  <div class="alert" data-variant="destructive" role="alert">
+    <section><p>Мережу підключено, але область для сповіщень не збереглася. Без неї пристрій не працюватиме. Поверніться на цю сторінку (/network) і оберіть область ще раз.</p></section>
+  </div>
+  {{end}}
   <p>Точку доступу пристрою вимкнено. Підключіть телефон до тієї самої мережі Wi-Fi і відкрийте одну з цих адрес:</p>
   {{if .Addresses}}
   {{range .Addresses}}<p class="font-mono text-2xl">{{.}}</p>{{end}}

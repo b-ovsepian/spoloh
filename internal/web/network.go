@@ -67,6 +67,16 @@ type networkView struct {
 	// about to lose this page" success view, once Connect has actually
 	// returned nil.
 	Connected bool
+	// RegionSaveFailed marks the one case where Connect succeeded but the
+	// config write that was meant to follow it did not. It is a field of
+	// its own rather than a reuse of Error: Error belongs to the rejected
+	// connect-form view, and this belongs to the success view — the join
+	// really did happen and the operator is about to lose this page either
+	// way, but here they additionally need to know the oblast did not save.
+	// There is no settings screen (Plan 2b has not shipped): /network is the
+	// only place Alerts.Region is ever written, so this is the operator's
+	// only way to notice and come back.
+	RegionSaveFailed bool
 }
 
 // isKnownRegion reports whether region is one of alertsource.Regions()'s 25
@@ -163,14 +173,19 @@ func (s *Server) renderNetworkRejected(w http.ResponseWriter, r *http.Request, s
 // handleNetworkConnect joins the device to the submitted network and, only on
 // success, stores the chosen oblast.
 //
-// Connect first, then store the oblast: the brief requires a failed connect
-// to leave the stored oblast untouched, and writing the region only after
-// Connect returns nil is what guarantees that directly, with nothing to roll
-// back. If the config write itself then fails after a successful join, that
-// failure is deliberately left as-is rather than retried or rolled back — the
-// device is already on the right network, the operator can fix the oblast
-// from the settings screen, and a rollback here would only add a second
-// failure mode on top of the first.
+// Connect first, then store the oblast: a failed connect must leave the
+// stored oblast untouched, and writing the region only after Connect returns
+// nil is what guarantees that directly, with nothing to roll back. If the
+// config write itself then fails after a successful join, that failure is
+// deliberately left as-is rather than retried or rolled back — the device is
+// already on the right network, and a rollback here would only add a second
+// failure mode on top of the first. But it is not silently swallowed: there
+// is no settings screen to fall back to (Plan 2b has not shipped, and
+// /network is the only place Alerts.Region is ever written anywhere in this
+// codebase), so the success view below is told to say so, distinctly, via
+// RegionSaveFailed — otherwise the operator is told the device is connected
+// while the one value it needs to do its job was never saved, with no reason
+// to think they need to come back.
 func (s *Server) handleNetworkConnect(w http.ResponseWriter, r *http.Request) {
 	if !sameOrigin(r) {
 		http.Error(w, "cross-origin request rejected", http.StatusForbidden)
@@ -199,15 +214,33 @@ func (s *Server) handleNetworkConnect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Detached from the request, on purpose. Joining the school network is
-	// what drops the access point the operator submitted this form over, so
-	// their browser losing the connection is the expected outcome of a
-	// successful join, not a failure. Go cancels a request context as soon as
-	// the client goes away, and nmcli runs under exec.CommandContext, so
-	// passing r.Context() here means the join kills itself at the exact moment
-	// it starts working. The deadline replaces the cancellation it removes:
-	// association plus a DHCP lease can take most of a minute on a school
-	// network, and a wedged NetworkManager must not leak this goroutine.
+	// Detached from the request, on purpose, and from more than just the
+	// client's disconnect: context.WithoutCancel strips every cancellation
+	// signal r.Context() carries, including the daemon's own shutdown signal
+	// — server.go's BaseContext derives every request context from
+	// ListenAndServe's ctx, specifically so a restart cancels in-flight
+	// requests promptly. This handler opts out of that too, not only out of
+	// the client going away.
+	//
+	// Both cancellations are removed for the same reason: joining the school
+	// network is what drops the access point the operator submitted this
+	// form over, so their browser losing the connection is the expected
+	// outcome of a successful join, not a failure, and a daemon restart
+	// landing mid-join is not a reason to abandon it either — nmcli runs
+	// under exec.CommandContext, so either cancellation reaching this call
+	// would kill the join at the exact moment it started working and could
+	// leave the device on neither network. The deadline below replaces both
+	// removed cancellations: association plus a DHCP lease can take most of
+	// a minute on a school network, and a wedged NetworkManager must not
+	// leak this goroutine.
+	//
+	// This does let a detached nmcli outlive ListenAndServe's return inside
+	// this process — accepted, not overlooked, because it does not outlive
+	// the process itself: deploy/spoloh.service sets no KillMode, so systemd
+	// defaults to KillMode=control-group and kills every process left in the
+	// unit's cgroup, this one included, the moment the main process exits.
+	// A future change to that unit file that sets a different KillMode would
+	// invalidate this reasoning.
 	connectCtx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), networkConnectTimeout)
 	defer cancel()
 
@@ -216,20 +249,24 @@ func (s *Server) handleNetworkConnect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	regionSaveFailed := false
 	if err := s.deps.Config.Update(func(c *config.Config) error {
 		c.Alerts.Region = region
 		return nil
 	}); err != nil {
-		// See the doc comment above: recoverable from the settings screen,
-		// not worth adding a rollback failure mode for.
+		// See the doc comment above: not rolled back, not retried, but not
+		// silent either — the success view below is told, since this page
+		// is the only way the operator would ever find out.
 		s.deps.Logger.Error("network: connected, but could not store the region", "err", err)
+		regionSaveFailed = true
 	}
 
 	// No redirect: the access point that served this request is about to
 	// close, so the response has to say everything the operator needs right
 	// now, including where to find the device afterwards.
 	s.render(w, http.StatusOK, "network.html", networkView{
-		Connected: true,
-		Addresses: LocalAddresses(),
+		Connected:        true,
+		Addresses:        LocalAddresses(),
+		RegionSaveFailed: regionSaveFailed,
 	})
 }

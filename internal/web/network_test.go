@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"strings"
 	"testing"
 
@@ -365,5 +366,79 @@ func TestNetworkConnectSurvivesTheClientDisconnecting(t *testing.T) {
 	}
 	if !probe.hadDeadline {
 		t.Error("Connect ran with no deadline; a wedged NetworkManager would hold this goroutine forever")
+	}
+}
+
+// There is no settings screen (Plan 2b has not shipped): /network is the
+// only place Alerts.Region is ever written anywhere in this codebase. If
+// Connect succeeds but the config write that follows it does not, the
+// success page must say so distinctly — otherwise the operator is told the
+// device is connected while the one value it needs to do its job was never
+// saved, with no reason to think they need to come back.
+func TestNetworkConnectSuccessWarnsWhenTheRegionCouldNotBeSaved(t *testing.T) {
+	dir := t.TempDir()
+	store, err := configstore.Open(filepath.Join(dir, "config.json"))
+	if err != nil {
+		t.Fatalf("configstore.Open: %v", err)
+	}
+	fake := &netmgr.Fake{}
+	srv, err := web.New(web.Deps{Config: store, Network: fake})
+	if err != nil {
+		t.Fatalf("web.New: %v", err)
+	}
+	setPassword(t, srv, "correct horse battery staple")
+	cookie := login(t, srv, "correct horse battery staple")
+	before := store.Get().Alerts.Region
+
+	// config.Save writes atomically through a temp file in the same
+	// directory (see internal/atomicfile), so a directory the process
+	// cannot write to is what makes Update fail deterministically here — the
+	// same trick internal/configstore's own tests use for a read-only SD
+	// card. This runs after setup/login, which already had to write
+	// successfully to get this far.
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Fatalf("Chmod: %v", err)
+	}
+	t.Cleanup(func() { os.Chmod(dir, 0o700) })
+
+	req := postForm("/network", url.Values{
+		"ssid": {"ShkolaWiFi"}, "password": {"schoolpass1"}, "region": {"Чернігівська область"},
+	})
+	req.AddCookie(cookie)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 — the join itself succeeded", rec.Code)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "Пристрій підключено") {
+		t.Fatal("the page does not show the success view for a join that actually succeeded")
+	}
+	if !strings.Contains(body, "не збереглася") {
+		t.Error("the success page does not warn that the region failed to save")
+	}
+	if got := store.Get().Alerts.Region; got != before {
+		t.Fatalf("stored region = %q, want unchanged %q — the write genuinely failed", got, before)
+	}
+}
+
+// The warning above is for the one case where the config write fails after a
+// successful join; an ordinary success must not carry it, or the operator
+// would not be able to tell the two apart.
+func TestNetworkConnectPlainSuccessCarriesNoRegionWarning(t *testing.T) {
+	srv, _, _ := newServerWithNetwork(t)
+	setPassword(t, srv, "correct horse battery staple")
+	cookie := login(t, srv, "correct horse battery staple")
+
+	req := postForm("/network", url.Values{
+		"ssid": {"ShkolaWiFi"}, "password": {"schoolpass1"}, "region": {"Чернігівська область"},
+	})
+	req.AddCookie(cookie)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+
+	if strings.Contains(rec.Body.String(), "не збереглася") {
+		t.Error("a plain, fully successful connect carries the region-not-saved warning")
 	}
 }
