@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // RunFunc executes a command and returns its combined output. Injected so
@@ -104,8 +105,30 @@ func redactPassword(args []string) (secret string, redacted []string) {
 	return secret, redacted
 }
 
+// execWaitDelay is how long a killed nmcli gets to let go of its output pipes
+// before they are closed out from under it. See execRun; it is short because
+// the process is already dead by the time it starts running.
+const execWaitDelay = 2 * time.Second
+
 func execRun(ctx context.Context, name string, args ...string) ([]byte, error) {
-	return exec.CommandContext(ctx, name, args...).CombinedOutput()
+	cmd := exec.CommandContext(ctx, name, args...)
+	// WaitDelay is what actually makes tickDeadline a bound on the call, as
+	// opposed to a bound on the process. CommandContext kills nmcli when the
+	// context expires, but CombinedOutput then waits for the output pipe to
+	// close, and the pipe is inherited: a descendant nmcli or NetworkManager
+	// left holding stdout keeps Wait blocked long after the process it
+	// belonged to is gone. Measured, a 1-second deadline returned after 30
+	// seconds. WaitDelay caps that second wait — once the deadline has killed
+	// the process, the pipes are closed after this delay whether anything is
+	// still holding them or not, and the call returns with
+	// exec.ErrWaitDelay.
+	//
+	// Everything in this package that argues a hung command cannot stop the
+	// supervisor rests on this: Tick runs in Run's only goroutine, and a
+	// device that stops supervising itself never raises the access point that
+	// is its last way back.
+	cmd.WaitDelay = execWaitDelay
+	return cmd.CombinedOutput()
 }
 
 // errEmptyAPPassword is returned rather than raising an open access point.
