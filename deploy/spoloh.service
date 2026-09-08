@@ -1,7 +1,16 @@
 [Unit]
 Description=Spoloh air raid alert announcer
-After=network-online.target sound.target
-Wants=network-online.target
+After=network-online.target sound.target NetworkManager.service
+Wants=network-online.target NetworkManager.service
+# NetworkManager is what lets this unit raise its own access point when the
+# board has no upstream network (internal/netmgr.Supervisor); it is not what
+# lets it announce alerts. Wants + After only order and prefer it, they do
+# not require it, and that is deliberate: a board with no NetworkManager
+# installed still has to boot and keep sounding alerts, degraded and unable
+# to raise an access point (see internal/netmgr.Supervisor's doc comment and
+# cmd/spoloh/main.go). Do not change this to Requires= — that would turn a
+# missing optional package into a reason a life-safety device refuses to
+# start.
 # Spec §10: the device never stops trying. systemd's default start rate limit
 # (5 starts in 10s) would otherwise put the unit into a permanent failed state
 # after a crash loop — a silent announcer that no longer even tries to come

@@ -184,12 +184,24 @@ func run(configPath, dataDir, listen string) error {
 		Watchdog:  wd,
 	})
 
+	// netManager drives NetworkManager through nmcli. A value type: see
+	// NMCLI's doc comment for why it needs no construction. It is shared
+	// between two callers with different rhythms — the supervisor below
+	// polls it once every tickInterval, and the dashboard's /network page
+	// (through the Network field passed into web.Deps below) calls it
+	// directly whenever an operator asks for a scan or a connect — because
+	// both ultimately just run nmcli, and nmcli itself is what serialises
+	// concurrent use, the way ALSA's aplay already does for the player.
+	netManager := netmgr.NMCLI{}
+	sup := netmgr.NewSupervisor(netManager, cfgFn, clock.System{Loc: loc}, logger)
+
 	websrv, err := web.New(web.Deps{
 		Config:  store,
 		Engine:  eng,
 		Log:     lg,
 		Player:  pl,
 		Library: lib,
+		Network: netManager,
 		Logger:  logger,
 	})
 	if err != nil {
@@ -205,7 +217,12 @@ func run(configPath, dataDir, listen string) error {
 	// The dashboard server joins the same WaitGroup rather than getting a
 	// second one: its handlers write to the same log (manual play/stop) and
 	// read the same engine and player, so it has to be confirmed stopped
-	// before lg.Close() for exactly the reason the player already was.
+	// before lg.Close() for exactly the reason the player already was. The
+	// network supervisor joins it too, for a plainer reason: it touches
+	// neither the log nor anything else that outlives it, but the daemon
+	// has exactly one shutdown mechanism, and giving the one goroutine that
+	// keeps the device reachable a mechanism of its own would just be a
+	// second thing to get wrong for no benefit.
 	//
 	// The order the spec cares about — HTTP server, then the engine, then
 	// the player, then the log — is what this achieves even though all
@@ -213,12 +230,12 @@ func run(configPath, dataDir, listen string) error {
 	// ListenAndServe is still draining an in-flight request within its own
 	// five-second grace period: nothing that draining request can reach
 	// (Engine, Player, the event log) is torn down or closed until
-	// players.Wait() below confirms both goroutines have actually returned,
+	// players.Wait() below confirms every goroutine has actually returned,
 	// so the "stops first" that matters — no handler still running once the
-	// log is allowed to close — holds regardless of which of the three
-	// happens to return first.
+	// log is allowed to close — holds regardless of which of them happens
+	// to return first.
 	var players sync.WaitGroup
-	players.Add(2)
+	players.Add(3)
 	go func() {
 		defer players.Done()
 		pl.Run(ctx)
@@ -246,6 +263,16 @@ func run(configPath, dataDir, listen string) error {
 			// stop. This is the one an operator should see.
 			logger.Error("dashboard stopped", "err", err)
 		}
+	}()
+	go func() {
+		defer players.Done()
+		// Same degradation contract as the player and the dashboard: a
+		// board with no NetworkManager, or one whose nmcli wedges, must
+		// still announce alerts. Every tick bounds its own nmcli work
+		// (netmgr.tickDeadline) and an unreadable status changes nothing
+		// (see Supervisor.Tick), so there is nothing here to guard against
+		// beyond running it alongside the rest.
+		sup.Run(ctx)
 	}()
 
 	logger.Info("spoloh started",
