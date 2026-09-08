@@ -114,15 +114,22 @@
     Spec §9 lists NTP, network and source health as three separate things, and
     a source failure alone cannot tell "the router is down" from "Ubilling is
     down" — which need different actions from whoever is standing there. The
-    honest, cheap signal is whether the device holds an address at all.
+    honest, cheap signal is whether the device holds an address at all, and
+    that is exactly what the label claims — no more. Holding an address is not
+    being on the school network: the device raises its own fallback access
+    point when it has no upstream, and this page is then routinely fetched
+    over that access point, with an address of its own. Saying "підключено"
+    here would tell an operator standing in front of an unreachable device
+    that its networking is fine. /network is where the upstream connection is
+    actually managed, and it does not need a new dependency plumbed in here to
+    say what this page can already see.
 
     It is rendered once and never bound to the stream: enumerating interfaces
-    every second would undo the work publishLoop just saved, and if the
-    device's own network were down this page could not have been fetched. The
-    live counterpart is the staleness badge above, which is what appears when
-    the connection between browser and device fails.
+    every second would undo the work publishLoop just saved. The live
+    counterpart is the staleness badge above, which is what appears when the
+    connection between browser and device fails.
     */}}
-    <p>Мережа: {{if .Addresses}}✓ підключено{{else}}✕ немає IP-адреси{{end}}</p>
+    <p>Мережа: {{if .Addresses}}✓ є IP-адреса{{else}}✕ немає IP-адреси{{end}}</p>
     <p>Джерело: <span x-text="source">{{.Status.SourceName}}</span>, останній успіх <span class="font-mono" x-text="lastSuccess">{{.LastSuccessText}}</span></p>
     <p class="font-semibold text-destructive" x-show="failing"{{if not .Status.Failing}} style="display:none"{{end}} x-text="lastError ? '✕ ' + lastError : ''">{{if .Status.Failing}}✕ {{.Status.LastError}}{{end}}</p>
   </section>
