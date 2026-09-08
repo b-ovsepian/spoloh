@@ -14,12 +14,13 @@ import (
 // nothing here needs second-level reaction, and the device is a Pi.
 const tickInterval = 5 * time.Second
 
-// failureLogInterval throttles repeated failure logging for StartHotspot and
-// StopHotspot. The retry itself stays unconditional — a device stuck unable
+// failureLogInterval throttles repeated failure logging for the status read
+// and for StartHotspot and StopHotspot. The work itself stays unconditional — a device stuck unable
 // to raise or lower its access point must keep trying every tick, or it
 // either stays unreachable or keeps its own AP up over a working network
 // forever — but at tickInterval an unthrottled Error line would write one
-// every 5 seconds indefinitely. internal/engine's heartbeatInterval throttles
+// every 5 seconds indefinitely — and the status read fails on every tick,
+// forever, on any board whose OS simply has no NetworkManager installed. internal/engine's heartbeatInterval throttles
 // its own 5s-cadence tick the same way for the same reason: these devices run
 // off SD cards that wear out (spec §5.7).
 const failureLogInterval = 5 * time.Minute
@@ -63,10 +64,13 @@ type Supervisor struct {
 	// get wrong.
 	downSince time.Time
 
-	// lastStartFailureLog and lastStopFailureLog are the clock time each
-	// operation's failure was last logged, or the zero time if the last
-	// attempt succeeded (or none has been made yet). They throttle logging
-	// only — see failureLogInterval — never the retry.
+	// Each of these is the clock time that operation's failure was last
+	// logged, or the zero time if the last attempt succeeded (or none has
+	// been made yet). They throttle logging only — see failureLogInterval —
+	// never the read or the retry. Three separate fields because the three
+	// operations fail independently: a board with no NetworkManager fails
+	// only the status read, and must not have that suppress the first report
+	// of a genuine hotspot failure later.
 	lastStartFailureLog  time.Time
 	lastStopFailureLog   time.Time
 	lastStatusFailureLog time.Time
@@ -153,9 +157,13 @@ func (s *Supervisor) Tick(ctx context.Context) {
 		"ssid", cfg.Network.APSSID, "down_for", now.Sub(s.downSince).Round(time.Second))
 }
 
-// logFailure logs a failed StartHotspot or StopHotspot attempt through last,
-// throttled to at most once per failureLogInterval so a device stuck
-// retrying forever does not write an Error line every tick. The first
+// logFailure logs a failed status read, StartHotspot or StopHotspot attempt
+// through last, throttled to at most once per failureLogInterval so a device
+// that keeps failing does not write a line every tick. It takes the log
+// function rather than a level so the status read can report at Warn — the
+// usual cause is a board with no NetworkManager, working exactly as designed
+// — while the hotspot failures report at Error, without a second copy of the
+// throttle. The first
 // failure of a run is always logged immediately (last starts, and returns to,
 // the zero time). Callers reset *last to the zero time on the next success,
 // so a fault that clears and later recurs is reported again rather than

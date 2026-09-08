@@ -189,9 +189,13 @@ func run(configPath, dataDir, listen string) error {
 	// between two callers with different rhythms — the supervisor below
 	// polls it once every tickInterval, and the dashboard's /network page
 	// (through the Network field passed into web.Deps below) calls it
-	// directly whenever an operator asks for a scan or a connect — because
-	// both ultimately just run nmcli, and nmcli itself is what serialises
-	// concurrent use, the way ALSA's aplay already does for the player.
+	// directly whenever an operator asks for a scan or a connect. Sharing one
+	// value is safe on our side and that is all this claims: NMCLI holds no
+	// state, and each call is an independent process, so there is nothing
+	// here for two goroutines to race on. What NetworkManager does when two
+	// nmcli invocations arrive at once is its business, not something this
+	// code establishes — the worst case is one of them failing, which both
+	// callers already handle as an ordinary error.
 	netManager := netmgr.NMCLI{}
 	sup := netmgr.NewSupervisor(netManager, cfgFn, clock.System{Loc: loc}, logger)
 
