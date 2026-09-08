@@ -86,10 +86,28 @@ func run(configPath, dataDir, listen string) error {
 	// filled in, never on a boot that finds it already set.
 	hadAPPassword := store.Get().Network.APPassword != ""
 	apPassword, err := netmgr.EnsureAPPassword(store)
-	if err != nil {
-		return fmt.Errorf("ensure access point password: %w", err)
-	}
-	if !hadAPPassword {
+	switch {
+	case err != nil:
+		// Logged and survived, not returned. Returning here becomes
+		// os.Exit(1), and deploy/spoloh.service sets StartLimitIntervalSec=0,
+		// so a board that cannot write its configuration — a read-only SD
+		// card, an /etc/spoloh still owned by root because the installer
+		// never ran systemd-tmpfiles --create — would crash-loop forever
+		// over a password that exists only to serve networking. Announcing
+		// alerts is the job; every other startup dependency in this function
+		// already warns and carries on (the event log, the watchdog, the
+		// dashboard), and the unit file refuses Requires=NetworkManager.service
+		// for this same reason.
+		//
+		// The cost is named rather than hidden: the password stays empty, so
+		// StartHotspot refuses to raise the access point (netmgr's
+		// errEmptyAPPassword — an open one is worse than none) and the device
+		// cannot be configured over Wi-Fi until someone fixes the write. That
+		// is the trade, plainly: a device that cannot raise a setup access
+		// point still announces air raid alerts, and a device that will not
+		// start does not.
+		logger.Error("could not store the access point password; the device will not be able to raise its setup access point", "err", err)
+	case !hadAPPassword:
 		// The one place this password is ever logged. Everywhere else in
 		// this branch treats it as a credential that must never be logged,
 		// formatted into an error, or put in a URL — internal/netmgr was

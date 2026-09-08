@@ -1,0 +1,54 @@
+// Polkit rule letting the spoloh service account drive NetworkManager.
+//
+// Install to /etc/polkit-1/rules.d/50-spoloh-networkmanager.rules.
+//
+// Why this is needed: spoloh runs as User=spoloh (see spoloh.service), and
+// NetworkManager's D-Bus API is polkit-gated. A system service has no active
+// login session, so its requests fall to polkit's inactive/any defaults rather
+// than the allow_active ones a desktop user gets. Without a rule, every nmcli
+// call the daemon makes is denied, the access point never rises, and the board
+// is exactly the unreachable device this whole feature exists to prevent.
+//
+// The three actions granted are the ones the daemon actually performs, and no
+// others:
+//
+//   network-control        activating and deactivating a connection, which is
+//                          `nmcli device wifi connect` and the hotspot going
+//                          up and down
+//   settings.modify.system creating the spoloh-hotspot connection profile and
+//                          the profile a join writes; nmcli creates a system
+//                          connection for both
+//   wifi.scan              listing the networks in range for the setup page
+//
+// Deliberately not granted: enable-disable-network, enable-disable-wifi,
+// sleep-wake, and anything touching the firewall or checkpoints. The daemon
+// never asks for them, and a service that can announce air raid alerts should
+// not also be able to switch the school's networking off.
+//
+// UNVERIFIED ON HARDWARE. This has not been run against a real board — no
+// board was available while it was written, and nothing on a development
+// machine can exercise polkit against NetworkManager. It is the standard form
+// of this rule and the actions are read off the operations in
+// internal/netmgr/nmcli.go, but treat it as a hypothesis until an install has
+// confirmed it. If the daemon logs "could not read the network status"
+// forever on a board that does have NetworkManager, this file is the first
+// place to look: check `journalctl -u polkit` for a denial naming one of the
+// actions above.
+//
+// polkit >= 0.106 reads this JavaScript format. Distributions still shipping
+// polkit 0.105 (Debian bullseye and older) ignore rules.d entirely and need
+// the equivalent as a .pkla file under
+// /etc/polkit-1/localauthority/50-local.d/ instead. The installer is
+// responsible for choosing; see Plan 3b.
+
+polkit.addRule(function (action, subject) {
+    if (subject.user !== "spoloh") {
+        return polkit.Result.NOT_HANDLED;
+    }
+    if (action.id === "org.freedesktop.NetworkManager.network-control" ||
+        action.id === "org.freedesktop.NetworkManager.settings.modify.system" ||
+        action.id === "org.freedesktop.NetworkManager.wifi.scan") {
+        return polkit.Result.YES;
+    }
+    return polkit.Result.NOT_HANDLED;
+});
