@@ -7,10 +7,43 @@ logout button for a session nobody has. The unauthenticated pages select it
 with a one-line override of "layout" rather than this file testing a flag it
 would have to be handed from Go.
 */}}
+{{/*
+The product mark: the same public-address horn as the tab icon, drawn on
+currentColor rather than its own palette. In the page it sits on the page's
+own background and should follow the theme; a favicon has to carry its own,
+which is why static/icon.svg is a separate drawing rather than this one
+reused.
+
+Defined once and taken by both shells. The operator meets the login screen
+before anything else, so leaving the mark off it would make the first screen
+the only unbranded one. The argument is a pixel size, not a Tailwind class: Tailwind compiles only
+the classes it can see in the source, and a class assembled at render time
+is invisible to it — passing "size-8" here produced an unconstrained SVG
+that filled half the login screen. SVG width/height attributes need no
+build step to be true.
+
+aria-hidden because the word next to it already names the product: a screen
+reader announcing "loudspeaker Сполох" adds noise, not meaning.
+*/}}
+{{define "mark"}}<svg aria-hidden="true" viewBox="0 0 32 32" width="{{.}}" height="{{.}}" class="shrink-0" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linejoin="round" stroke-linecap="round">
+  <path d="M4 12.5h4L17.5 5.5v21L8 19.5H4z" fill="currentColor"/>
+  <path d="M21.5 11.5a7 7 0 0 1 0 9"/>
+  <path d="M25.5 8a11 11 0 0 1 0 16"/>
+</svg>{{end}}
+
 {{define "head"}}<meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{{block "title" .}}Сполох{{end}}</title>
 <link rel="stylesheet" href="/static/app.css">
+{{/*
+An explicit icon link, so the browser never falls back to requesting
+/favicon.ico and logging a 404 on every page of a device whose log an
+operator is expected to read. The touch icon is the same mark rasterised:
+this dashboard is opened from a phone standing next to the device, and a
+phone that adds it to the home screen otherwise stores a screenshot.
+*/}}
+<link rel="icon" href="/static/icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/static/icon-180.png">
 <script defer src="/static/alpine.min.js"></script>{{end}}
 
 {{define "layout"}}<!doctype html>
@@ -21,7 +54,7 @@ would have to be handed from Go.
 <body class="min-h-screen bg-background text-foreground">
 <header class="border-b border-border bg-card">
   <div class="mx-auto flex max-w-3xl items-center gap-2 p-3 sm:gap-4">
-    <span class="text-lg font-semibold tracking-wide">Сполох</span>
+    <a href="/" class="flex items-center gap-2 text-lg font-semibold tracking-wide">{{template "mark" 22}}Сполох</a>
     {{/*
     aria-current is bound by Alpine from the address bar rather than passed in
     from Go: the two page handlers have no field for it, and marking the open
@@ -53,7 +86,7 @@ six columns wrap into ribbons at the width that suits the home screen.
 </head>
 <body class="min-h-screen bg-background text-foreground">
 <main class="mx-auto flex min-h-screen max-w-sm flex-col justify-center gap-4 p-4">
-  <p class="text-center text-2xl font-semibold tracking-wide">Сполох</p>
+  <p class="flex items-center justify-center gap-2 text-2xl font-semibold tracking-wide">{{template "mark" 30}}Сполох</p>
   {{block "content" .}}{{end}}
 </main>
 </body>

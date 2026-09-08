@@ -1,0 +1,30 @@
+<!--
+The browser-tab icon: a public-address horn, the loudspeaker actually bolted
+to a school wall, not a hi-fi cabinet.
+
+Unlike the mark in the header this one carries its own backdrop. A favicon is
+drawn against a tab strip whose colour the page does not control, so a
+monochrome glyph would disappear on a strip that happens to match it. The
+square is the palette's own neutral rather than an invented brand colour.
+
+Deliberately one fixed appearance rather than a prefers-color-scheme pair:
+a dark square with a light horn reads on light and dark chrome alike, and
+every attribute here is inline rather than in a <style> block so that
+rasterising this file to icon-180.png produces the same mark. A CSS-driven
+version silently lost its sound wave when rendered, and an icon whose PNG
+does not match its SVG is worse than one that does not adapt.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32">
+  <rect width="32" height="32" rx="7" fill="#1a1a1a"/>
+  <!--
+    The horn: a throat on the left flaring into a bell on the right. Drawn
+    large and solid because the icon is read at 16 pixels more often than at
+    any other size, where a thin outline turns to mush.
+  -->
+  <path d="M5 13h4L17.5 6v20L9 19H5z" fill="#fafafa" stroke="#fafafa" stroke-width="1.6" stroke-linejoin="round"/>
+  <!--
+    One wave, not three. At 16 pixels a second arc merges into the first and
+    the mark reads as a smudge; one arc still says "this thing is sounding".
+  -->
+  <path d="M23.5 10.9C26.6 13.9 26.6 18.1 23.5 21.1L21.5 19.6C23.8 17.4 23.8 14.6 21.5 12.4Z" fill="#fafafa"/>
+</svg>
