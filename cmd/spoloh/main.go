@@ -258,12 +258,22 @@ func run(configPath, dataDir, listen string) error {
 	// the player, then the log — is what this achieves even though all
 	// three see ctx cancelled at once and eng.Run below can return while
 	// ListenAndServe is still draining an in-flight request within its own
-	// five-second grace period: nothing that draining request can reach
-	// (Engine, Player, the event log) is torn down or closed until
-	// players.Wait() below confirms every goroutine has actually returned,
-	// so the "stops first" that matters — no handler still running once the
-	// log is allowed to close — holds regardless of which of them happens
-	// to return first.
+	// five-second grace period: ListenAndServe's own shutdown does not
+	// return until its handlers have, and players.Wait() below does not
+	// return until ListenAndServe has, so nothing a *handler* can reach
+	// (Engine, Player, the event log) is torn down while that handler is
+	// still running, whichever of the three goroutines finishes first.
+	//
+	// One thing escapes that, and it is worth naming rather than leaving as
+	// an implied guarantee: web.handleNetworkConnect detaches its join from
+	// the request context on purpose (see its comment), so the join — and
+	// the Config.Update that follows a successful one — can outlive both the
+	// handler and lg.Close(). The store's OnChange hook then appends to a
+	// closed event log. That is fine as behaviour, not as a claim:
+	// database/sql returns an error rather than panicking on a closed
+	// database, and the hook installed above logs it. Nothing else in this
+	// codebase outlives ListenAndServe this way; a second thing that did
+	// would need this paragraph re-examined.
 	var players sync.WaitGroup
 	players.Add(3)
 	go func() {

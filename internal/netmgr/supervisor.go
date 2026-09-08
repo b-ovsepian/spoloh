@@ -15,14 +15,17 @@ import (
 const tickInterval = 5 * time.Second
 
 // failureLogInterval throttles repeated failure logging for the status read
-// and for StartHotspot and StopHotspot. The work itself stays unconditional — a device stuck unable
-// to raise or lower its access point must keep trying every tick, or it
-// either stays unreachable or keeps its own AP up over a working network
-// forever — but at tickInterval an unthrottled Error line would write one
-// every 5 seconds indefinitely — and the status read fails on every tick,
-// forever, on any board whose OS simply has no NetworkManager installed. internal/engine's heartbeatInterval throttles
-// its own 5s-cadence tick the same way for the same reason: these devices run
-// off SD cards that wear out (spec §5.7).
+// and for StartHotspot and StopHotspot. The work itself stays unconditional:
+// a device stuck unable to raise or lower its access point must keep trying
+// every tick, or it either stays unreachable or keeps its own AP up over a
+// working network forever.
+//
+// Only the logging is throttled. At tickInterval an unthrottled line would be
+// written every 5 seconds indefinitely, and the status read in particular
+// fails on every tick, forever, on any board whose OS simply has no
+// NetworkManager installed. internal/engine's heartbeatInterval throttles its
+// own 5s-cadence tick the same way for the same reason: these devices run off
+// SD cards that wear out (spec §5.7).
 const failureLogInterval = 5 * time.Minute
 
 // tickDeadline caps the nmcli work of one tick. NetworkManager can block for
@@ -177,15 +180,18 @@ func (s *Supervisor) Tick(ctx context.Context) {
 
 // logFailure logs a failed status read, StartHotspot or StopHotspot attempt
 // through last, throttled to at most once per failureLogInterval so a device
-// that keeps failing does not write a line every tick. It takes the log
-// function rather than a level so the status read can report at Warn — the
-// usual cause is a board with no NetworkManager, working exactly as designed
-// — while the hotspot failures report at Error, without a second copy of the
-// throttle. The first
-// failure of a run is always logged immediately (last starts, and returns to,
-// the zero time). Callers reset *last to the zero time on the next success,
-// so a fault that clears and later recurs is reported again rather than
-// staying suppressed by a stale timestamp from an earlier, unrelated run.
+// that keeps failing does not write a line every tick.
+//
+// It takes the log function rather than a level so the status read can report
+// at Warn — its usual cause is a board with no NetworkManager, working
+// exactly as designed — while the hotspot failures report at Error, without a
+// second copy of the throttle.
+//
+// The first failure of a run is always logged immediately (last starts, and
+// returns to, the zero time). Callers reset *last to the zero time on the
+// next success, so a fault that clears and later recurs is reported again
+// rather than staying suppressed by a stale timestamp from an earlier,
+// unrelated run.
 func (s *Supervisor) logFailure(last *time.Time, now time.Time, log func(string, ...any), msg string, err error) {
 	if !last.IsZero() && now.Sub(*last) < failureLogInterval {
 		return
