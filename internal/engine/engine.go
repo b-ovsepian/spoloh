@@ -75,6 +75,12 @@ type Engine struct {
 
 	nextHeartbeat time.Time
 
+	// pollRegion is the oblast the last poll actually read, so a region
+	// changed under the engine at runtime can be noticed. It is written and
+	// read only in PollOnce, which the poll loop calls from its own single
+	// goroutine, like nextPoll and attempt above.
+	pollRegion string
+
 	// mu guards the fields below, which the dashboard reads from an HTTP
 	// goroutine while the engine writes them from its own. alertstate.Machine
 	// is single-goroutine by contract, so the two values the dashboard needs
@@ -260,6 +266,31 @@ func (e *Engine) PollOnce(ctx context.Context) error {
 
 	now := e.d.Clock.Now()
 	e.reportHealth(cfg, snap, st)
+
+	// The oblast can change while the daemon runs: /network writes
+	// Alerts.Region, and this reads it fresh every poll. alertstate.Machine
+	// tracks a bare boolean and has no idea the boolean now comes from a
+	// different oblast, so without this the new oblast's first reading is
+	// compared against the old oblast's last one — switch a device from an
+	// oblast under alert to a calm one and it announces an all-clear over
+	// the school's speakers for an alert nobody in that building ever heard;
+	// switch it the other way and it plays the full siren. Re-baselining
+	// makes the new oblast's first reading silent, exactly as a cold start
+	// is, which is what spec §5.2 requires: never announce a transition the
+	// device did not witness.
+	//
+	// The first poll of a process is not a change and must not re-baseline:
+	// the machine has just been Restore'd from disk, and that is the one
+	// piece of evidence that lets Apply announce a transition that genuinely
+	// happened while the device was down.
+	if cfg.Alerts.Region != e.pollRegion {
+		if e.pollRegion != "" {
+			e.d.Logger.Info("configured oblast changed; adopting its current state without announcing",
+				"from", e.pollRegion, "to", cfg.Alerts.Region, "alert", st.Alert)
+			e.d.Machine.Rebaseline()
+		}
+		e.pollRegion = cfg.Alerts.Region
+	}
 
 	transition := e.d.Machine.Apply(st, now)
 

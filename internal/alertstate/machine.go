@@ -97,6 +97,23 @@ func (m *Machine) Apply(st alertsource.RegionState, now time.Time) Transition {
 	return Ended
 }
 
+// Rebaseline discards everything the machine believes, so that the next Apply
+// adopts what it sees silently — exactly as a cold start does.
+//
+// It exists for one caller: the engine, when the configured oblast has
+// changed under it. The machine tracks a bare boolean and has no idea the
+// boolean now comes from a different oblast, so without this the first
+// reading of the new one is compared against the last reading of the old one
+// and the difference is announced — a siren, or an all-clear, for a
+// transition this device never witnessed anywhere. Spec §5.2 is exactly the
+// rule that forbids that.
+//
+// The restored flag is cleared with the rest: the "a transition happened
+// while we were down" evidence Restore left behind belongs to the oblast that
+// was configured then, and it must not be used to justify announcing
+// something about a different one.
+func (m *Machine) Rebaseline() { *m = Machine{} }
+
 func (m *Machine) Alert() bool          { return m.alert }
 func (m *Machine) Since() time.Time     { return m.since }
 func (m *Machine) Baselined() bool      { return m.baselined }

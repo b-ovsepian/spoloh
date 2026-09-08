@@ -52,20 +52,28 @@ func (r *recorder) Played() []string {
 	return out
 }
 
-func snapshotBody(alert bool) string {
+// snapshotBody renders a two-oblast snapshot. The second oblast's alert flag
+// moves independently of the first so a test can switch the configured
+// region between two genuinely different states — the situation /network
+// creates every time an operator picks a different oblast.
+func snapshotBody(kyiv, lviv bool) string {
 	return fmt.Sprintf(`{"source":"test","cachedat":"2026-09-06 15:39:05",
-		"states":{"м. Київ":{"alertnow":%t,"changed":"2026-09-06 15:38:00"}}}`, alert)
+		"states":{"м. Київ":{"alertnow":%t,"changed":"2026-09-06 15:38:00"},
+		"Львівська область":{"alertnow":%t,"changed":"2026-09-06 15:38:00"}}}`, kyiv, lviv)
 }
 
 type harness struct {
-	eng  *engine.Engine
-	cfg  *config.Config
-	rec  *recorder
-	log  *eventlog.Log
-	set  func(alert bool)
-	fail func(bool)
-	rate func(retryAfter time.Duration) // 0 disables rate-limiting
-	hits func() int                     // number of HTTP requests the source has served
+	eng *engine.Engine
+	cfg *config.Config
+	rec *recorder
+	log *eventlog.Log
+	set func(alert bool)
+	// setOther drives the second oblast in the snapshot, for the tests that
+	// switch the configured region from one oblast to another.
+	setOther func(alert bool)
+	fail     func(bool)
+	rate     func(retryAfter time.Duration) // 0 disables rate-limiting
+	hits     func() int                     // number of HTTP requests the source has served
 }
 
 func newHarness(t *testing.T) *harness {
@@ -99,6 +107,7 @@ func newHarnessWith(t *testing.T, machine *alertstate.Machine, clk clock.Clock, 
 	var (
 		mu         sync.Mutex
 		alert      bool
+		otherAlert bool
 		broken     bool
 		retryAfter time.Duration
 	)
@@ -106,7 +115,7 @@ func newHarnessWith(t *testing.T, machine *alertstate.Machine, clk clock.Clock, 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		atomic.AddInt32(&hits, 1)
 		mu.Lock()
-		a, b, ra := alert, broken, retryAfter
+		a, o, b, ra := alert, otherAlert, broken, retryAfter
 		mu.Unlock()
 		if ra > 0 {
 			w.Header().Set("Retry-After", fmt.Sprintf("%d", int(ra.Seconds())))
@@ -118,7 +127,7 @@ func newHarnessWith(t *testing.T, machine *alertstate.Machine, clk clock.Clock, 
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, snapshotBody(a))
+		fmt.Fprint(w, snapshotBody(a, o))
 	}))
 	t.Cleanup(srv.Close)
 
@@ -169,14 +178,15 @@ func newHarnessWith(t *testing.T, machine *alertstate.Machine, clk clock.Clock, 
 	eng := engine.New(deps)
 
 	return &harness{
-		eng:  eng,
-		cfg:  cfg,
-		rec:  rec,
-		log:  lg,
-		set:  func(v bool) { mu.Lock(); alert = v; mu.Unlock() },
-		fail: func(v bool) { mu.Lock(); broken = v; mu.Unlock() },
-		rate: func(d time.Duration) { mu.Lock(); retryAfter = d; mu.Unlock() },
-		hits: func() int { return int(atomic.LoadInt32(&hits)) },
+		eng:      eng,
+		cfg:      cfg,
+		rec:      rec,
+		log:      lg,
+		set:      func(v bool) { mu.Lock(); alert = v; mu.Unlock() },
+		setOther: func(v bool) { mu.Lock(); otherAlert = v; mu.Unlock() },
+		fail:     func(v bool) { mu.Lock(); broken = v; mu.Unlock() },
+		rate:     func(d time.Duration) { mu.Lock(); retryAfter = d; mu.Unlock() },
+		hits:     func() int { return int(atomic.LoadInt32(&hits)) },
 	}
 }
 
@@ -801,5 +811,77 @@ func TestStopManualIsRecorded(t *testing.T) {
 	}
 	if !stopped {
 		t.Fatalf("stopping playback left no trace in the log: %+v", entries)
+	}
+}
+
+// otherRegion is the second oblast snapshotBody carries. /network is the only
+// writer of Alerts.Region, and it writes it while the daemon is running.
+const otherRegion = "Львівська область"
+
+// Switching the oblast from one under alert to a calm one must announce
+// nothing. The machine tracks a bare boolean and, without a re-baseline, sees
+// only true becoming false — so it plays a recorded all-clear over a school's
+// public address system for an alert nobody in that building ever heard.
+// Spec §5.2 exists precisely so a device never announces a transition it did
+// not witness.
+func TestRegionChangeFromAlertedToCalmAnnouncesNothing(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+
+	h.set(true)       // м. Київ is under alert
+	h.setOther(false) // Львівська область is calm
+	if err := h.eng.PollOnce(ctx); err != nil {
+		t.Fatalf("PollOnce: %v", err)
+	}
+
+	h.cfg.Alerts.Region = otherRegion
+	if err := h.eng.PollOnce(ctx); err != nil {
+		t.Fatalf("PollOnce after the region change: %v", err)
+	}
+	time.Sleep(200 * time.Millisecond)
+	if got := h.rec.Played(); len(got) != 0 {
+		t.Fatalf("played %v when the oblast changed, want nothing", got)
+	}
+
+	// The new oblast is adopted, not ignored: its own next transition is
+	// announced normally.
+	h.setOther(true)
+	if err := h.eng.PollOnce(ctx); err != nil {
+		t.Fatalf("PollOnce: %v", err)
+	}
+	if got := waitPlayed(t, h.rec); got != "siren.wav" {
+		t.Fatalf("played %q for an alert in the newly configured oblast, want siren.wav", got)
+	}
+}
+
+// The other direction plays the full siren for an alert that was already
+// running in an oblast this device has never announced for.
+func TestRegionChangeFromCalmToAlertedAnnouncesNothing(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+
+	h.set(false)     // м. Київ is calm
+	h.setOther(true) // Львівська область is already under alert
+	if err := h.eng.PollOnce(ctx); err != nil {
+		t.Fatalf("PollOnce: %v", err)
+	}
+
+	h.cfg.Alerts.Region = otherRegion
+	if err := h.eng.PollOnce(ctx); err != nil {
+		t.Fatalf("PollOnce after the region change: %v", err)
+	}
+	time.Sleep(200 * time.Millisecond)
+	if got := h.rec.Played(); len(got) != 0 {
+		t.Fatalf("played %v when the oblast changed, want nothing", got)
+	}
+
+	// And the all-clear for that alert, once it ends, is announced: the new
+	// oblast's alert was adopted as the baseline rather than discarded.
+	h.setOther(false)
+	if err := h.eng.PollOnce(ctx); err != nil {
+		t.Fatalf("PollOnce: %v", err)
+	}
+	if got := waitPlayed(t, h.rec); got != "all-clear.wav" {
+		t.Fatalf("played %q when the newly configured oblast's alert ended, want all-clear.wav", got)
 	}
 }
