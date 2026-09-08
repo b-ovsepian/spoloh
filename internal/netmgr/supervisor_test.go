@@ -532,3 +532,28 @@ func TestANilJoinGateIsNeverHeld(t *testing.T) {
 		t.Error("a hold that expired an hour of ticks ago is still reported held")
 	}
 }
+
+// These boards have no RTC, so the first thing NTP does after boot is step
+// the clock — which is exactly when downSince matters most. clock.System.Now
+// strips the monotonic reading (it calls Time.In), so the step is a pure
+// backwards jump in the values compared here, and an uncorrected one leaves
+// the device waiting out the whole step before it raises the access point
+// that is its only way back. internal/engine guards the same hazard on the
+// same boards, and this follows it.
+func TestABackwardsClockStepDoesNotDelayTheAccessPoint(t *testing.T) {
+	f := &netmgr.Fake{CurrentStatus: netmgr.Status{Connected: false}}
+	s, clk := supervisor(t, f, boot)
+
+	s.Tick(context.Background()) // down since boot
+
+	clk.Set(boot.Add(-time.Hour)) // NTP corrects a clock that was an hour fast
+
+	for i := 0; i < 60; i++ { // a minute of ticks after the step
+		clk.Advance(time.Second)
+		s.Tick(context.Background())
+	}
+
+	if got := calls(f, "StartHotspot"); got != 1 {
+		t.Fatalf("StartHotspot called %d times in the minute after a one-hour backwards step, want 1: the grace period must be measured against the corrected clock, not the whole step", got)
+	}
+}

@@ -158,6 +158,21 @@ func (s *Supervisor) Tick(ctx context.Context) {
 
 	if s.downSince.IsZero() {
 		s.downSince = now
+	} else if s.downSince.After(now) {
+		// A clock that steps backwards must not push the access point
+		// further away. These boards have no RTC, so NTP corrects the clock
+		// shortly after boot — precisely when downSince matters most — and
+		// clock.System.Now calls Time.In, which strips the monotonic
+		// reading, so the correction is a pure backwards jump in the values
+		// compared just below. The device cannot have gone down at a time
+		// that has not happened yet, so a downSince in the future means the
+		// clock moved, not that the device is early; that needs no arbitrary
+		// threshold to detect. Re-anchoring costs at most one more grace
+		// period, where leaving it would cost the whole step — hours, on a
+		// device whose access point is its only way back.
+		// internal/engine.Tick clamps its poll gate the same way, for the
+		// same hazard on the same boards.
+		s.downSince = now
 	}
 	if st.HotspotUp {
 		return // already reachable; nothing to do until a network appears
