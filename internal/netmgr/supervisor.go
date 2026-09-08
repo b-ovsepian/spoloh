@@ -67,8 +67,9 @@ type Supervisor struct {
 	// operation's failure was last logged, or the zero time if the last
 	// attempt succeeded (or none has been made yet). They throttle logging
 	// only — see failureLogInterval — never the retry.
-	lastStartFailureLog time.Time
-	lastStopFailureLog  time.Time
+	lastStartFailureLog  time.Time
+	lastStopFailureLog   time.Time
+	lastStatusFailureLog time.Time
 }
 
 func NewSupervisor(m Manager, cfg func() *config.Config, clk clock.Clock, logger *slog.Logger) *Supervisor {
@@ -95,15 +96,24 @@ func (s *Supervisor) Tick(ctx context.Context) {
 	ctx, cancel := context.WithTimeout(ctx, tickDeadline)
 	defer cancel()
 
+	now := s.clk.Now()
+
 	st, err := s.mgr.Status(ctx)
 	if err != nil {
 		// Unknown is not the same as disconnected. Raising an access point on a
 		// failed command could tear a working device off a working network.
-		s.logger.Warn("could not read the network status", "err", err)
+		//
+		// Throttled, and at Warn rather than Error, because the commonest cause
+		// is not a fault at all: a board installed on an OS without
+		// NetworkManager fails this read on every tick, forever. Unthrottled
+		// that is a line every five seconds onto an SD card the spec says wears
+		// out, and a permanent stream of errors about a device that is working
+		// exactly as designed — announcing alerts, simply unable to configure
+		// its own network — teaches an operator to ignore the log.
+		s.logFailure(&s.lastStatusFailureLog, now, s.logger.Warn, "could not read the network status", err)
 		return
 	}
-
-	now := s.clk.Now()
+	s.lastStatusFailureLog = time.Time{}
 
 	if st.Connected {
 		s.downSince = time.Time{}
@@ -112,7 +122,7 @@ func (s *Supervisor) Tick(ctx context.Context) {
 			// failing re-enters this branch every tick — exactly the case
 			// logFailure exists to keep quiet without weakening the retry.
 			if err := s.mgr.StopHotspot(ctx); err != nil {
-				s.logFailure(&s.lastStopFailureLog, now, "could not lower the access point", err)
+				s.logFailure(&s.lastStopFailureLog, now, s.logger.Error, "could not lower the access point", err)
 				return
 			}
 			s.lastStopFailureLog = time.Time{}
@@ -135,7 +145,7 @@ func (s *Supervisor) Tick(ctx context.Context) {
 	if err := s.mgr.StartHotspot(ctx, cfg.Network.APSSID, cfg.Network.APPassword); err != nil {
 		// Left for the next tick to retry: a device that hit a transient error
 		// at the grace boundary would otherwise stay unreachable forever.
-		s.logFailure(&s.lastStartFailureLog, now, "could not raise the access point", err)
+		s.logFailure(&s.lastStartFailureLog, now, s.logger.Error, "could not raise the access point", err)
 		return
 	}
 	s.lastStartFailureLog = time.Time{}
@@ -150,10 +160,10 @@ func (s *Supervisor) Tick(ctx context.Context) {
 // the zero time). Callers reset *last to the zero time on the next success,
 // so a fault that clears and later recurs is reported again rather than
 // staying suppressed by a stale timestamp from an earlier, unrelated run.
-func (s *Supervisor) logFailure(last *time.Time, now time.Time, msg string, err error) {
+func (s *Supervisor) logFailure(last *time.Time, now time.Time, log func(string, ...any), msg string, err error) {
 	if !last.IsZero() && now.Sub(*last) < failureLogInterval {
 		return
 	}
 	*last = now
-	s.logger.Error(msg, "err", err)
+	log(msg, "err", err)
 }

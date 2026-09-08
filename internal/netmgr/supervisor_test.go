@@ -373,3 +373,53 @@ func TestTickBoundsEveryCommand(t *testing.T) {
 		t.Error("StartHotspot ran on a context with no deadline")
 	}
 }
+
+// The commonest cause of a failing status read is not a fault: a board on an
+// OS without NetworkManager fails it on every tick, forever. Unthrottled that
+// is a line every five seconds onto an SD card the spec says wears out.
+func TestFailedStatusLoggingIsThrottled(t *testing.T) {
+	f := &netmgr.Fake{StatusErr: errors.New("exec: \"nmcli\": executable file not found in $PATH")}
+	s, clk, buf := supervisorWithLog(t, f, boot)
+
+	for i := 0; i < 700; i++ {
+		s.Tick(context.Background())
+		clk.Advance(time.Second)
+	}
+
+	if got := calls(f, "Status"); got != 700 {
+		t.Errorf("Status attempted %d times over 700 ticks; throttling the log must not throttle the read", got)
+	}
+	lines := strings.Count(buf.String(), "could not read the network status")
+	if lines == 0 {
+		t.Fatal("a failing status read must be reported at least once")
+	}
+	// 700 seconds at a five-minute interval: the first line plus two more.
+	if lines > 3 {
+		t.Errorf("%d log lines over 700 ticks; the warning must be throttled, not written every tick", lines)
+	}
+}
+
+// A read that starts working again must be reported when it next fails,
+// rather than staying silent because a fault hours ago used up the interval.
+func TestStatusFailureLoggingResumesAfterASuccess(t *testing.T) {
+	f := &netmgr.Fake{StatusErr: errors.New("nmcli is missing")}
+	s, clk, buf := supervisorWithLog(t, f, boot)
+
+	s.Tick(context.Background())
+	first := strings.Count(buf.String(), "could not read the network status")
+	if first != 1 {
+		t.Fatalf("first failure logged %d times, want 1", first)
+	}
+
+	f.StatusErr = nil
+	clk.Advance(time.Second)
+	s.Tick(context.Background())
+
+	f.StatusErr = errors.New("nmcli is missing again")
+	clk.Advance(time.Second)
+	s.Tick(context.Background())
+
+	if got := strings.Count(buf.String(), "could not read the network status"); got != 2 {
+		t.Errorf("logged %d times, want 2: a fault that returns after a success must be reported, not suppressed", got)
+	}
+}
