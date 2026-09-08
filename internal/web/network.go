@@ -18,6 +18,14 @@ import (
 // networks is still a page they can read and retry.
 const networkScanTimeout = 15 * time.Second
 
+// networkConnectTimeout bounds a join. It is far longer than the scan's: the
+// operator has already committed by pressing the button, and association plus
+// a DHCP lease on a school network genuinely takes tens of seconds. It exists
+// to stop a wedged NetworkManager holding the goroutine forever, not to keep
+// anyone waiting — see handleNetworkConnect for why the request's own
+// cancellation cannot be used for that.
+const networkConnectTimeout = 60 * time.Second
+
 // networkView is what network.html reads.
 type networkView struct {
 	// Networks is what a scan found, strongest signal first, with any hidden
@@ -191,7 +199,19 @@ func (s *Server) handleNetworkConnect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := s.deps.Network.Connect(r.Context(), ssid, password); err != nil {
+	// Detached from the request, on purpose. Joining the school network is
+	// what drops the access point the operator submitted this form over, so
+	// their browser losing the connection is the expected outcome of a
+	// successful join, not a failure. Go cancels a request context as soon as
+	// the client goes away, and nmcli runs under exec.CommandContext, so
+	// passing r.Context() here means the join kills itself at the exact moment
+	// it starts working. The deadline replaces the cancellation it removes:
+	// association plus a DHCP lease can take most of a minute on a school
+	// network, and a wedged NetworkManager must not leak this goroutine.
+	connectCtx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), networkConnectTimeout)
+	defer cancel()
+
+	if err := s.deps.Network.Connect(connectCtx, ssid, password); err != nil {
 		s.renderNetworkRejected(w, r, http.StatusBadGateway, cfg, ssid, region, err.Error())
 		return
 	}

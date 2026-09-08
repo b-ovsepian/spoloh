@@ -1,6 +1,7 @@
 package web_test
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -8,7 +9,11 @@ import (
 	"strings"
 	"testing"
 
+	"path/filepath"
+
+	"github.com/b-ovsepian/spoloh/internal/alertsource"
 	"github.com/b-ovsepian/spoloh/internal/config"
+	"github.com/b-ovsepian/spoloh/internal/configstore"
 	"github.com/b-ovsepian/spoloh/internal/netmgr"
 	"github.com/b-ovsepian/spoloh/internal/web"
 )
@@ -301,5 +306,64 @@ func TestNetworkConnectNeverEchoesThePassword(t *testing.T) {
 	}
 	if loc := rec.Header().Get("Location"); strings.Contains(loc, secret) {
 		t.Fatal("the submitted Wi-Fi password ended up in a redirect URL")
+	}
+}
+
+// connectProbe records the state of the context Connect was handed. It embeds
+// no Fake because only Connect matters here.
+type connectProbe struct {
+	netmgr.Fake
+	sawCancelled bool
+	hadDeadline  bool
+	called       bool
+}
+
+func (p *connectProbe) Connect(ctx context.Context, ssid, psk string) error {
+	p.called = true
+	p.sawCancelled = ctx.Err() != nil
+	_, p.hadDeadline = ctx.Deadline()
+	return nil
+}
+
+// Joining the school network is what drops the access point the operator
+// submitted this form over, so their browser losing the connection is the
+// expected outcome of a successful join. Go cancels a request's context the
+// moment the client goes away and nmcli runs under exec.CommandContext, so a
+// join carrying r.Context() would kill itself at exactly the moment it began
+// to work — and leave the device on neither network.
+func TestNetworkConnectSurvivesTheClientDisconnecting(t *testing.T) {
+	store, err := configstore.Open(filepath.Join(t.TempDir(), "config.json"))
+	if err != nil {
+		t.Fatalf("configstore.Open: %v", err)
+	}
+	probe := &connectProbe{}
+	srv, err := web.New(web.Deps{Config: store, Network: probe})
+	if err != nil {
+		t.Fatalf("web.New: %v", err)
+	}
+	setPassword(t, srv, "correct horse battery staple")
+	cookie := login(t, srv, "correct horse battery staple")
+
+	form := url.Values{"ssid": {"ShkolaWiFi"}, "password": {"sp0lohTest42"}, "region": {alertsource.Regions()[0]}}
+	req := httptest.NewRequest(http.MethodPost, "/network", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Origin", "http://"+req.Host)
+	req.AddCookie(cookie)
+
+	// The phone lost the access point before the handler reached Connect.
+	ctx, cancel := context.WithCancel(req.Context())
+	cancel()
+	req = req.WithContext(ctx)
+
+	srv.Handler().ServeHTTP(httptest.NewRecorder(), req)
+
+	if !probe.called {
+		t.Fatal("Connect was never attempted for a request whose client had gone away")
+	}
+	if probe.sawCancelled {
+		t.Error("Connect ran on an already-cancelled context; the join would be killed the moment it dropped the access point")
+	}
+	if !probe.hadDeadline {
+		t.Error("Connect ran with no deadline; a wedged NetworkManager would hold this goroutine forever")
 	}
 }
