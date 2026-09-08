@@ -34,8 +34,16 @@ func (t Transition) String() string {
 // goroutine and is not safe for concurrent Apply calls.
 type Machine struct {
 	baselined bool
-	alert     bool
-	since     time.Time
+
+	// region is the oblast the alert below was actually observed for. It is
+	// taken from the observation itself (RegionState carries its own key),
+	// never from configuration, so it describes what happened rather than
+	// what is currently configured. Persisted writes it out; Restore checks
+	// it. Without it the stored state is a bare boolean with nothing saying
+	// which oblast produced it, and a reader has no choice but to trust it.
+	region string
+	alert  bool
+	since  time.Time
 
 	// restored is true between Restore and the first Apply, so that the first
 	// observation can be compared against what the previous process knew.
@@ -64,6 +72,10 @@ func (m *Machine) Apply(st alertsource.RegionState, now time.Time) Transition {
 	if since.IsZero() {
 		since = now
 	}
+	// The provenance travels with the state: everything this machine believes
+	// from here on was observed for this oblast, and Persisted carries that so
+	// the next boot can check it instead of trusting it.
+	m.region = st.Region
 
 	if !m.baselined {
 		restored, restoredAlert, restoredSince := m.restored, m.alert, m.since
@@ -114,10 +126,16 @@ func (m *Machine) Apply(st alertsource.RegionState, now time.Time) Transition {
 // something about a different one.
 func (m *Machine) Rebaseline() { *m = Machine{} }
 
-func (m *Machine) Alert() bool          { return m.alert }
-func (m *Machine) Since() time.Time     { return m.since }
-func (m *Machine) Baselined() bool      { return m.baselined }
-func (m *Machine) Persisted() Persisted { return Persisted{Alert: m.alert, Since: m.since} }
+// Region reports the oblast the machine's current state was observed for, or
+// "" before it has seen anything.
+func (m *Machine) Region() string { return m.region }
+
+func (m *Machine) Alert() bool      { return m.alert }
+func (m *Machine) Since() time.Time { return m.since }
+func (m *Machine) Baselined() bool  { return m.baselined }
+func (m *Machine) Persisted() Persisted {
+	return Persisted{Region: m.region, Alert: m.alert, Since: m.since}
+}
 
 // Restore seeds the machine from disk so the dashboard can show an alert as
 // ongoing straight after boot. It deliberately leaves the machine un-baselined,
@@ -125,7 +143,27 @@ func (m *Machine) Persisted() Persisted { return Persisted{Alert: m.alert, Since
 // running — but it does record that the state came from disk, which is what
 // lets the first Apply recognise a transition that happened while the device
 // was down. See Apply.
-func (m *Machine) Restore(p Persisted) {
+//
+// region is the oblast the caller is configured for. A stored state recorded
+// for any other one is discarded outright, and the machine starts as cold as
+// a first boot. The alternative is announcing over a school's public address
+// system for something that happened in an oblast nobody in that building is
+// in: /network can change the configured oblast between two runs, and the
+// missed-transition rule below would then compare the new oblast's first
+// reading against the old one's last and fire on the difference.
+//
+// A state file written before this field existed carries no region, which
+// fails the comparison and takes the same path — one silent baseline and
+// nothing announced, which is how an unrecognised state file has to degrade.
+// That is also why this is a comparison and not a schema number like
+// config.json's: state.json has never had one, the field it needs is
+// load-bearing data rather than a version, and it already answers the
+// question a version would have been used to ask.
+func (m *Machine) Restore(p Persisted, region string) {
+	m.region = region
+	if p.Region != region {
+		return
+	}
 	m.alert = p.Alert
 	m.since = p.Since
 	m.restored = true
@@ -133,8 +171,14 @@ func (m *Machine) Restore(p Persisted) {
 
 // Persisted is the slice of state that survives a restart.
 type Persisted struct {
-	Alert bool      `json:"alert"`
-	Since time.Time `json:"since"`
+	// Region is the oblast Alert was observed for. It is what makes this file
+	// checkable at the point of use rather than something a reader has to
+	// trust: see Restore. A file written before this field existed decodes
+	// with an empty Region and is therefore ignored, which is the safe way
+	// for it to be wrong.
+	Region string    `json:"region"`
+	Alert  bool      `json:"alert"`
+	Since  time.Time `json:"since"`
 }
 
 // LoadPersisted reads the state file. The returned Persisted is always safe to

@@ -180,7 +180,10 @@ func run(configPath, dataDir, listen string) error {
 	if err != nil {
 		logger.Warn("could not read the saved alert state", "path", statePath, "err", err)
 	}
-	machine.Restore(p)
+	// The configured oblast is passed in so a state file recorded for a
+	// different one is discarded rather than trusted: /network can change the
+	// oblast between two runs of this daemon. See alertstate.Machine.Restore.
+	machine.Restore(p, cfg.Alerts.Region)
 
 	wd, err := watchdog.Open()
 	if err != nil {

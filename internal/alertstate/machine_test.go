@@ -16,6 +16,10 @@ func state(alert bool, changed time.Time) alertsource.RegionState {
 
 var now = time.Date(2026, 9, 6, 15, 0, 0, 0, time.UTC)
 
+// region is the oblast state() reports for, and so the one a restored state
+// has to name to be usable.
+const region = "м. Київ"
+
 // The device must not re-announce an alert that was already announced before a
 // reboot. The first snapshot after start is a silent baseline, always.
 func TestFirstApplyDuringActiveAlertIsSilent(t *testing.T) {
@@ -109,7 +113,7 @@ func TestZeroChangedFallsBackToNow(t *testing.T) {
 // otherwise an alert that began while the device was off would fire on boot.
 func TestRestoreDoesNotBaseline(t *testing.T) {
 	m := alertstate.New()
-	m.Restore(alertstate.Persisted{Alert: true, Since: now.Add(-time.Hour)})
+	m.Restore(alertstate.Persisted{Region: region, Alert: true, Since: now.Add(-time.Hour)}, region)
 
 	if !m.Alert() {
 		t.Fatal("restored state should show the alert")
@@ -123,7 +127,10 @@ func TestRestoreDoesNotBaseline(t *testing.T) {
 }
 
 // The five to ten seconds of a systemd restart are a window in which upstream
-// can flip without anyone hearing it. Restore's silent baseline is right for an
+// can flip without anyone hearing it. Every case here restores a state
+// recorded for the same oblast that is configured, so this table is also what
+// stops Restore's region check from being written as "ignore everything": the
+// first two cases only pass if a matching state is still used as evidence. Restore's silent baseline is right for an
 // alert that was already running — it was announced before the reboot — and
 // wrong for one that started during the window. Upstream's own "changed"
 // timestamp is what tells the two apart, and only a timestamp strictly newer
@@ -192,7 +199,7 @@ func TestRestoreWindowTransitions(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			m := alertstate.New()
-			m.Restore(alertstate.Persisted{Alert: tc.restoredAlert, Since: tc.restoredSince})
+			m.Restore(alertstate.Persisted{Region: region, Alert: tc.restoredAlert, Since: tc.restoredSince}, region)
 
 			if got := m.Apply(state(tc.observed, tc.changed), now); got != tc.want {
 				t.Fatalf("first Apply after Restore = %v, want %v", got, tc.want)
@@ -209,6 +216,82 @@ func TestRestoreWindowTransitions(t *testing.T) {
 	}
 }
 
+// /network can change the configured oblast between two runs of the daemon,
+// and a power cut on these boards is routine. A state file recorded for the
+// old oblast must not be used as evidence about the new one: comparing them
+// is what makes the missed-transition rule announce a siren, over a school's
+// public address system, for an alert that happened somewhere nobody in that
+// building is.
+func TestRestoreIgnoresStateFromAnotherOblast(t *testing.T) {
+	m := alertstate.New()
+	// Kyiv was under alert when this device was last configured for it, and
+	// the timestamp is old enough to "prove" a flip if it were ever compared.
+	m.Restore(alertstate.Persisted{Region: "м. Київ", Alert: true, Since: now.Add(-time.Hour)}, "Львівська область")
+
+	if m.Alert() {
+		t.Error("a state recorded for another oblast was adopted as this one's")
+	}
+	if m.Baselined() {
+		t.Error("restore must never baseline the machine")
+	}
+
+	// Lviv is calm, and upstream says it flipped after the stored timestamp:
+	// the exact shape that announces an all-clear if the stored state is
+	// trusted.
+	lviv := alertsource.RegionState{Region: "Львівська область", Alert: false, Changed: now.Add(-30 * time.Second)}
+	if got := m.Apply(lviv, now); got != alertstate.NoChange {
+		t.Fatalf("first Apply after a cross-oblast restore = %v, want NoChange", got)
+	}
+	if m.Region() != "Львівська область" {
+		t.Errorf("Region() = %q, want the oblast actually observed", m.Region())
+	}
+
+	// Adopted, not ignored: the new oblast's own next transition announces.
+	lviv.Alert = true
+	if got := m.Apply(lviv, now); got != alertstate.Started {
+		t.Fatalf("second Apply = %v, want Started", got)
+	}
+}
+
+// A state file written before Persisted carried a region decodes with an empty
+// one. It cannot be attributed to any oblast, so it is discarded the same way
+// — one silent baseline, nothing announced.
+func TestRestoreIgnoresStateWithNoOblast(t *testing.T) {
+	m := alertstate.New()
+	m.Restore(alertstate.Persisted{Alert: true, Since: now.Add(-time.Hour)}, region)
+
+	if m.Alert() {
+		t.Error("an unattributed state was adopted")
+	}
+	if got := m.Apply(state(false, now.Add(-30*time.Second)), now); got != alertstate.NoChange {
+		t.Fatalf("first Apply after restoring an unattributed state = %v, want NoChange", got)
+	}
+}
+
+// What the machine writes back names the oblast it was observed for, or the
+// check above has nothing to compare against on the next boot.
+func TestPersistedCarriesTheObservedOblast(t *testing.T) {
+	m := alertstate.New()
+	m.Apply(alertsource.RegionState{Region: "Одеська область", Alert: true, Changed: now}, now)
+
+	if got := m.Persisted().Region; got != "Одеська область" {
+		t.Fatalf("Persisted().Region = %q, want the oblast the reading came from", got)
+	}
+}
+
+// Rebaseline is the runtime half of the same story: after it, the machine
+// belongs to whatever oblast it next observes.
+func TestRebaselineForgetsTheOblast(t *testing.T) {
+	m := alertstate.New()
+	m.Apply(state(true, now.Add(-time.Hour)), now)
+	m.Rebaseline()
+
+	if m.Region() != "" || m.Alert() || m.Baselined() {
+		t.Fatalf("after Rebaseline: region %q, alert %v, baselined %v; want a machine as cold as a first boot",
+			m.Region(), m.Alert(), m.Baselined())
+	}
+}
+
 // A machine that was never restored — the true first boot, with no state file —
 // keeps the unconditional silent baseline: there is nothing to compare against.
 func TestFirstBootWithoutRestoreIsAlwaysSilent(t *testing.T) {
@@ -220,7 +303,7 @@ func TestFirstBootWithoutRestoreIsAlwaysSilent(t *testing.T) {
 
 func TestPersistedRoundTrip(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state.json")
-	want := alertstate.Persisted{Alert: true, Since: now}
+	want := alertstate.Persisted{Region: region, Alert: true, Since: now}
 
 	if err := alertstate.SavePersisted(path, want); err != nil {
 		t.Fatalf("SavePersisted: %v", err)
@@ -229,7 +312,7 @@ func TestPersistedRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadPersisted: %v", err)
 	}
-	if got.Alert != want.Alert || !got.Since.Equal(want.Since) {
+	if got.Region != want.Region || got.Alert != want.Alert || !got.Since.Equal(want.Since) {
 		t.Fatalf("got %+v, want %+v", got, want)
 	}
 }

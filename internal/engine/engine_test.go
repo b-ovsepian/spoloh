@@ -65,9 +65,12 @@ func snapshotBody(kyiv, lviv bool) string {
 type harness struct {
 	eng *engine.Engine
 	cfg *config.Config
-	rec *recorder
-	log *eventlog.Log
-	set func(alert bool)
+	// statePath is where the engine persists alertstate, for the tests that
+	// read back what a poll wrote.
+	statePath string
+	rec       *recorder
+	log       *eventlog.Log
+	set       func(alert bool)
 	// setOther drives the second oblast in the snapshot, for the tests that
 	// switch the configured region from one oblast to another.
 	setOther func(alert bool)
@@ -132,6 +135,7 @@ func newHarnessWith(t *testing.T, machine *alertstate.Machine, clk clock.Clock, 
 	t.Cleanup(srv.Close)
 
 	dir := t.TempDir()
+	statePath := filepath.Join(dir, "state.json")
 	soundsDir := filepath.Join(dir, "sounds")
 	if err := os.MkdirAll(soundsDir, 0o755); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
@@ -163,7 +167,7 @@ func newHarnessWith(t *testing.T, machine *alertstate.Machine, clk clock.Clock, 
 
 	deps := engine.Deps{
 		Config:    func() *config.Config { return cfg },
-		StatePath: filepath.Join(dir, "state.json"),
+		StatePath: statePath,
 		Source:    alertsource.New(srv.URL, cfg.Alerts.Sources, srv.Client()),
 		Machine:   machine,
 		Player:    pl,
@@ -178,15 +182,16 @@ func newHarnessWith(t *testing.T, machine *alertstate.Machine, clk clock.Clock, 
 	eng := engine.New(deps)
 
 	return &harness{
-		eng:      eng,
-		cfg:      cfg,
-		rec:      rec,
-		log:      lg,
-		set:      func(v bool) { mu.Lock(); alert = v; mu.Unlock() },
-		setOther: func(v bool) { mu.Lock(); otherAlert = v; mu.Unlock() },
-		fail:     func(v bool) { mu.Lock(); broken = v; mu.Unlock() },
-		rate:     func(d time.Duration) { mu.Lock(); retryAfter = d; mu.Unlock() },
-		hits:     func() int { return int(atomic.LoadInt32(&hits)) },
+		eng:       eng,
+		cfg:       cfg,
+		statePath: statePath,
+		rec:       rec,
+		log:       lg,
+		set:       func(v bool) { mu.Lock(); alert = v; mu.Unlock() },
+		setOther:  func(v bool) { mu.Lock(); otherAlert = v; mu.Unlock() },
+		fail:      func(v bool) { mu.Lock(); broken = v; mu.Unlock() },
+		rate:      func(d time.Duration) { mu.Lock(); retryAfter = d; mu.Unlock() },
+		hits:      func() int { return int(atomic.LoadInt32(&hits)) },
 	}
 }
 
@@ -343,7 +348,7 @@ func TestPlayManualRejectsUnknownSound(t *testing.T) {
 // case that only a genuinely un-baselined machine can pass.
 func TestBootWithRestoredActiveAlertStaysSilent(t *testing.T) {
 	m := alertstate.New()
-	m.Restore(alertstate.Persisted{Alert: true, Since: time.Date(2026, 9, 6, 12, 0, 0, 0, time.UTC)})
+	m.Restore(alertstate.Persisted{Region: "м. Київ", Alert: true, Since: time.Date(2026, 9, 6, 12, 0, 0, 0, time.UTC)}, "м. Київ")
 
 	h := newHarnessWithMachine(t, m)
 	h.set(true)
@@ -372,7 +377,7 @@ func TestBootWithRestoredActiveAlertStaysSilent(t *testing.T) {
 func TestBootWithRestoredActiveAlertIgnoresUndatedContradiction(t *testing.T) {
 	m := alertstate.New()
 	// Later than the snapshot's "changed" (15:38 Kyiv = 12:38 UTC).
-	m.Restore(alertstate.Persisted{Alert: true, Since: time.Date(2026, 9, 6, 18, 0, 0, 0, time.UTC)})
+	m.Restore(alertstate.Persisted{Region: "м. Київ", Alert: true, Since: time.Date(2026, 9, 6, 18, 0, 0, 0, time.UTC)}, "м. Київ")
 
 	h := newHarnessWithMachine(t, m)
 	h.set(false) // the fresh poll disagrees with the restored state
@@ -395,7 +400,7 @@ func TestBootAnnouncesATransitionMissedWhileDown(t *testing.T) {
 	m := alertstate.New()
 	// Earlier than the snapshot's "changed" (15:38 Kyiv = 12:38 UTC), so
 	// upstream's timestamp proves the flip came after we last knew anything.
-	m.Restore(alertstate.Persisted{Alert: false, Since: time.Date(2026, 9, 6, 11, 0, 0, 0, time.UTC)})
+	m.Restore(alertstate.Persisted{Region: "м. Київ", Alert: false, Since: time.Date(2026, 9, 6, 11, 0, 0, 0, time.UTC)}, "м. Київ")
 
 	h := newHarnessWithMachine(t, m)
 	h.set(true)
@@ -883,5 +888,71 @@ func TestRegionChangeFromCalmToAlertedAnnouncesNothing(t *testing.T) {
 	}
 	if got := waitPlayed(t, h.rec); got != "all-clear.wav" {
 		t.Fatalf("played %q when the newly configured oblast's alert ended, want all-clear.wav", got)
+	}
+}
+
+// The reboot half of the oblast change, end to end. state.json survives a
+// power cut — routine on these boards — and after an oblast change it holds
+// the previous oblast's reading. Restored against the new oblast it must count
+// for nothing: м. Київ was under alert, Львівська область is calm, and the
+// stored timestamp is old enough that the missed-transition rule would fire an
+// all-clear on it.
+func TestBootIgnoresStateRestoredFromAnotherOblast(t *testing.T) {
+	m := alertstate.New()
+	m.Restore(alertstate.Persisted{
+		Region: "м. Київ", Alert: true,
+		Since: time.Date(2026, 9, 6, 11, 0, 0, 0, time.UTC),
+	}, otherRegion)
+
+	h := newHarnessWithMachine(t, m)
+	h.cfg.Alerts.Region = otherRegion
+	h.setOther(false)
+
+	if err := h.eng.PollOnce(context.Background()); err != nil {
+		t.Fatalf("PollOnce: %v", err)
+	}
+	time.Sleep(200 * time.Millisecond)
+	if got := h.rec.Played(); len(got) != 0 {
+		t.Fatalf("played %v on a boot whose stored state belonged to another oblast, want nothing", got)
+	}
+
+	// The new oblast is adopted, so its own next transition announces.
+	h.setOther(true)
+	if err := h.eng.PollOnce(context.Background()); err != nil {
+		t.Fatalf("PollOnce: %v", err)
+	}
+	if got := waitPlayed(t, h.rec); got != "siren.wav" {
+		t.Fatalf("played %q for an alert in the configured oblast, want siren.wav", got)
+	}
+}
+
+// An oblast change must leave the state file describing the new oblast, or the
+// next boot correctly discards a file that names the old one and the
+// missed-transition rule is silently lost from then on. It is the one write
+// that happens without a transition; see PollOnce.
+func TestRegionChangePersistsTheNewOblast(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+
+	h.set(true)
+	h.setOther(false)
+	if err := h.eng.PollOnce(ctx); err != nil {
+		t.Fatalf("PollOnce: %v", err)
+	}
+
+	h.cfg.Alerts.Region = otherRegion
+	if err := h.eng.PollOnce(ctx); err != nil {
+		t.Fatalf("PollOnce after the region change: %v", err)
+	}
+
+	p, err := alertstate.LoadPersisted(h.statePath)
+	if err != nil {
+		t.Fatalf("LoadPersisted: %v", err)
+	}
+	if p.Region != otherRegion {
+		t.Fatalf("stored region = %q, want %q: an oblast change must be written out", p.Region, otherRegion)
+	}
+	if p.Alert {
+		t.Error("stored alert = true for an oblast that is calm")
 	}
 }

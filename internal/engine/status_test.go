@@ -131,7 +131,7 @@ func TestStatusLeavesThePresentationFieldsToTheWebLayer(t *testing.T) {
 func TestStatusReportsARestoredAlertBeforeAnyPoll(t *testing.T) {
 	since := time.Date(2026, 9, 6, 2, 41, 57, 0, time.UTC)
 	m := alertstate.New()
-	m.Restore(alertstate.Persisted{Alert: true, Since: since})
+	m.Restore(alertstate.Persisted{Region: "м. Київ", Alert: true, Since: since}, "м. Київ")
 
 	h := newHarnessWithMachine(t, m)
 

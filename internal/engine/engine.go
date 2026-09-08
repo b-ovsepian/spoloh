@@ -283,11 +283,13 @@ func (e *Engine) PollOnce(ctx context.Context) error {
 	// the machine has just been Restore'd from disk, and that is the one
 	// piece of evidence that lets Apply announce a transition that genuinely
 	// happened while the device was down.
+	rebaselined := false
 	if cfg.Alerts.Region != e.pollRegion {
 		if e.pollRegion != "" {
 			e.d.Logger.Info("configured oblast changed; adopting its current state without announcing",
 				"from", e.pollRegion, "to", cfg.Alerts.Region, "alert", st.Alert)
 			e.d.Machine.Rebaseline()
+			rebaselined = true
 		}
 		e.pollRegion = cfg.Alerts.Region
 	}
@@ -312,10 +314,19 @@ func (e *Engine) PollOnce(ctx context.Context) error {
 	case alertstate.Ended:
 		e.announce(config.TriggerAlertEnd, eventlog.KindAlert, now)
 	default:
-		return nil
+		// A re-baseline writes too, even though it announced nothing. The
+		// file now names the oblast its reading came from, and until the new
+		// pair is on disk the stored state still names the old oblast — which
+		// the next boot would correctly discard, silently losing the
+		// missed-transition rule for as long as the new oblast stays calm.
+		// One write per oblast change is not a cadence, it is an event.
+		if !rebaselined {
+			return nil
+		}
 	}
 
-	// Written only on a transition: this file lives on an SD card.
+	// Written only on a transition or a re-baseline: this file lives on an
+	// SD card.
 	if e.d.StatePath != "" {
 		if err := alertstate.SavePersisted(e.d.StatePath, e.d.Machine.Persisted()); err != nil {
 			e.d.Logger.Warn("could not persist alert state", "err", err)
