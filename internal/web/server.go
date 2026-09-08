@@ -36,7 +36,12 @@ type Deps struct {
 	// main.go; nil until then, and in this package's own tests that don't
 	// need it — same tolerance every other optional dependency gets.
 	Network netmgr.Manager
-	Logger  *slog.Logger
+	// JoinGate is held by /network for the length of a join, so the network
+	// supervisor stands down instead of raising an access point on top of
+	// the join in progress. Nil is tolerated like every other optional
+	// dependency here, and a nil gate is simply never held.
+	JoinGate *netmgr.JoinGate
+	Logger   *slog.Logger
 }
 
 type Server struct {

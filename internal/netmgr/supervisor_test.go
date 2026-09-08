@@ -26,7 +26,17 @@ func supervisor(t *testing.T, f *netmgr.Fake, start time.Time) (*netmgr.Supervis
 	clk := clock.NewFake(start)
 	cfg := config.Default() // APFallbackAfter is 45s
 	cfg.Network.APPassword = testAPPassword
-	return netmgr.NewSupervisor(f, func() *config.Config { return cfg }, clk, nil), clk
+	return netmgr.NewSupervisor(f, func() *config.Config { return cfg }, clk, nil, nil), clk
+}
+
+// supervisorWithGate is supervisor plus the join gate the dashboard holds
+// while it is joining the device to a network.
+func supervisorWithGate(t *testing.T, f *netmgr.Fake, start time.Time, g *netmgr.JoinGate) (*netmgr.Supervisor, *clock.Fake) {
+	t.Helper()
+	clk := clock.NewFake(start)
+	cfg := config.Default()
+	cfg.Network.APPassword = testAPPassword
+	return netmgr.NewSupervisor(f, func() *config.Config { return cfg }, clk, nil, g), clk
 }
 
 // supervisorWithLog is supervisor plus a logger writing into a buffer the
@@ -38,7 +48,7 @@ func supervisorWithLog(t *testing.T, f *netmgr.Fake, start time.Time) (*netmgr.S
 	cfg.Network.APPassword = testAPPassword
 	var buf bytes.Buffer
 	logger := slog.New(slog.NewTextHandler(&buf, nil))
-	return netmgr.NewSupervisor(f, func() *config.Config { return cfg }, clk, logger), clk, &buf
+	return netmgr.NewSupervisor(f, func() *config.Config { return cfg }, clk, logger, nil), clk, &buf
 }
 
 // calls counts, from f's call log, how many times method was invoked.
@@ -361,7 +371,7 @@ func TestTickBoundsEveryCommand(t *testing.T) {
 	cfg := config.Default()
 	cfg.Network.APPassword = testAPPassword
 	logger := slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil))
-	s := netmgr.NewSupervisor(p, func() *config.Config { return cfg }, clk, logger)
+	s := netmgr.NewSupervisor(p, func() *config.Config { return cfg }, clk, logger, nil)
 
 	clk.Advance(46 * time.Second)
 	s.Tick(context.Background())
@@ -421,5 +431,104 @@ func TestStatusFailureLoggingResumesAfterASuccess(t *testing.T) {
 
 	if got := strings.Count(buf.String(), "could not read the network status"); got != 2 {
 		t.Errorf("logged %d times, want 2: a fault that returns after a success must be reported, not suppressed", got)
+	}
+}
+
+// midJoin is what the radio reports while a join started from the dashboard
+// is in flight: it has left the access point and has not yet associated with
+// the school network, so it is neither joined to anything nor serving
+// anything. It is built here rather than produced by Fake.Connect on purpose
+// — Fake.Connect models a board that ends up connected, which is correct for
+// what it models, and a board with an Ethernet upstream legitimately reports
+// Connected and HotspotUp together. This transient state is neither of those,
+// so the test states it directly.
+var midJoin = netmgr.Status{Connected: false, HotspotUp: false}
+
+// While the dashboard is joining the device to a network, the supervisor must
+// do nothing at all. Mid-join the radio looks exactly like a device with no
+// network — which, past the grace period, is the state that makes the
+// supervisor raise an access point, on top of the join it should be waiting
+// for. Association plus a DHCP lease takes tens of seconds and the supervisor
+// ticks every five, so without the gate essentially every real join is fought.
+func TestAHeldJoinGateStopsTheSupervisorRaisingAnAccessPoint(t *testing.T) {
+	f := &netmgr.Fake{CurrentStatus: midJoin}
+	gate := &netmgr.JoinGate{}
+	s, clk := supervisorWithGate(t, f, boot, gate)
+
+	// Well past the 45-second grace period: downSince has been set since
+	// boot, so this is the state the supervisor would otherwise act on.
+	clk.Advance(5 * time.Minute)
+	gate.HoldUntil(clk.Now().Add(time.Minute))
+
+	for i := 0; i < 12; i++ { // a minute of ticks at the real cadence
+		s.Tick(context.Background())
+		clk.Advance(5 * time.Second)
+	}
+
+	if got := calls(f, "StartHotspot"); got != 0 {
+		t.Fatalf("StartHotspot called %d times while a join was in flight, want 0", got)
+	}
+	if got := calls(f, "Status"); got != 0 {
+		t.Errorf("Status read %d times while a join was in flight; a held gate must stop the tick before it touches the manager", got)
+	}
+}
+
+// The gate holds a deadline, not a flag, so a handler that dies without
+// releasing it cannot leave the device unable to raise an access point ever
+// again. Once the hold has expired the same state raises one as usual.
+func TestAnExpiredJoinGateLetsTheSupervisorRaiseAnAccessPoint(t *testing.T) {
+	f := &netmgr.Fake{CurrentStatus: midJoin}
+	gate := &netmgr.JoinGate{}
+	s, clk := supervisorWithGate(t, f, boot, gate)
+
+	clk.Advance(5 * time.Minute)
+	gate.HoldUntil(clk.Now().Add(time.Minute))
+	clk.Advance(2 * time.Minute) // the holder never released it
+
+	s.Tick(context.Background())
+
+	if got := calls(f, "StartHotspot"); got != 1 {
+		t.Fatalf("StartHotspot called %d times after the hold expired, want 1", got)
+	}
+}
+
+// Release is what ends a hold in the ordinary case; the deadline is only the
+// backstop.
+func TestAReleasedJoinGateLetsTheSupervisorRaiseAnAccessPoint(t *testing.T) {
+	f := &netmgr.Fake{CurrentStatus: midJoin}
+	gate := &netmgr.JoinGate{}
+	s, clk := supervisorWithGate(t, f, boot, gate)
+
+	clk.Advance(5 * time.Minute)
+	gate.HoldUntil(clk.Now().Add(time.Minute))
+	gate.Release()
+
+	s.Tick(context.Background())
+
+	if got := calls(f, "StartHotspot"); got != 1 {
+		t.Fatalf("StartHotspot called %d times after the gate was released, want 1", got)
+	}
+}
+
+// A nil gate has to mean "no join is in flight", never "held forever": not
+// every construction has a dashboard behind it.
+func TestANilJoinGateIsNeverHeld(t *testing.T) {
+	var g *netmgr.JoinGate
+	if g.Held(boot) {
+		t.Error("a nil gate reported itself held")
+	}
+	g.HoldUntil(boot.Add(time.Minute)) // must not panic
+	g.Release()                        // must not panic
+
+	var zero netmgr.JoinGate
+	if zero.Held(boot) {
+		t.Error("the zero gate reported itself held")
+	}
+	zero.HoldUntil(boot.Add(time.Minute))
+	if !zero.Held(boot) {
+		t.Error("a gate held for another minute reported itself free")
+	}
+	if zero.Held(boot.Add(2 * time.Minute)) {
+		t.Error("a hold that expired an hour of ticks ago is still reported held")
 	}
 }

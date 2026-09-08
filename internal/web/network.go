@@ -26,6 +26,14 @@ const networkScanTimeout = 15 * time.Second
 // cancellation cannot be used for that.
 const networkConnectTimeout = 60 * time.Second
 
+// joinGateSlack is added to networkConnectTimeout when this handler holds the
+// join gate, so the hold outlives the join it covers rather than expiring a
+// moment before Connect returns and letting the supervisor act on the last
+// instant of it. It is small on purpose: the hold is released explicitly the
+// moment Connect returns, so this only bounds the paths that never reach that
+// release — see netmgr.JoinGate on why the hold expires at all.
+const joinGateSlack = 5 * time.Second
+
 // networkView is what network.html reads.
 type networkView struct {
 	// Networks is what a scan found, strongest signal first, with any hidden
@@ -244,7 +252,17 @@ func (s *Server) handleNetworkConnect(w http.ResponseWriter, r *http.Request) {
 	connectCtx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), networkConnectTimeout)
 	defer cancel()
 
-	if err := s.deps.Network.Connect(connectCtx, ssid, password); err != nil {
+	// Held from just before the join to just after it, on both paths out.
+	// The supervisor ticks every five seconds and reads the radio mid-join as
+	// "no network at all" — neither joined nor serving its own access point —
+	// which past its grace period is exactly the state that makes it raise a
+	// hotspot, on top of the join the operator is standing there waiting for.
+	// The deadline is the backstop for a path that never reaches the Release
+	// below; see netmgr.JoinGate for why it is a deadline and not a flag.
+	s.deps.JoinGate.HoldUntil(time.Now().Add(networkConnectTimeout + joinGateSlack))
+	err := s.deps.Network.Connect(connectCtx, ssid, password)
+	s.deps.JoinGate.Release()
+	if err != nil {
 		s.renderNetworkRejected(w, r, http.StatusBadGateway, cfg, ssid, region, err.Error())
 		return
 	}

@@ -215,16 +215,24 @@ func run(configPath, dataDir, listen string) error {
 	// code establishes — the worst case is one of them failing, which both
 	// callers already handle as an ordinary error.
 	netManager := netmgr.NMCLI{}
-	sup := netmgr.NewSupervisor(netManager, cfgFn, clock.System{Loc: loc}, logger)
+	// One gate, two holders: the /network page takes it while it joins the
+	// device to a school network, and the supervisor stands down while it is
+	// held. Without it the supervisor raises an access point on top of the
+	// join — mid-join the radio reports neither connected nor hotspot-up,
+	// which past the grace period is precisely the state it acts on. See
+	// netmgr.JoinGate.
+	joinGate := &netmgr.JoinGate{}
+	sup := netmgr.NewSupervisor(netManager, cfgFn, clock.System{Loc: loc}, logger, joinGate)
 
 	websrv, err := web.New(web.Deps{
-		Config:  store,
-		Engine:  eng,
-		Log:     lg,
-		Player:  pl,
-		Library: lib,
-		Network: netManager,
-		Logger:  logger,
+		Config:   store,
+		Engine:   eng,
+		Log:      lg,
+		Player:   pl,
+		Library:  lib,
+		Network:  netManager,
+		JoinGate: joinGate,
+		Logger:   logger,
 	})
 	if err != nil {
 		return err

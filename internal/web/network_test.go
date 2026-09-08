@@ -9,6 +9,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"path/filepath"
 
@@ -440,5 +441,99 @@ func TestNetworkConnectPlainSuccessCarriesNoRegionWarning(t *testing.T) {
 
 	if strings.Contains(rec.Body.String(), "не збереглася") {
 		t.Error("a plain, fully successful connect carries the region-not-saved warning")
+	}
+}
+
+// gateProbe is a netmgr.Manager that answers the one question this test has:
+// was the join gate held at the moment Connect was actually running? The
+// supervisor's whole reason for consulting the gate is that window and no
+// other, so observing it from inside Connect is the only assertion that means
+// anything.
+type gateProbe struct {
+	*netmgr.Fake
+	gate *netmgr.JoinGate
+	held bool
+}
+
+func (p *gateProbe) Connect(ctx context.Context, ssid, psk string) error {
+	p.held = p.gate.Held(time.Now())
+	return p.Fake.Connect(ctx, ssid, psk)
+}
+
+// newServerWithManager wires an arbitrary netmgr.Manager and join gate in,
+// for the tests that need to observe the manager from the inside rather than
+// script it from the outside.
+func newServerWithManager(t *testing.T, mgr netmgr.Manager, gate *netmgr.JoinGate) (*web.Server, *configstore.Store) {
+	t.Helper()
+	store, err := configstore.Open(filepath.Join(t.TempDir(), "config.json"))
+	if err != nil {
+		t.Fatalf("configstore.Open: %v", err)
+	}
+	srv, err := web.New(web.Deps{Config: store, Network: mgr, JoinGate: gate})
+	if err != nil {
+		t.Fatalf("web.New: %v", err)
+	}
+	return srv, store
+}
+
+// The join is what takes the radio off the access point and onto the school
+// network, and for the tens of seconds that takes the device looks to the
+// supervisor like a device with no network at all. Unless this handler holds
+// the gate for the length of the join, the supervisor raises an access point
+// on top of it.
+func TestNetworkConnectHoldsTheJoinGateForTheJoin(t *testing.T) {
+	gate := &netmgr.JoinGate{}
+	probe := &gateProbe{Fake: &netmgr.Fake{}, gate: gate}
+	srv, _ := newServerWithManager(t, probe, gate)
+	setPassword(t, srv, "correct horse battery staple")
+	cookie := login(t, srv, "correct horse battery staple")
+
+	if gate.Held(time.Now()) {
+		t.Fatal("setup: the gate is held before any join was started")
+	}
+
+	req := postForm("/network", url.Values{
+		"ssid": {"ShkolaWiFi"}, "password": {"schoolpass1"}, "region": {"Львівська область"},
+	})
+	req.AddCookie(cookie)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if !probe.held {
+		t.Error("the join gate was not held while Connect was running; the supervisor is free to raise an access point mid-join")
+	}
+	if gate.Held(time.Now()) {
+		t.Error("the join gate is still held after the join returned; it must be released on the way out, not left to expire")
+	}
+}
+
+// A join that fails releases the gate too. Leaving it held would keep the
+// supervisor from raising the access point that is the operator's way back
+// after exactly the failure that needs one.
+func TestNetworkConnectReleasesTheJoinGateOnFailure(t *testing.T) {
+	gate := &netmgr.JoinGate{}
+	probe := &gateProbe{Fake: &netmgr.Fake{ConnectErr: errors.New("bad password")}, gate: gate}
+	srv, _ := newServerWithManager(t, probe, gate)
+	setPassword(t, srv, "correct horse battery staple")
+	cookie := login(t, srv, "correct horse battery staple")
+
+	req := postForm("/network", url.Values{
+		"ssid": {"ShkolaWiFi"}, "password": {"wrong"}, "region": {"Львівська область"},
+	})
+	req.AddCookie(cookie)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d, want 502 for a failed join", rec.Code)
+	}
+	if !probe.held {
+		t.Error("the join gate was not held while Connect was running")
+	}
+	if gate.Held(time.Now()) {
+		t.Error("a failed join left the join gate held")
 	}
 }

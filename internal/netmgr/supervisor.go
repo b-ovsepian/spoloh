@@ -55,6 +55,11 @@ type Supervisor struct {
 	clk    clock.Clock
 	logger *slog.Logger
 
+	// join is the gate the dashboard holds while it is joining the device to
+	// a network. Nil is valid and means "no join is ever in flight" — see
+	// JoinGate.
+	join *JoinGate
+
 	// downSince is when the device was first seen without a connection, or the
 	// zero time while it is connected. It starts at construction time (see
 	// NewSupervisor) rather than zero, so a device presumed down since boot
@@ -76,11 +81,11 @@ type Supervisor struct {
 	lastStatusFailureLog time.Time
 }
 
-func NewSupervisor(m Manager, cfg func() *config.Config, clk clock.Clock, logger *slog.Logger) *Supervisor {
+func NewSupervisor(m Manager, cfg func() *config.Config, clk clock.Clock, logger *slog.Logger, join *JoinGate) *Supervisor {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Supervisor{mgr: m, cfg: cfg, clk: clk, logger: logger, downSince: clk.Now()}
+	return &Supervisor{mgr: m, cfg: cfg, clk: clk, logger: logger, join: join, downSince: clk.Now()}
 }
 
 func (s *Supervisor) Run(ctx context.Context) {
@@ -97,10 +102,23 @@ func (s *Supervisor) Run(ctx context.Context) {
 }
 
 func (s *Supervisor) Tick(ctx context.Context) {
+	now := s.clk.Now()
+
+	// The dashboard is joining the device to a network right now: stand down
+	// entirely — do not read the status, do not raise anything, do not lower
+	// anything, do not advance downSince. Mid-join the radio has left the
+	// access point and not yet associated, so it reports neither Connected
+	// nor HotspotUp, and downSince has been set since boot: past the grace
+	// period that is exactly the state the code below acts on, and it would
+	// raise an access point on top of the join. The gate expires on its own,
+	// so a handler that dies without releasing it costs one join's worth of
+	// ticks rather than the device's ability to ever become reachable again.
+	if s.join.Held(now) {
+		return
+	}
+
 	ctx, cancel := context.WithTimeout(ctx, tickDeadline)
 	defer cancel()
-
-	now := s.clk.Now()
 
 	st, err := s.mgr.Status(ctx)
 	if err != nil {
