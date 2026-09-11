@@ -327,3 +327,66 @@ func TestInstallerExitsOnSIGTERM(t *testing.T) {
 		t.Fatalf("installer did not exit within 3s of SIGTERM — it survived the signal and kept running\n%s", out.String())
 	}
 }
+
+// TestATruncatedScriptInstallsNothing is the `curl | sudo sh` failure the
+// straight-line version of this script had no defence against: sh executes
+// whatever bytes arrive, so a connection dropped mid-download ran the first
+// half of the install and exited 0. Cut just before the file-placement step
+// that is exactly four apt packages installed, no files placed, success
+// reported — the half-installed device section 3's own comment says the
+// script exists to prevent, reached through the delivery method the README
+// prescribes.
+//
+// The fix is structural rather than a check: with the body inside main() and
+// `main "$@"` as the last line of the file, a truncated copy defines a
+// function and runs nothing.
+func TestATruncatedScriptInstallsNothing(t *testing.T) {
+	script, err := os.ReadFile("install.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Cut at a marker rather than a line number so this keeps testing the
+	// same thing as the script grows: everything before step 5, which is
+	// where the first file would be placed.
+	const marker = "# 5. Files."
+	lines := strings.SplitAfter(string(script), "\n")
+	cut := -1
+	for i, line := range lines {
+		if strings.HasPrefix(strings.TrimSpace(line), marker) {
+			cut = i
+			break
+		}
+	}
+	if cut < 0 {
+		t.Fatalf("install.sh no longer contains %q, so this test cannot find the truncation point", marker)
+	}
+	truncated := strings.Join(lines[:cut], "")
+	// The whole point is a cut that lands after the package step: a cut
+	// before it would prove nothing, because there would be nothing
+	// destructive above the cut to run.
+	if !strings.Contains(truncated, "apt-get install") {
+		t.Fatalf("the truncation point is above the package step, so this test proves nothing")
+	}
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "install.sh")
+	if err := os.WriteFile(path, []byte(truncated), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd, logPath, prefix := newInstallerCmd(t, downloadDir(t, ""), "armv7l")
+	cmd.Args = []string{"sh", path}
+	out, err := cmd.CombinedOutput()
+	report := string(out) + "\n--- commands ---\n" + readFile(logPath) + "\n--- prefix ---\n" + tree(t, prefix)
+	t.Logf("truncated installer:\n%s", report)
+
+	if err == nil {
+		t.Errorf("a truncated script exited 0, so a dropped connection reports a successful install\n%s", report)
+	}
+	if placed := tree(t, prefix); placed != "" {
+		t.Errorf("a truncated script placed files:\n%s\n%s", placed, report)
+	}
+	if strings.Contains(report, "apt-get") {
+		t.Errorf("a truncated script ran apt-get, so it changed the system before stopping\n%s", report)
+	}
+}
