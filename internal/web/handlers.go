@@ -3,6 +3,7 @@ package web
 import (
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 
 	"github.com/b-ovsepian/spoloh/internal/config"
@@ -155,17 +156,21 @@ func (s *Server) handleHome(w http.ResponseWriter, r *http.Request) {
 // cookie: the message is meant to be seen exactly once, by the browser that
 // is about to render this response, and never needs to survive past it.
 //
-// The "played" value is never echoed unless Library confirms it names a real
-// sound. It is otherwise attacker-controllable: anyone who gets an already
-// logged-in operator to open a crafted "?played=..." link could plant
-// arbitrary text on the device's own trusted dashboard. html/template would
-// still escape it — this is not an injection fix — but an unvalidated string
-// has no business looking like something the device said.
+// Nothing here echoes what it was given. The "played" value is only ever
+// repeated once Library confirms it names a real sound, and "playfailed"
+// carries a code this package chose rather than a sentence. Both are
+// attacker-controllable otherwise: anyone who gets an already logged-in
+// operator to open a crafted "?played=..." link could plant arbitrary text
+// on the device's own trusted dashboard. html/template would still escape it
+// — this is not an injection fix — but an unvalidated string has no business
+// looking like something the device said.
 func (s *Server) flashMessage(r *http.Request) string {
 	q := r.URL.Query()
 	switch {
 	case q.Has("stopped"):
 		return "Відтворення зупинено."
+	case q.Has("playfailed"):
+		return playFailureMessage(q.Get("playfailed"))
 	case q.Has("played"):
 		sound := q.Get("played")
 		// Library is nil in this package's own tests and before Task 9
@@ -274,25 +279,130 @@ func (s *Server) handleLog(w http.ResponseWriter, r *http.Request) {
 	s.render(w, http.StatusOK, "log.html", view)
 }
 
+// playReturnField is the optional form field naming the page /play should
+// answer on. /sounds sets it, so previewing a sound leaves the operator
+// standing where they were; the home page's own form omits it and keeps the
+// behaviour it has always had.
+const playReturnField = "return"
+
+// Play-failure reason codes. The redirect carries a code, never a sentence:
+// whatever comes back in the query string is attacker-supplied by
+// construction — see flashMessage — so the only text that may reach a page
+// is text chosen here.
+const (
+	playFailedMissing     = "missing"
+	playFailedUnavailable = "unavailable"
+)
+
+// playFailureMessage turns one of those codes into the sentence an operator
+// reads. An unrecognised code — a hand-edited link, a redirect from an older
+// build still sitting in a browser's history — falls back to the generic
+// sentence rather than being shown.
+func playFailureMessage(code string) string {
+	switch code {
+	case playFailedMissing:
+		return "Такого звука немає в бібліотеці."
+	case playFailedUnavailable:
+		return "Відтворення недоступне на цьому пристрої."
+	default:
+		return "Не вдалося відтворити звук."
+	}
+}
+
+// returnPath validates an operator-submitted return target before it is
+// reflected into a Location header, and answers "/" for anything it will not
+// vouch for.
+//
+// A redirect target taken from a form and put into Location is an open
+// redirect the moment anything off this device can be named: a crafted
+// preview link would bounce an operator from their own dashboard to a page
+// of someone else's choosing, carrying the trust this device's address has
+// earned with it. So exactly one shape is accepted — a rooted path on this
+// site — and everything else falls back.
+//
+// Refused, and why:
+//
+//   - "http://evil.example/x", "https://evil.example/x" — an absolute URL
+//     names a host, which is the whole thing being prevented.
+//   - "//evil.example/x" — protocol-relative: no scheme, still a host.
+//   - "/\evil.example" — a browser resolving a relative Location for an
+//     http(s) URL folds a backslash into a slash, so this is the
+//     protocol-relative form wearing a different hat. url.Parse does not see
+//     that on its own, which is why the backslash is checked by hand.
+//   - "sounds", "evil.example/x" — not rooted. A browser resolves these
+//     against the page the form was on, so where they land is a property of
+//     the referring page rather than a promise made here.
+//   - "javascript:alert(1)", "mailto:x@y" — a scheme is a scheme.
+//   - anything url.Parse itself refuses, which includes an embedded newline
+//     or tab smuggled in to split the response header.
+//
+// A query or fragment on the submitted value is dropped rather than made a
+// reason to refuse: the caller appends its own query, and a Location cannot
+// hold two.
+func returnPath(raw string) string {
+	const fallback = "/"
+	if !strings.HasPrefix(raw, "/") || strings.HasPrefix(raw, "//") {
+		return fallback
+	}
+	if strings.Contains(raw, `\`) {
+		return fallback
+	}
+	u, err := url.Parse(raw)
+	if err != nil || u.Scheme != "" || u.Opaque != "" || u.Host != "" || u.User != nil {
+		return fallback
+	}
+	return u.EscapedPath()
+}
+
+// playFailed answers a refused playback.
+//
+// An operator who named a page to return to gets sent back to it with the
+// reason in the flash, because that is the page they are looking at and a
+// bare error page would lose it. Without one — the home page's own form —
+// this is the plain error response /play has always given, unchanged.
+func playFailed(w http.ResponseWriter, r *http.Request, back string, named bool, status int, code string) {
+	if !named {
+		http.Error(w, playFailureMessage(code), status)
+		return
+	}
+	http.Redirect(w, r, back+"?"+url.Values{"playfailed": {code}}.Encode(), http.StatusSeeOther)
+}
+
 // handlePlay is spec §5.6's first-class manual path: the one that still works
-// when upstream is down but the threat is real. Registered as POST /play so
-// requireAuth protects it by default and a GET — a prefetch, a link preview,
-// a bookmark sync — can never reach it, and sameOrigin closes the one gap
-// SameSite cookies leave open for a state-changing POST.
+// when upstream is down but the threat is real, and — through the same
+// route, deliberately — the preview button on /sounds. A preview that played
+// by some other path than an announcement would be a preview that can lie
+// about the thing it is previewing, so there is one path and it goes through
+// the engine, the player's priority queue and the configured output.
+//
+// Registered as POST /play so requireAuth protects it by default and a GET —
+// a prefetch, a link preview, a bookmark sync — can never reach it, and
+// sameOrigin closes the one gap SameSite cookies leave open for a
+// state-changing POST.
 //
 // The sound name is handed to Engine.PlayManual exactly as the operator sent
 // it: PlayManual already refuses anything that is not a real library entry,
 // and building or checking a filesystem path here would only duplicate that
 // check with a second chance to get it wrong.
+//
+// Nothing here touches priority. A preview is queued at exactly the priority
+// a manual play has always had, so a real alert still preempts it.
 func (s *Server) handlePlay(w http.ResponseWriter, r *http.Request) {
 	if !sameOrigin(r) {
 		http.Error(w, "cross-origin request rejected", http.StatusForbidden)
 		return
 	}
+	// Where to answer. Whether the operator named a page at all is kept
+	// apart from which page that turned out to be: an off-site value falls
+	// back to "/" but is still a request to be answered on a page rather
+	// than with an error document.
+	raw := r.FormValue(playReturnField)
+	back, named := returnPath(raw), raw != ""
+
 	// Engine is nil in this package's own tests and before Task 9 wires the
 	// dashboard up — same guard as handleHome and sse.go.
 	if s.deps.Engine == nil {
-		http.Error(w, "Відтворення недоступне на цьому пристрої.", http.StatusServiceUnavailable)
+		playFailed(w, r, back, named, http.StatusServiceUnavailable, playFailedUnavailable)
 		return
 	}
 
@@ -300,11 +410,11 @@ func (s *Server) handlePlay(w http.ResponseWriter, r *http.Request) {
 	volume := s.deps.Config.Get().Audio.MasterVolume
 	if err := s.deps.Engine.PlayManual(sound, volume); err != nil {
 		s.deps.Logger.Warn("manual playback rejected", "sound", sound, "err", err)
-		http.Error(w, "Такого звука немає в бібліотеці.", http.StatusBadRequest)
+		playFailed(w, r, back, named, http.StatusBadRequest, playFailedMissing)
 		return
 	}
 
-	http.Redirect(w, r, "/?"+url.Values{"played": {sound}}.Encode(), http.StatusSeeOther)
+	http.Redirect(w, r, back+"?"+url.Values{"played": {sound}}.Encode(), http.StatusSeeOther)
 }
 
 // handleStop is manual playback's other half: the button an operator reaches
