@@ -8,15 +8,9 @@ import (
 
 	"github.com/b-ovsepian/spoloh/internal/config"
 	"github.com/b-ovsepian/spoloh/internal/engine"
-	"github.com/b-ovsepian/spoloh/internal/eventlog"
 	"github.com/b-ovsepian/spoloh/internal/library"
 	"github.com/b-ovsepian/spoloh/internal/scheduler"
 )
-
-// recentLogEntries caps how much of the event log a single page load reads:
-// enough history to be useful, not so much that a full table on an SD card
-// becomes the slow part of the request.
-const recentLogEntries = 200
 
 // homeView is what home.html reads. Every time is pre-formatted in the
 // device's configured location: the template escapes these into a
@@ -184,99 +178,6 @@ func (s *Server) flashMessage(r *http.Request) string {
 	default:
 		return ""
 	}
-}
-
-// logEntryView is what log.html reads for one row. At is pre-formatted in
-// the device's configured location, same as homeView's time fields — the two
-// pages must not disagree about how a timestamp looks.
-type logEntryView struct {
-	AtText  string
-	Kind    string
-	EventID string
-	Sound   string
-	OK      bool
-	Err     string
-	// PlaybackError marks a row the player itself failed on — as opposed to
-	// a source failure or a rejected manual request — so log.html can point
-	// at /audio right where the error is read. On a board with no monitor
-	// this log page is the whole diagnostic surface, and the raw aplay
-	// error alone (device already named — see player.ALSA.Play) does not
-	// say where to go to fix it.
-	PlaybackError bool
-}
-
-// logView is what log.html reads. Notice carries an operator-facing
-// explanation for why Entries is empty — a log that failed to open, a log
-// whose Recent call errored, or a log that is genuinely empty yet — so the
-// three cases read differently on the page instead of all looking like "no
-// history".
-type logView struct {
-	Entries []logEntryView
-	Notice  string
-	// Limit is how many rows a page load reads. It is shown, because the
-	// page otherwise implies that what it lists is the whole history — and
-	// the database holds ten times as much.
-	Limit int
-}
-
-// kindLabel translates an eventlog.Kind constant into the Ukrainian label
-// shown on the page. Anything unrecognised is shown as-is rather than
-// hidden, since a future kind is more useful visible than blank.
-func kindLabel(kind string) string {
-	switch kind {
-	case eventlog.KindAlert:
-		return "Тривога"
-	case eventlog.KindScheduled:
-		return "За розкладом"
-	case eventlog.KindManual:
-		return "Вручну"
-	case eventlog.KindSourceFailure:
-		return "Збій джерела"
-	case eventlog.KindConfigChange:
-		return "Зміна налаштувань"
-	case eventlog.KindPlaybackError:
-		return "Помилка відтворення"
-	default:
-		return kind
-	}
-}
-
-// handleLog renders the event log: what the device actually did, in its own
-// timezone. Deps.Log is deliberately allowed to be nil — a corrupt SQLite
-// file or a read-only SD card is not fatal to the daemon, so it must not be
-// fatal to this page either.
-func (s *Server) handleLog(w http.ResponseWriter, r *http.Request) {
-	loc := s.location()
-	view := logView{Limit: recentLogEntries}
-
-	switch {
-	case s.deps.Log == nil:
-		view.Notice = "Журнал подій недоступний на цьому пристрої."
-	default:
-		entries, err := s.deps.Log.Recent(recentLogEntries)
-		switch {
-		case err != nil:
-			s.deps.Logger.Error("event log: recent", "err", err)
-			view.Notice = "Не вдалося завантажити журнал подій."
-		case len(entries) == 0:
-			view.Notice = "Записів поки немає."
-		default:
-			view.Entries = make([]logEntryView, len(entries))
-			for i, e := range entries {
-				view.Entries[i] = logEntryView{
-					AtText:        e.At.In(loc).Format("2006-01-02 15:04:05"),
-					Kind:          kindLabel(e.Kind),
-					EventID:       e.EventID,
-					Sound:         e.Sound,
-					OK:            e.OK,
-					Err:           e.Err,
-					PlaybackError: e.Kind == eventlog.KindPlaybackError,
-				}
-			}
-		}
-	}
-
-	s.render(w, http.StatusOK, "log.html", view)
 }
 
 // playReturnField is the optional form field naming the page /play should

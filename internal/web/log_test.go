@@ -3,11 +3,13 @@ package web_test
 import (
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/b-ovsepian/spoloh/internal/eventlog"
+	"github.com/b-ovsepian/spoloh/internal/web"
 )
 
 func TestLogPageRendersEntries(t *testing.T) {
@@ -233,5 +235,258 @@ func TestLogPageSaysItIsTruncated(t *testing.T) {
 	}
 	if !strings.Contains(body, "200") {
 		t.Error("the log page does not say how many rows it shows")
+	}
+}
+
+// --- Clearing ------------------------------------------------------------
+//
+// The most destructive control on the device: the log is the record of what
+// it did during real air raids, there is no undo, and nothing else holds a
+// copy.
+
+// clearForm posts to /log/clear the way the page's form does, through the
+// whole handler stack so the session and same-origin checks are exercised
+// rather than bypassed.
+func clearForm(t *testing.T, srv *web.Server, cookie *http.Cookie, confirm string) *httptest.ResponseRecorder {
+	t.Helper()
+	return eventsPostForm(t, srv, cookie, "/log/clear", url.Values{"confirm": {confirm}})
+}
+
+func TestLogClearEmptiesTheLog(t *testing.T) {
+	srv, _, lg := newServerWithLog(t)
+	setPassword(t, srv, "correct horse battery staple")
+	cookie := login(t, srv, "correct horse battery staple")
+
+	appendAlert(t, lg, "siren.wav")
+	appendAlert(t, lg, "all-clear.wav")
+
+	rec := clearForm(t, srv, cookie, "ОЧИСТИТИ")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body:\n%s", rec.Code, rec.Body.String())
+	}
+
+	entries, err := lg.Recent(100)
+	if err != nil {
+		t.Fatalf("Recent: %v", err)
+	}
+	for _, e := range entries {
+		if e.Kind == eventlog.KindAlert {
+			t.Fatalf("an alert entry survived the clear: %+v", e)
+		}
+	}
+	// The re-rendered page has to show the emptied log, not the rows the
+	// operator asked to be rid of, and it has to say what just happened —
+	// a page that looks the same as before is a page that leaves an
+	// operator pressing the button again.
+	body := rec.Body.String()
+	if strings.Contains(body, "siren.wav") {
+		t.Errorf("the page still lists a cleared entry; body:\n%s", body)
+	}
+	if !strings.Contains(body, "Журнал подій очищено") {
+		t.Errorf("the page does not confirm the clear; body:\n%s", body)
+	}
+}
+
+// An empty log cannot tell "this device has never done anything" from
+// "somebody erased the record", and on this device that difference is the
+// whole reason a log exists. The entry the clear leaves behind has to be
+// visible on the page, not only in the database.
+func TestLogClearLeavesARecordOfItselfOnThePage(t *testing.T) {
+	srv, _, lg := newServerWithLog(t)
+	setPassword(t, srv, "correct horse battery staple")
+	cookie := login(t, srv, "correct horse battery staple")
+
+	appendAlert(t, lg, "siren.wav")
+	rec := clearForm(t, srv, cookie, "ОЧИСТИТИ")
+
+	entries, err := lg.Recent(100)
+	if err != nil {
+		t.Fatalf("Recent: %v", err)
+	}
+	if len(entries) != 1 || entries[0].Kind != eventlog.KindLogCleared {
+		t.Fatalf("the log holds %+v, want exactly one %q entry", entries, eventlog.KindLogCleared)
+	}
+	if body := rec.Body.String(); !strings.Contains(body, "Журнал очищено") {
+		t.Errorf("the page does not show that the log was cleared; body:\n%s", body)
+	}
+}
+
+// The confirmation is the only thing between a mis-tap on a phone and the
+// permanent loss of the device's record of an air raid.
+func TestLogClearWithoutConfirmationDoesNothing(t *testing.T) {
+	srv, _, lg := newServerWithLog(t)
+	setPassword(t, srv, "correct horse battery staple")
+	cookie := login(t, srv, "correct horse battery staple")
+
+	appendAlert(t, lg, "siren.wav")
+
+	for _, confirm := range []string{"", "   ", "ОЧИСТ", "yes", "ОЧИСТИТИ ЖУРНАЛ", "clear"} {
+		t.Run(confirm, func(t *testing.T) {
+			rec := clearForm(t, srv, cookie, confirm)
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("confirm=%q: status = %d, want 400", confirm, rec.Code)
+			}
+
+			n, err := lg.Count()
+			if err != nil {
+				t.Fatalf("Count: %v", err)
+			}
+			if n != 1 {
+				t.Fatalf("confirm=%q: the log holds %d entries, want the 1 it started with — nothing may be written", confirm, n)
+			}
+			if body := rec.Body.String(); !strings.Contains(body, "Журнал не очищено") {
+				t.Errorf("confirm=%q: the page does not say the log was left alone; body:\n%s", confirm, body)
+			}
+		})
+	}
+}
+
+// A phone keyboard that lowercases the first letter must not turn a
+// considered decision into a refusal the operator cannot explain. The
+// deliberateness is in having typed the word at all.
+func TestLogClearAcceptsTheConfirmationInAnyCase(t *testing.T) {
+	srv, _, lg := newServerWithLog(t)
+	setPassword(t, srv, "correct horse battery staple")
+	cookie := login(t, srv, "correct horse battery staple")
+
+	appendAlert(t, lg, "siren.wav")
+
+	rec := clearForm(t, srv, cookie, "  очистити  ")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body:\n%s", rec.Code, rec.Body.String())
+	}
+	entries, err := lg.Recent(100)
+	if err != nil {
+		t.Fatalf("Recent: %v", err)
+	}
+	if len(entries) != 1 || entries[0].Kind != eventlog.KindLogCleared {
+		t.Fatalf("the log holds %+v, want exactly the entry recording the clear", entries)
+	}
+}
+
+func TestLogClearRejectsCrossOrigin(t *testing.T) {
+	srv, _, lg := newServerWithLog(t)
+	setPassword(t, srv, "correct horse battery staple")
+	cookie := login(t, srv, "correct horse battery staple")
+
+	appendAlert(t, lg, "siren.wav")
+
+	form := url.Values{"confirm": {"ОЧИСТИТИ"}}
+	req := httptest.NewRequest(http.MethodPost, "/log/clear", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Origin", "http://evil.example")
+	req.AddCookie(cookie)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", rec.Code)
+	}
+	n, err := lg.Count()
+	if err != nil {
+		t.Fatalf("Count: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("the log holds %d entries, want the 1 it started with — a rejected request must not clear", n)
+	}
+}
+
+// A prefetch, a link preview or a bookmark sync must never erase the record
+// of an air raid.
+func TestLogClearIsRejectedOnGet(t *testing.T) {
+	srv, _, lg := newServerWithLog(t)
+	setPassword(t, srv, "correct horse battery staple")
+	cookie := login(t, srv, "correct horse battery staple")
+
+	appendAlert(t, lg, "siren.wav")
+
+	req := httptest.NewRequest(http.MethodGet, "/log/clear?confirm=%D0%9E%D0%A7%D0%98%D0%A1%D0%A2%D0%98%D0%A2%D0%98", nil)
+	req.AddCookie(cookie)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+
+	if rec.Code == http.StatusOK {
+		t.Fatalf("GET /log/clear = 200; a prefetch would erase the log")
+	}
+	n, err := lg.Count()
+	if err != nil {
+		t.Fatalf("Count: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("the log holds %d entries, want the 1 it started with — a GET must not clear", n)
+	}
+}
+
+func TestLogClearRequiresASession(t *testing.T) {
+	srv, _, lg := newServerWithLog(t)
+	setPassword(t, srv, "correct horse battery staple")
+
+	appendAlert(t, lg, "siren.wav")
+
+	req := httptest.NewRequest(http.MethodPost, "/log/clear", strings.NewReader("confirm=%D0%9E%D0%A7%D0%98%D0%A1%D0%A2%D0%98%D0%A2%D0%98"))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Origin", "http://"+req.Host)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/login" {
+		t.Fatalf("POST /log/clear with no session = %d %q, want 303 to /login", rec.Code, rec.Header().Get("Location"))
+	}
+	n, err := lg.Count()
+	if err != nil {
+		t.Fatalf("Count: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("the log holds %d entries, want the 1 it started with", n)
+	}
+}
+
+// A button that cannot do anything teaches an operator to distrust the page.
+// A device whose log failed to open — a corrupt SQLite file, a read-only SD
+// card — has nothing to clear and must not offer to.
+func TestLogPageOffersNoClearFormWithoutALog(t *testing.T) {
+	srv, _ := newServerWithStore(t) // Deps.Log is nil
+	setPassword(t, srv, "correct horse battery staple")
+	cookie := login(t, srv, "correct horse battery staple")
+
+	req := httptest.NewRequest(http.MethodGet, "/log", nil)
+	req.AddCookie(cookie)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+
+	if strings.Contains(rec.Body.String(), `action="/log/clear"`) {
+		t.Error("the page offers to clear a log it does not have")
+	}
+}
+
+// The safeguard is a form, not a script. A confirm() dialog would stop
+// working the moment JavaScript did, and on this device the page has to be
+// fully usable without it — the same rule the upload form on /sounds follows.
+func TestLogPageClearFormWorksWithoutJavaScript(t *testing.T) {
+	srv, _, lg := newServerWithLog(t)
+	setPassword(t, srv, "correct horse battery staple")
+	cookie := login(t, srv, "correct horse battery staple")
+
+	appendAlert(t, lg, "siren.wav")
+
+	req := httptest.NewRequest(http.MethodGet, "/log", nil)
+	req.AddCookie(cookie)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+
+	body := rec.Body.String()
+	for _, want := range []string{
+		`<form method="post" action="/log/clear"`,
+		`name="confirm"`,
+		`type="submit"`,
+		"ОЧИСТИТИ",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("the clear form is missing %q; body:\n%s", want, body)
+		}
+	}
+	// It must say what it destroys before the operator presses anything.
+	if !strings.Contains(body, "Відновити їх буде неможливо") {
+		t.Errorf("the page does not warn that clearing cannot be undone; body:\n%s", body)
 	}
 }

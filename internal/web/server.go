@@ -113,6 +113,7 @@ func New(d Deps) (*Server, error) {
 	s.handle("POST /logout", http.HandlerFunc(s.handleLogout))
 	s.handle("GET /stream", http.HandlerFunc(s.handleEvents))
 	s.handle("GET /log", http.HandlerFunc(s.handleLog))
+	s.handle("POST /log/clear", http.HandlerFunc(s.handleLogClear))
 	s.handle("POST /play", http.HandlerFunc(s.handlePlay))
 	s.handle("POST /stop", http.HandlerFunc(s.handleStop))
 	s.handle("GET /network", http.HandlerFunc(s.handleNetwork))

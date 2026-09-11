@@ -1,6 +1,16 @@
 {{define "title"}}Журнал подій — Сполох{{end}}
 {{define "width"}}max-w-5xl{{end}}
 {{define "content"}}
+<div class="grid gap-4">
+  {{if .Error}}
+  <div class="alert" data-variant="destructive" role="alert">
+    <section><p>{{.Error}}</p></section>
+  </div>
+  {{end}}
+  {{if .Message}}
+  <div class="alert" role="status"><section><p>{{.Message}}</p></section></div>
+  {{end}}
+
 <div class="card p-4 sm:p-6">
   <header class="mb-4">
     <h1 class="text-lg font-semibold">Журнал подій</h1>
@@ -69,5 +79,45 @@
     </table>
   </div>
   {{end}}
+</div>
+
+{{if .Clearable}}
+{{/*
+The most destructive control on the device, and the only one with no undo:
+this log is the record of what the device did during real air raids, and
+nothing else holds a copy. So it is not a button sitting next to the rows
+where a thumb can find it — it is a word the operator has to type, in its own
+card, below everything else, saying plainly what it destroys.
+
+A typed word rather than a two-step submit because this device is checked
+from a phone standing next to it, and two taps in roughly the same place is
+what a mis-tap is. It is a plain form for the same reason every other control
+here is: no confirm() dialog, nothing that stops working when a script does.
+
+The clear leaves one entry behind saying it happened — see eventlog.Clear. An
+empty log cannot tell "this device has never done anything" from "somebody
+erased the record", and the page says so up front rather than letting an
+operator find out later.
+*/}}
+<div class="card p-4 sm:p-6 grid gap-3">
+  <header>
+    <h2 class="font-semibold">Очистити журнал</h2>
+    <p class="text-sm text-muted-foreground">
+      Це назавжди видалить усі записи про те, що робив пристрій, зокрема під час реальних тривог.
+      Відновити їх буде неможливо. У журналі залишиться один запис про саме очищення.
+    </p>
+  </header>
+  <form method="post" action="/log/clear" class="grid gap-3">
+    <div class="field">
+      <label for="log-clear-confirm">Щоб підтвердити, введіть ОЧИСТИТИ</label>
+      <input class="input max-w-sm" type="text" id="log-clear-confirm" name="confirm"
+             autocomplete="off" autocapitalize="characters" spellcheck="false" required
+             aria-describedby="log-clear-help">
+      <p id="log-clear-help" class="text-sm text-muted-foreground">Порожнє або інше слово — журнал залишиться недоторканим.</p>
+    </div>
+    <button class="btn w-fit" data-variant="destructive" type="submit">Очистити журнал</button>
+  </form>
+</div>
+{{end}}
 </div>
 {{end}}
