@@ -2,6 +2,8 @@ package web
 
 import (
 	"net/http"
+	"strconv"
+	"time"
 
 	"github.com/b-ovsepian/spoloh/internal/alertsource"
 	"github.com/b-ovsepian/spoloh/internal/config"
@@ -103,6 +105,50 @@ func parseSources(values []string) []string {
 	return out
 }
 
+// The two ways parsePollInterval refuses a submission, the model for both
+// being events.go's parseVolume. The floor is spelled out as a number of
+// seconds because seconds are what the field asks for; the rule itself lives
+// in config.MinPollInterval, and this is the operator-facing half of it.
+const (
+	pollIntervalInvalidMessage  = "Вкажіть інтервал опитування цілим числом секунд."
+	pollIntervalTooSmallMessage = "Інтервал опитування має бути не менший за 10 секунд."
+)
+
+// parsePollInterval parses and range-checks the "poll_interval" form field,
+// which carries whole seconds. An empty return message means it is valid.
+//
+// The floor is checked here rather than left to the config.Validate that
+// config.Store.Update runs, so an operator who asks for two seconds gets a
+// sentence naming the actual limit instead of the generic "не вдалося
+// зберегти" every rejected Update falls back to. Validate still enforces it —
+// the same belt-and-braces parseVolume keeps against config.Validate's 0..100,
+// and the reason an unparseable value (an empty submission, most notably)
+// is refused outright rather than being allowed to reach the store as Atoi's
+// zero.
+//
+// A number large enough to overflow the multiplication comes out negative,
+// which the same floor check refuses.
+func parsePollInterval(s string) (config.Duration, string) {
+	seconds, err := strconv.Atoi(s)
+	if err != nil {
+		return 0, pollIntervalInvalidMessage
+	}
+	d := time.Duration(seconds) * time.Second
+	if d < config.MinPollInterval {
+		return 0, pollIntervalTooSmallMessage
+	}
+	return config.Duration(d), ""
+}
+
+// pollIntervalSeconds renders a stored interval as the whole seconds the form
+// field carries. The form and config.Default() are the only writers and both
+// store whole seconds, so this truncates nothing in practice; a hand-edited
+// fraction rounds down to the second below, and never below the minimum,
+// which is itself a whole number of seconds.
+func pollIntervalSeconds(d config.Duration) int {
+	return int(d.Std() / time.Second)
+}
+
 // alertsView is what alerts.html reads.
 type alertsView struct {
 	// Regions is the fixed 25-key list a submitted oblast is validated
@@ -116,6 +162,13 @@ type alertsView struct {
 	// buildSourceSlots.
 	SourceSlots []sourceSlotView
 
+	// PollIntervalSeconds is how often that cascade is tried, in the whole
+	// seconds the form field carries. It sits on this screen because it
+	// answers the same question the cascade does — how alert data is
+	// fetched — and because how often to ask is exactly what went wrong:
+	// polling every 5 seconds had every source rate-limit at once.
+	PollIntervalSeconds int
+
 	// Error is a rejected submission's reason; Message is a completed one's
 	// confirmation. Never both at once, the same contract every other
 	// screen here keeps.
@@ -127,9 +180,10 @@ type alertsView struct {
 // start from, the same shape every other screen here uses.
 func (s *Server) alertsBaseView(cfg *config.Config) alertsView {
 	return alertsView{
-		Regions:       alertsource.Regions(),
-		CurrentRegion: cfg.Alerts.Region,
-		SourceSlots:   buildSourceSlots(cfg.Alerts.Sources),
+		Regions:             alertsource.Regions(),
+		CurrentRegion:       cfg.Alerts.Region,
+		SourceSlots:         buildSourceSlots(cfg.Alerts.Sources),
+		PollIntervalSeconds: pollIntervalSeconds(cfg.Alerts.PollInterval),
 	}
 }
 
@@ -152,13 +206,15 @@ func (s *Server) handleAlertsPage(w http.ResponseWriter, r *http.Request) {
 	s.renderAlertsPage(w, http.StatusOK, nil)
 }
 
-// handleAlertsSave writes the oblast and the source cascade — the two
-// settings that answer where alerts come from and for where. Both rules this
-// handler owns exist because getting either wrong silences the device
-// permanently while the dashboard still looks configured: an unmatchable
-// region (isKnownRegion, moved here unchanged from network.go) or an empty
-// cascade (parseSources always returns a slice that can only be empty when
-// nothing usable was submitted).
+// handleAlertsSave writes the oblast, the source cascade and the poll
+// interval — the three settings that answer where alerts come from, for
+// where, and how often they are asked for. Every rule this handler owns
+// exists because getting one of them wrong stops the device hearing about an
+// air raid while the dashboard still looks configured: an unmatchable region
+// (isKnownRegion, moved here unchanged from network.go), an empty cascade
+// (parseSources always returns a slice that can only be empty when nothing
+// usable was submitted), or an interval fast enough for every source in that
+// cascade to rate-limit at once, which is what parsePollInterval refuses.
 func (s *Server) handleAlertsSave(w http.ResponseWriter, r *http.Request) {
 	if !sameOrigin(r) {
 		http.Error(w, "cross-origin request rejected", http.StatusForbidden)
@@ -168,6 +224,7 @@ func (s *Server) handleAlertsSave(w http.ResponseWriter, r *http.Request) {
 	cfg := s.deps.Config.Get()
 	region := r.FormValue("region")
 	sources := parseSources(r.Form["source"])
+	interval, intervalErr := parsePollInterval(r.FormValue("poll_interval"))
 
 	reject := func(status int, message string) {
 		// A rejected region cannot be re-selected in the <select>, which
@@ -183,10 +240,20 @@ func (s *Server) handleAlertsSave(w http.ResponseWriter, r *http.Request) {
 		if isKnownRegion(region) {
 			selectedRegion = region
 		}
+		// Same rule for the interval, for the same reason: an interval
+		// that is itself the cause of the rejection has nothing worth
+		// echoing back into a number field — the message already names
+		// what was wrong with it — while a perfectly good one must
+		// survive a rejection the region or the cascade caused.
+		selectedInterval := cfg.Alerts.PollInterval
+		if intervalErr == "" {
+			selectedInterval = interval
+		}
 		s.renderAlertsPage(w, status, func(v *alertsView) {
 			v.Error = message
 			v.CurrentRegion = selectedRegion
 			v.SourceSlots = buildSourceSlots(sources)
+			v.PollIntervalSeconds = pollIntervalSeconds(selectedInterval)
 		})
 	}
 
@@ -198,10 +265,15 @@ func (s *Server) handleAlertsSave(w http.ResponseWriter, r *http.Request) {
 		reject(http.StatusBadRequest, "Оберіть принаймні одне джерело сповіщень.")
 		return
 	}
+	if intervalErr != "" {
+		reject(http.StatusBadRequest, intervalErr)
+		return
+	}
 
 	err := s.deps.Config.Update(func(c *config.Config) error {
 		c.Alerts.Region = region
 		c.Alerts.Sources = sources
+		c.Alerts.PollInterval = interval
 		return nil
 	})
 	if err != nil {

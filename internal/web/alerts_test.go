@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/b-ovsepian/spoloh/internal/alertsource"
 	"github.com/b-ovsepian/spoloh/internal/config"
@@ -107,6 +108,7 @@ func TestAlertsSaveRejectsCrossOrigin(t *testing.T) {
 
 	req := postForm("/alerts", url.Values{
 		"region": {"Львівська область"}, "source": {"default", "skog"},
+		"poll_interval": {"20"},
 	})
 	req.AddCookie(cookie)
 	req.Header.Set("Sec-Fetch-Site", "cross-site")
@@ -133,6 +135,7 @@ func TestAlertsSaveRejectsAnUnknownRegion(t *testing.T) {
 
 	req := postForm("/alerts", url.Values{
 		"region": {"Марсіанська область"}, "source": {"default", "skog"},
+		"poll_interval": {"20"},
 	})
 	req.AddCookie(cookie)
 	rec := httptest.NewRecorder()
@@ -156,6 +159,7 @@ func TestAlertsSaveRejectsAnEmptyCascade(t *testing.T) {
 
 	req := postForm("/alerts", url.Values{
 		"region": {"Львівська область"}, "source": {"", "", "", "", "", ""},
+		"poll_interval": {"20"},
 	})
 	req.AddCookie(cookie)
 	rec := httptest.NewRecorder()
@@ -182,6 +186,7 @@ func TestAlertsSaveRejectsACascadeOfOnlyUnknownSources(t *testing.T) {
 
 	req := postForm("/alerts", url.Values{
 		"region": {"Львівська область"}, "source": {"not-a-real-source", "another-fake-one"},
+		"poll_interval": {"20"},
 	})
 	req.AddCookie(cookie)
 	rec := httptest.NewRecorder()
@@ -207,6 +212,7 @@ func TestAlertsSavePreservesTheSubmittedCascadeOrder(t *testing.T) {
 	// this submits them in the opposite order to prove nothing re-sorts them.
 	req := postForm("/alerts", url.Values{
 		"region": {"Одеська область"}, "source": {"skog", "jaam", "default"},
+		"poll_interval": {"20"},
 	})
 	req.AddCookie(cookie)
 	rec := httptest.NewRecorder()
@@ -233,6 +239,7 @@ func TestAlertsSaveDropsARepeatedSourceKeepingItsFirstPosition(t *testing.T) {
 
 	req := postForm("/alerts", url.Values{
 		"region": {"Одеська область"}, "source": {"skog", "default", "skog"},
+		"poll_interval": {"20"},
 	})
 	req.AddCookie(cookie)
 	rec := httptest.NewRecorder()
@@ -258,6 +265,7 @@ func TestAlertsSaveSkipsAGapInTheMiddleOfTheCascade(t *testing.T) {
 
 	req := postForm("/alerts", url.Values{
 		"region": {"Одеська область"}, "source": {"default", "", "skog"},
+		"poll_interval": {"20"},
 	})
 	req.AddCookie(cookie)
 	rec := httptest.NewRecorder()
@@ -282,6 +290,7 @@ func TestAlertsSaveSucceedsAndStoresRegionAndSources(t *testing.T) {
 
 	req := postForm("/alerts", url.Values{
 		"region": {"Харківська область"}, "source": {"default", "aiu", "ual"},
+		"poll_interval": {"20"},
 	})
 	req.AddCookie(cookie)
 	rec := httptest.NewRecorder()
@@ -301,6 +310,131 @@ func TestAlertsSaveSucceedsAndStoresRegionAndSources(t *testing.T) {
 	want := []string{"default", "aiu", "ual"}
 	if strings.Join(cfg.Alerts.Sources, ",") != strings.Join(want, ",") {
 		t.Errorf("stored sources = %v, want %v", cfg.Alerts.Sources, want)
+	}
+}
+
+// How often the cascade is polled belongs on this screen for the same reason
+// the cascade itself does: both answer how alert data is fetched. The page
+// must show what is actually stored rather than a placeholder — an operator
+// who has just been rate-limited comes here to read the current rate.
+func TestAlertsPageShowsTheStoredPollInterval(t *testing.T) {
+	srv, store := newServerWithStore(t)
+	setPassword(t, srv, "correct horse battery staple")
+	cookie := login(t, srv, "correct horse battery staple")
+
+	req := httptest.NewRequest(http.MethodGet, "/alerts", nil)
+	req.AddCookie(cookie)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+
+	want := int(store.Get().Alerts.PollInterval.Std() / time.Second)
+	if !strings.Contains(rec.Body.String(), fmt.Sprintf(`name="poll_interval" value="%d"`, want)) {
+		t.Errorf("the page does not show the stored poll interval of %ds; body:\n%s", want, rec.Body.String())
+	}
+}
+
+// An operator asking for a rate the sources will throttle is told no, in a
+// sentence that names the limit. This is the human-facing half of
+// config.MinPollInterval and the deliberate opposite of the repair
+// config.Load makes to a file an older build wrote: a person asking for
+// something impossible gets an error, a stored file gets repaired.
+func TestAlertsSaveRejectsAPollIntervalBelowTheMinimum(t *testing.T) {
+	srv, store := newServerWithStore(t)
+	setPassword(t, srv, "correct horse battery staple")
+	cookie := login(t, srv, "correct horse battery staple")
+	before := store.Get().Alerts.PollInterval
+
+	req := postForm("/alerts", url.Values{
+		"region": {"Львівська область"}, "source": {"default", "skog"},
+		"poll_interval": {"5"},
+	})
+	req.AddCookie(cookie)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+
+	if rec.Code == http.StatusOK {
+		t.Fatalf("status = %d, want a rejection for a 5s poll interval", rec.Code)
+	}
+	if got := store.Get().Alerts.PollInterval; got != before {
+		t.Fatalf("stored poll interval = %v, want unchanged %v", got.Std(), before.Std())
+	}
+	// The whole sentence, not just the number: the field's own help text
+	// names 10 seconds too, so a looser assertion would pass against a page
+	// showing the generic "could not save" message instead of this rule.
+	if body := rec.Body.String(); !strings.Contains(body, "Інтервал опитування має бути не менший за 10 секунд.") {
+		t.Errorf("the rejection does not tell the operator what the limit is; body:\n%s", body)
+	}
+}
+
+// A submission carrying no interval at all must not reach the store: strconv
+// would otherwise hand it a zero, and an empty POST mutating stored config is
+// exactly what leak_test.go's walk of every route assumes cannot happen. The
+// same rule events.go's parseVolume keeps for a blank volume.
+func TestAlertsSaveRejectsAMissingPollInterval(t *testing.T) {
+	srv, store := newServerWithStore(t)
+	setPassword(t, srv, "correct horse battery staple")
+	cookie := login(t, srv, "correct horse battery staple")
+	before := store.Get().Alerts
+
+	req := postForm("/alerts", url.Values{
+		"region": {"Львівська область"}, "source": {"default", "skog"},
+	})
+	req.AddCookie(cookie)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+
+	if rec.Code == http.StatusOK {
+		t.Fatalf("status = %d, want a rejection for a submission with no interval", rec.Code)
+	}
+	if got := store.Get().Alerts; got.PollInterval != before.PollInterval || got.Region != before.Region {
+		t.Fatalf("stored alerts config changed on a submission with no interval: got %+v, want unchanged %+v", got, before)
+	}
+}
+
+// The happy path for the field: seconds in, seconds stored, and the page
+// comes back showing what was just saved.
+func TestAlertsSaveStoresTheSubmittedPollInterval(t *testing.T) {
+	srv, store := newServerWithStore(t)
+	setPassword(t, srv, "correct horse battery staple")
+	cookie := login(t, srv, "correct horse battery staple")
+
+	req := postForm("/alerts", url.Values{
+		"region": {"Одеська область"}, "source": {"default"},
+		"poll_interval": {"30"},
+	})
+	req.AddCookie(cookie)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body:\n%s", rec.Code, rec.Body.String())
+	}
+	if got := store.Get().Alerts.PollInterval.Std(); got != 30*time.Second {
+		t.Fatalf("stored poll interval = %v, want 30s", got)
+	}
+	if !strings.Contains(rec.Body.String(), `name="poll_interval" value="30"`) {
+		t.Error("the page does not come back showing the interval that was just saved")
+	}
+}
+
+// A rejection caused by the region must not throw away an interval the
+// operator already typed correctly — the same "don't lose what they typed"
+// contract the cascade keeps across an unrelated rejection.
+func TestAlertsSaveRejectionOnBadRegionKeepsTheSubmittedPollInterval(t *testing.T) {
+	srv, _ := newServerWithStore(t)
+	setPassword(t, srv, "correct horse battery staple")
+	cookie := login(t, srv, "correct horse battery staple")
+
+	req := postForm("/alerts", url.Values{
+		"region": {"Марсіанська область"}, "source": {"default"},
+		"poll_interval": {"42"},
+	})
+	req.AddCookie(cookie)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+
+	if !strings.Contains(rec.Body.String(), `name="poll_interval" value="42"`) {
+		t.Errorf("the validly submitted interval was not kept across a region rejection; body:\n%s", rec.Body.String())
 	}
 }
 
@@ -346,6 +480,7 @@ func TestAlertsSaveRejectionOnBadRegionKeepsTheSubmittedCascade(t *testing.T) {
 
 	req := postForm("/alerts", url.Values{
 		"region": {"Марсіанська область"}, "source": {"jaam", "ual"},
+		"poll_interval": {"20"},
 	})
 	req.AddCookie(cookie)
 	rec := httptest.NewRecorder()
@@ -372,6 +507,7 @@ func TestAlertsSaveRejectionOnEmptyCascadeKeepsTheSubmittedRegion(t *testing.T) 
 
 	req := postForm("/alerts", url.Values{
 		"region": {"Тернопільська область"}, "source": {""},
+		"poll_interval": {"20"},
 	})
 	req.AddCookie(cookie)
 	rec := httptest.NewRecorder()

@@ -47,6 +47,12 @@
         </div>
       </fieldset>
 
+      <div class="field">
+        <label for="poll_interval">Інтервал опитування, секунд</label>
+        <input class="input" type="number" min="10" step="1" id="poll_interval" name="poll_interval" value="{{.PollIntervalSeconds}}" required>
+        <p class="text-sm text-muted-foreground">Як часто пристрій запитує джерела. Не частіше ніж раз на 10 секунд: надто часті запити впираються в обмеження джерел, і тоді пристрій може не дізнатися про тривогу.</p>
+      </div>
+
       <button class="btn w-fit" type="submit">Зберегти</button>
     </form>
   </div>
