@@ -171,6 +171,10 @@ func TestInstallerPlacesEveryFileAndStartsTheUnit(t *testing.T) {
 		// code. restart is what makes a re-install actually take effect.
 		"systemctl restart spoloh",
 		"hostnamectl set-hostname spoloh",
+		// avahi is already publishing raspberrypi.local on a stock image
+		// and is not reliably notified of a hostname change, so without
+		// this the banner prints a spoloh.local that does not resolve.
+		"systemctl try-restart avahi-daemon",
 		"apt-get install",
 	} {
 		if !strings.Contains(report, want) {
@@ -264,6 +268,9 @@ func TestInstallerSkipsHostnameChangeWhenAlreadySpoloh(t *testing.T) {
 	}
 	if strings.Contains(report, "hostnamectl") {
 		t.Errorf("hostnamectl ran even though the hostname was already spoloh\n%s", report)
+	}
+	if strings.Contains(report, "try-restart avahi-daemon") {
+		t.Errorf("avahi was restarted even though the hostname did not change\n%s", report)
 	}
 }
 

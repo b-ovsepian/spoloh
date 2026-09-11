@@ -106,6 +106,12 @@ main() {
   if [ "$(hostname)" != spoloh ] && command -v hostnamectl >/dev/null 2>&1; then
     say "setting hostname to spoloh"
     hostnamectl set-hostname spoloh
+    # avahi is already running on a Raspberry Pi OS Lite image, already
+    # publishing raspberrypi.local, and is not reliably notified of a
+    # hostname change - so without this the banner below would print a
+    # spoloh.local that does not resolve. try-restart does nothing at all if
+    # avahi is not installed, so it costs nothing to always run it.
+    systemctl try-restart avahi-daemon
   fi
 
   # 8. Start it. `enable --now` is not enough on a re-run: on an already-active
