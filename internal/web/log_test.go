@@ -173,12 +173,18 @@ func TestLogMarksFailuresWithMoreThanColour(t *testing.T) {
 		t.Error("the log has only one layout, so a phone gets the six-column table")
 	}
 	// On a board with no monitor this page is the whole diagnostic surface;
-	// a playback error must point at the one screen that can fix it. Checked
-	// by the hint's own sentence, not by a bare href="/audio": layout.html's
-	// navigation links to /audio on every page, so that alone would prove
-	// nothing about this row specifically.
-	if !strings.Contains(body, "Перевірте вихідний пристрій") {
-		t.Error("a playback error does not point at /audio, the one screen that can fix it")
+	// a playback error must point at the one screen that can fix it, by
+	// name. Checked as the whole sentence — hint text, link, and the page's
+	// current label together — rather than as a bare href="/audio" or a
+	// bare label: layout.html's navigation links to /audio on every page
+	// too, under the exact same label, so either alone would prove nothing
+	// about this row specifically, and the full sentence is what a plain
+	// href="/audio" check cannot tell from a hint that stopped naming the
+	// page at all. It is checked once per layout (the mobile <li> and the
+	// table <td> each render their own copy), so both count.
+	hint := `Перевірте вихідний пристрій на сторінці «<a href="/audio" class="underline">Аудіовихід</a>».`
+	if got := strings.Count(body, hint); got != 2 {
+		t.Errorf("hint %q appears %d times, want 2 (one per layout); body:\n%s", hint, got, body)
 	}
 }
 
