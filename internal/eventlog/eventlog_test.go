@@ -213,7 +213,147 @@ func TestNilLogIsSafe(t *testing.T) {
 	if err != nil || n != 0 {
 		t.Fatalf("Count on a nil log = %d, %v", n, err)
 	}
+	if err := l.Clear(time.Now()); err != nil {
+		t.Fatalf("Clear on a nil log: %v", err)
+	}
 	if err := l.Close(); err != nil {
 		t.Fatalf("Close on a nil log: %v", err)
+	}
+}
+
+// Clearing has to actually empty the table. A clear that left rows behind
+// would be worse than no clear at all: the operator would believe the record
+// was gone and it would not be.
+func TestClearEmptiesTheLog(t *testing.T) {
+	lg, _ := openLog(t, 100)
+	at := time.Date(2026, 9, 12, 10, 0, 0, 0, time.UTC)
+
+	for i := 0; i < 5; i++ {
+		if err := lg.Append(eventlog.Entry{At: at, Kind: eventlog.KindAlert, Sound: "siren.wav", OK: true}); err != nil {
+			t.Fatalf("Append: %v", err)
+		}
+	}
+
+	if err := lg.Clear(at.Add(time.Hour)); err != nil {
+		t.Fatalf("Clear: %v", err)
+	}
+
+	entries, err := lg.Recent(100)
+	if err != nil {
+		t.Fatalf("Recent: %v", err)
+	}
+	for _, e := range entries {
+		if e.Kind == eventlog.KindAlert {
+			t.Fatalf("an alert entry survived the clear: %+v", e)
+		}
+	}
+	n, err := lg.Count()
+	if err != nil {
+		t.Fatalf("Count: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("Count after a clear = %d, want 1 — only the entry recording the clear", n)
+	}
+}
+
+// An empty log is ambiguous: it cannot distinguish a device that has never
+// done anything from one whose record somebody erased. The entry the clear
+// leaves behind is the whole difference, and it has to have the same shape as
+// every other entry — same table, same columns, same round-trip through
+// Recent — or the one row that explains an empty log is the one row nothing
+// else can read.
+func TestClearRecordsThatItHappened(t *testing.T) {
+	lg, _ := openLog(t, 100)
+	at := time.Date(2026, 9, 12, 10, 0, 0, 0, time.UTC)
+
+	if err := lg.Append(eventlog.Entry{At: at, Kind: eventlog.KindAlert, OK: true}); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	clearedAt := at.Add(90 * time.Minute)
+	if err := lg.Clear(clearedAt); err != nil {
+		t.Fatalf("Clear: %v", err)
+	}
+
+	entries, err := lg.Recent(10)
+	if err != nil {
+		t.Fatalf("Recent: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("Recent returned %d entries, want exactly the one recording the clear: %+v", len(entries), entries)
+	}
+	got := entries[0]
+	if got.Kind != eventlog.KindLogCleared {
+		t.Errorf("kind = %q, want %q", got.Kind, eventlog.KindLogCleared)
+	}
+	if !got.OK {
+		t.Error("the entry recording the clear is marked as a failure")
+	}
+	if !got.At.Equal(clearedAt) {
+		t.Errorf("at = %s, want %s — the entry must say when the log was cleared", got.At, clearedAt)
+	}
+}
+
+// The log is appended to from the engine and from the player's OnError while
+// sounds are playing. A clear that raced one of those must lose the clear's
+// completeness, never the alert: an entry written after the clear has begun
+// has to survive it, and nothing may corrupt or panic either way.
+func TestClearDoesNotLoseAppendsThatRaceIt(t *testing.T) {
+	lg, _ := openLog(t, 1000)
+
+	const goroutines = 4
+	const perGoroutine = 40
+
+	var wg sync.WaitGroup
+	wg.Add(goroutines)
+	start := make(chan struct{})
+	for g := 0; g < goroutines; g++ {
+		go func() {
+			defer wg.Done()
+			<-start
+			for i := 0; i < perGoroutine; i++ {
+				if err := lg.Append(eventlog.Entry{At: time.Now(), Kind: eventlog.KindAlert, Sound: "siren.wav", OK: true}); err != nil {
+					t.Errorf("Append during a clear: %v", err)
+				}
+			}
+		}()
+	}
+
+	cleared := make(chan error, 1)
+	go func() {
+		<-start
+		cleared <- lg.Clear(time.Now())
+	}()
+	close(start)
+
+	wg.Wait()
+	if err := <-cleared; err != nil {
+		t.Fatalf("Clear during concurrent appends: %v", err)
+	}
+
+	// The log must still be readable, and must still hold the entry recording
+	// the clear — the two ways this could have gone wrong that a bare "no
+	// panic" assertion would sail straight past.
+	entries, err := lg.Recent(1000)
+	if err != nil {
+		t.Fatalf("Recent after a raced clear: %v", err)
+	}
+	var sawCleared bool
+	for _, e := range entries {
+		if e.Kind == eventlog.KindLogCleared {
+			sawCleared = true
+		}
+	}
+	if !sawCleared {
+		t.Error("the entry recording the clear is missing after a raced clear")
+	}
+	// Ids stay monotonic across a clear — Recent orders by id and means
+	// "newest" by it, and Clear itself reasons about id ordering.
+	for i := 1; i < len(entries); i++ {
+		if entries[i-1].ID <= entries[i].ID {
+			t.Fatalf("Recent is not newest-first by id after a clear: %d then %d", entries[i-1].ID, entries[i].ID)
+		}
+	}
+	if _, err := lg.Count(); err != nil {
+		t.Fatalf("Count after a raced clear: %v", err)
 	}
 }
