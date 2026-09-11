@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"time"
 
 	"github.com/b-ovsepian/spoloh/internal/updater"
@@ -14,6 +15,11 @@ import (
 // defaultReleases is where published builds live. Overridable so a fork, or a
 // school with a local mirror, needs no rebuild.
 const defaultReleases = "https://github.com/b-ovsepian/spoloh/releases"
+
+// geteuid is os.Geteuid, replaced in tests. A test may not require root, and
+// the only other way to exercise the paths behind the root check would be to
+// skip them on every machine that runs the suite.
+var geteuid = os.Geteuid
 
 // subcommand returns the verb in args, or "" when args holds only flags for
 // the daemon. A bare first argument is unambiguous: every daemon option
@@ -56,6 +62,23 @@ func runUpdate(args []string, out io.Writer, client *http.Client) int {
 	if *check && *rollback {
 		fmt.Fprintln(out, "--check and --rollback cannot both be set: --check only reports versions and --rollback restores the previous binary; pick one")
 		return 2
+	}
+
+	// Checked before anything is downloaded. A forgotten sudo used to fail
+	// only after the whole ~28 MB binary had come down a school's
+	// connection, with "permission denied" and neither the word "root" nor
+	// the word "sudo" anywhere in the message. --check is deliberately
+	// exempt: it writes nothing, and the dashboard's update button will
+	// call it as the unprivileged daemon.
+	if !*check && geteuid() != 0 {
+		what := "replaces " + *binPath + " and restarts the " + *unit + " unit"
+		how := "sudo spoloh update"
+		if *rollback {
+			what = "restores the previous binary at " + *binPath + " and restarts the " + *unit + " unit"
+			how += " --rollback"
+		}
+		fmt.Fprintf(out, "this must run as root: it %s.\ntry: %s\n", what, how)
+		return 1
 	}
 
 	// Generous, and separate from the per-download timeout: a school's

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"io"
 	"net/http"
 	"os"
@@ -160,9 +161,54 @@ func TestUpdateRejectsCheckAndRollbackTogether(t *testing.T) {
 	}
 }
 
+// asRoot makes the root check pass for the rest of the test. A test may not
+// run as root, and the paths behind that check — the actual update and the
+// rollback — are the ones most worth exercising.
+func asRoot(t *testing.T) {
+	t.Helper()
+	old := geteuid
+	geteuid = func() int { return 0 }
+	t.Cleanup(func() { geteuid = old })
+}
+
+func TestUpdateRefusesToRunWithoutRootAndDownloadsNothing(t *testing.T) {
+	// A forgotten sudo used to fail only after the whole ~28 MB binary had
+	// come down a school's connection, with "permission denied" and neither
+	// the word "root" nor the word "sudo" anywhere in it.
+	dir := t.TempDir()
+	bin := dir + "/spoloh"
+	if err := os.WriteFile(bin, []byte("#!/bin/sh\necho v1.0.0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Any request at all is a failure here: the point is that the refusal
+	// comes before the download, not after it.
+	client := &http.Client{Transport: refusingTransport{t}}
+
+	var out strings.Builder
+	code := runUpdate([]string{"--bin", bin, "--base-url", "http://example.invalid/releases"}, &out, client)
+
+	if code == 0 {
+		t.Errorf("update reported success as an unprivileged user: %s", out.String())
+	}
+	for _, want := range []string{"root", "sudo"} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("output never says %q, so nobody learns what to do: %s", want, out.String())
+		}
+	}
+}
+
+// refusingTransport fails the test if the update reaches the network at all.
+type refusingTransport struct{ t *testing.T }
+
+func (r refusingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	r.t.Errorf("the update downloaded %s before checking for root", req.URL)
+	return nil, errors.New("no network in tests")
+}
+
 func TestRollbackWithNothingToRollBackToFailsClearly(t *testing.T) {
 	// No network at all. An operator who runs this on a device that has never
 	// been updated must be told that, not handed a stack trace.
+	asRoot(t)
 	dir := t.TempDir()
 	bin := dir + "/spoloh"
 	if err := os.WriteFile(bin, []byte("#!/bin/sh\necho v1.0.0\n"), 0o755); err != nil {

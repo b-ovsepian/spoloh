@@ -153,14 +153,16 @@ func (u Updater) Latest(ctx context.Context) (Release, error) {
 
 // Apply installs rel, or changes nothing and returns why.
 func (u Updater) Apply(ctx context.Context, rel Release) error {
+	// Downloaded into the directory the binary already lives in, because the
+	// install is a rename and a rename is only atomic within one filesystem.
+	dir := filepath.Dir(u.BinPath)
+	u.sweepStaleDownloads(dir)
+
 	want, err := u.wantedSum(ctx, rel)
 	if err != nil {
 		return err
 	}
 
-	// Downloaded into the directory the binary already lives in, because the
-	// install is a rename and a rename is only atomic within one filesystem.
-	dir := filepath.Dir(u.BinPath)
 	tmp, err := os.CreateTemp(dir, ".spoloh-update-*")
 	if err != nil {
 		return fmt.Errorf("make room for the download: %w", err)
@@ -198,7 +200,18 @@ func (u Updater) Apply(ctx context.Context, rel Release) error {
 	if err != nil {
 		return fmt.Errorf("the downloaded binary does not run on this board (%w); nothing was changed: %s", err, strings.TrimSpace(string(out)))
 	}
-	u.logger().Info("downloaded release verified", "version", rel.Version, "reports", strings.TrimSpace(string(out)))
+	// What it says it is has to match what the release says it is. Apply
+	// already had this in hand and only logged it, and a release built from
+	// the wrong commit passes every other check here: the checksum is of
+	// whatever was published, and the binary runs. The update would then
+	// "succeed", leave the old version reported, and be re-downloaded and
+	// re-applied on the next run - silently, forever, over a school's
+	// connection.
+	reported := strings.TrimSpace(string(out))
+	if reported != rel.Version {
+		return fmt.Errorf("the downloaded binary reports version %q but the release is tagged %s; the release was built from something other than its tag. Nothing was changed", reported, rel.Version)
+	}
+	u.logger().Info("downloaded release verified", "version", rel.Version, "reports", reported)
 
 	// Copied rather than renamed: renaming would leave an instant with no
 	// binary at BinPath at all, and this runs on a device that can lose power
@@ -261,6 +274,26 @@ func (u Updater) Rollback(ctx context.Context) error {
 		return fmt.Errorf("restart after rollback: %w: %s", err, strings.TrimSpace(string(out)))
 	}
 	return nil
+}
+
+// sweepStaleDownloads removes downloads left behind by an earlier run.
+//
+// Apply removes its own temporary file on every path out, but Go does not run
+// deferred functions when the process is killed by a signal, so an update
+// interrupted at the wrong moment leaves one behind - and the binaries are
+// tens of megabytes each, next to the binary, on an SD card the spec says
+// wears out. Nothing else creates this name, so anything matching it is this
+// package's own litter.
+func (u Updater) sweepStaleDownloads(dir string) {
+	stale, err := filepath.Glob(filepath.Join(dir, ".spoloh-update-*"))
+	if err != nil {
+		return // the pattern is a constant, so this cannot happen
+	}
+	for _, f := range stale {
+		if err := os.Remove(f); err != nil {
+			u.logger().Warn("could not remove an interrupted update's download", "file", f, "err", err)
+		}
+	}
 }
 
 // wantedSum fetches SHA256SUMS and returns the digest published for this

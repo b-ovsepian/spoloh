@@ -337,3 +337,48 @@ func mustBeExecutable(t *testing.T, path, what string) {
 		t.Errorf("%s is %v, want -rwxr-xr-x: the unit runs as User=spoloh and cannot execute it", what, mode)
 	}
 }
+
+func TestApplyRefusesABinaryThatReportsADifferentVersion(t *testing.T) {
+	// A release built from something other than its tag passes every other
+	// check here: the checksum is of whatever was published, and the binary
+	// runs. Installing it leaves the device reporting the old version, so
+	// the next run downloads and applies the same release again — silently,
+	// forever, over a school's connection.
+	mistagged := "#!/bin/sh\necho v1.0.0\n"
+	u, binPath, ran := newUpdater(t, releasePages(mistagged))
+	rel, _ := u.Latest(context.Background())
+
+	err := u.Apply(context.Background(), rel)
+	if err == nil {
+		t.Fatal("Apply installed a binary that does not report the version of the release it came from")
+	}
+	if !strings.Contains(err.Error(), "v1.0.0") || !strings.Contains(err.Error(), "v9.9.9") {
+		t.Errorf("err = %v, want it to name both versions", err)
+	}
+	if got, _ := os.ReadFile(binPath); !strings.Contains(string(got), "v1.0.0") {
+		t.Errorf("the installed binary was replaced anyway: %q", got)
+	}
+	if len(*ran) != 0 {
+		t.Errorf("commands were run despite the refusal: %v", *ran)
+	}
+}
+
+func TestApplySweepsWhatAnInterruptedRunLeftBehind(t *testing.T) {
+	// Go runs no deferred function when the process is killed by a signal,
+	// so an interrupted update leaves its download — tens of megabytes —
+	// beside the binary, on an SD card the spec says wears out.
+	u, binPath, _ := newUpdater(t, releasePages(binaryBody))
+	dir := filepath.Dir(binPath)
+	stale := filepath.Join(dir, ".spoloh-update-2360015")
+	if err := os.WriteFile(stale, []byte("an interrupted download"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	rel, _ := u.Latest(context.Background())
+
+	if err := u.Apply(context.Background(), rel); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if _, err := os.Stat(stale); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("an interrupted run's download survived: stat = %v", err)
+	}
+}
