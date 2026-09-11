@@ -301,7 +301,7 @@ func deviceKnown(name string, devices []player.Device) bool {
 //
 // A PCM this board does not have silences the device while the dashboard
 // shows a configured output — the same shape of failure as an unmatchable
-// oblast (network.go's isKnownRegion), arrived at from the audio side. But
+// oblast (alerts.go's isKnownRegion), arrived at from the audio side. But
 // the lister is only consulted for a device that is actually changing: a
 // submission whose device equals what is already stored needs no fresh
 // confirmation, because it passed this exact check the moment it was first

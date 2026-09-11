@@ -111,6 +111,8 @@ func New(d Deps) (*Server, error) {
 	s.handle("POST /stop", http.HandlerFunc(s.handleStop))
 	s.handle("GET /network", http.HandlerFunc(s.handleNetwork))
 	s.handle("POST /network", http.HandlerFunc(s.handleNetworkConnect))
+	s.handle("GET /alerts", http.HandlerFunc(s.handleAlertsPage))
+	s.handle("POST /alerts", http.HandlerFunc(s.handleAlertsSave))
 	s.handle("GET /events", http.HandlerFunc(s.handleEventsPage))
 	s.handle("POST /events/save", http.HandlerFunc(s.handleEventsSave))
 	s.handle("POST /events/add", http.HandlerFunc(s.handleEventsAdd))

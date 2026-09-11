@@ -1,0 +1,54 @@
+{{define "title"}}Тривоги — Сполох{{end}}
+{{define "content"}}
+<div class="grid gap-4">
+  {{if .Message}}
+  <div class="alert" role="status"><section><p>{{.Message}}</p></section></div>
+  {{end}}
+  {{if .Error}}
+  <div class="alert" data-variant="destructive" role="alert">
+    <section><p>{{.Error}}</p></section>
+  </div>
+  {{end}}
+
+  <div class="card p-6">
+    <header class="mb-4">
+      <h1 class="text-lg font-semibold">Тривоги</h1>
+    </header>
+
+    <form method="post" action="/alerts" class="grid gap-4">
+      <div class="field">
+        <label for="region">Область для сповіщень</label>
+        <select class="select" id="region" name="region" required>
+          {{range .Regions}}<option value="{{.}}"{{if eq . $.CurrentRegion}} selected{{end}}>{{.}}</option>{{end}}
+        </select>
+      </div>
+
+      {{/*
+      One <select> per cascade position rather than a set of checkboxes: a
+      checkbox can say which sources are in, but not which one is tried
+      first — and the whole point of a cascade is which one that is. Any
+      position left on "не використовується" is skipped, not treated as the
+      end of the list — a source picked at a later position still counts, in
+      order — so leaving a gap in the middle can never silently drop a
+      choice the operator already made.
+      */}}
+      <fieldset class="field">
+        <legend>Черга джерел сповіщень</legend>
+        <p class="text-sm text-muted-foreground mb-2">Джерела пробуються по черзі, від першого до останнього, поки одне не відповість.</p>
+        <div class="grid gap-2">
+          {{range .SourceSlots}}
+          <div class="field">
+            <label for="source-{{.Position}}">{{.Position}}</label>
+            <select class="select" id="source-{{.Position}}" name="source">
+              {{range .Options}}<option value="{{.Key}}"{{if .Selected}} selected{{end}}>{{if .Key}}{{.Key}}{{else}}— не використовується —{{end}}</option>{{end}}
+            </select>
+          </div>
+          {{end}}
+        </div>
+      </fieldset>
+
+      <button class="btn w-fit" type="submit">Зберегти</button>
+    </form>
+  </div>
+</div>
+{{end}}

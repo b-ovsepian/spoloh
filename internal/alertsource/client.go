@@ -15,6 +15,20 @@ import (
 // DefaultBaseURL is the Ubilling aerial alerts endpoint.
 const DefaultBaseURL = "https://ubilling.net.ua/aerialalerts/"
 
+// sourceKeys is the fixed list of upstream cascade keys spec §3 names for
+// "?source=", in the order the dashboard's cascade picker offers them. It is
+// the one place that names them, so the /alerts screen's cascade picker and
+// its validation both read Sources() rather than keeping a second copy that
+// could drift from spec §3.
+var sourceKeys = []string{"default", "skog", "klimenko", "jaam", "aiu", "ual"}
+
+// Sources returns a copy of the six keys "?source=" accepts.
+func Sources() []string {
+	out := make([]string, len(sourceKeys))
+	copy(out, sourceKeys)
+	return out
+}
+
 // maxBody caps how much of a response we read; the real payload is a few KB and
 // an unbounded read on a broken upstream would be a memory hazard on a Pi 2.
 const maxBody = 1 << 20

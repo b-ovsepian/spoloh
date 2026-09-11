@@ -8,14 +8,11 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
-	"path/filepath"
-
-	"github.com/b-ovsepian/spoloh/internal/alertsource"
 	"github.com/b-ovsepian/spoloh/internal/config"
 	"github.com/b-ovsepian/spoloh/internal/configstore"
 	"github.com/b-ovsepian/spoloh/internal/netmgr"
@@ -128,13 +125,12 @@ func TestNetworkPageRendersWithNilNetworkManager(t *testing.T) {
 // interface — the same tolerance every other page's optional dependency
 // gets.
 func TestNetworkConnectWithNilNetworkManagerDoesNotPanic(t *testing.T) {
-	srv, store := newServerWithStore(t) // Deps.Network is nil
+	srv, _ := newServerWithStore(t) // Deps.Network is nil
 	setPassword(t, srv, "correct horse battery staple")
 	cookie := login(t, srv, "correct horse battery staple")
-	before := store.Get().Alerts.Region
 
 	req := postForm("/network", url.Values{
-		"ssid": {"SiteWiFi"}, "password": {"sitepass1"}, "region": {"м. Київ"},
+		"ssid": {"SiteWiFi"}, "password": {"sitepass1"},
 	})
 	req.AddCookie(cookie)
 	rec := httptest.NewRecorder()
@@ -142,9 +138,6 @@ func TestNetworkConnectWithNilNetworkManagerDoesNotPanic(t *testing.T) {
 
 	if rec.Code == http.StatusOK {
 		t.Fatalf("status = %d, want a rejection with no network manager wired up", rec.Code)
-	}
-	if got := store.Get().Alerts.Region; got != before {
-		t.Fatalf("stored region = %q, want unchanged %q", got, before)
 	}
 }
 
@@ -157,7 +150,7 @@ func TestNetworkConnectRejectsCrossOrigin(t *testing.T) {
 	cookie := login(t, srv, "correct horse battery staple")
 
 	req := postForm("/network", url.Values{
-		"ssid": {"SiteWiFi"}, "password": {"sitepass1"}, "region": {"м. Київ"},
+		"ssid": {"SiteWiFi"}, "password": {"sitepass1"},
 	})
 	req.AddCookie(cookie)
 	req.Header.Set("Sec-Fetch-Site", "cross-site")
@@ -173,15 +166,14 @@ func TestNetworkConnectRejectsCrossOrigin(t *testing.T) {
 }
 
 // A successful connect must call Connect with exactly the submitted SSID and
-// password, and only then store the chosen oblast — never before, and never
-// with anything else.
-func TestNetworkConnectSucceedsAndStoresRegion(t *testing.T) {
-	srv, store, fake := newServerWithNetwork(t)
+// password, and nothing else.
+func TestNetworkConnectSucceedsWithExactCredentials(t *testing.T) {
+	srv, _, fake := newServerWithNetwork(t)
 	setPassword(t, srv, "correct horse battery staple")
 	cookie := login(t, srv, "correct horse battery staple")
 
 	req := postForm("/network", url.Values{
-		"ssid": {"SiteWiFi"}, "password": {"sitepass1"}, "region": {"Львівська область"},
+		"ssid": {"SiteWiFi"}, "password": {"sitepass1"},
 	})
 	req.AddCookie(cookie)
 	rec := httptest.NewRecorder()
@@ -198,24 +190,20 @@ func TestNetworkConnectSucceedsAndStoresRegion(t *testing.T) {
 	if calls[0].SSID != "SiteWiFi" || calls[0].PSK != "sitepass1" {
 		t.Fatalf("Connect called with SSID=%q PSK=%q, want the exact submitted values", calls[0].SSID, calls[0].PSK)
 	}
-	if got := store.Get().Alerts.Region; got != "Львівська область" {
-		t.Fatalf("stored region = %q, want the submitted oblast", got)
-	}
 }
 
-// A half-applied submission is worse than a rejected one: if Connect fails,
-// the page must show the manager's own error and the stored oblast must not
-// move, even though a different, valid oblast was submitted alongside it.
-func TestNetworkConnectFailureLeavesRegionUnchanged(t *testing.T) {
-	srv, store, fake := newServerWithNetwork(t)
+// A failed Connect must show the manager's own error, not a generic one —
+// nmcli's error text is the only diagnostic a headless board offers someone
+// standing there with a phone.
+func TestNetworkConnectFailureShowsTheManagersError(t *testing.T) {
+	srv, _, fake := newServerWithNetwork(t)
 	setPassword(t, srv, "correct horse battery staple")
 	cookie := login(t, srv, "correct horse battery staple")
-	before := store.Get().Alerts.Region
 
 	fake.ConnectErr = errors.New("Secrets flag is not valid")
 
 	req := postForm("/network", url.Values{
-		"ssid": {"SiteWiFi"}, "password": {"wrongpass"}, "region": {"Одеська область"},
+		"ssid": {"SiteWiFi"}, "password": {"wrongpass"},
 	})
 	req.AddCookie(cookie)
 	rec := httptest.NewRecorder()
@@ -226,42 +214,6 @@ func TestNetworkConnectFailureLeavesRegionUnchanged(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), "Secrets flag is not valid") {
 		t.Error("the page does not show the manager's own error")
-	}
-	if got := store.Get().Alerts.Region; got != before {
-		t.Fatalf("stored region changed to %q after a failed connect, want unchanged %q", got, before)
-	}
-}
-
-// A crafted form could submit a region key that matches no known oblast,
-// which would silence the device permanently while the dashboard still
-// looked configured. This must be rejected before anything is stored, and
-// before the operator's own Wi-Fi connection is even touched.
-func TestNetworkConnectRejectsAnUnknownRegion(t *testing.T) {
-	srv, store, fake := newServerWithNetwork(t)
-	setPassword(t, srv, "correct horse battery staple")
-	cookie := login(t, srv, "correct horse battery staple")
-	before := store.Get().Alerts.Region
-
-	req := postForm("/network", url.Values{
-		"ssid": {"SiteWiFi"}, "password": {"sitepass1"}, "region": {"Марсіанська область"},
-	})
-	req.AddCookie(cookie)
-	rec := httptest.NewRecorder()
-	srv.Handler().ServeHTTP(rec, req)
-
-	if rec.Code == http.StatusOK {
-		t.Fatalf("status = %d, want a rejection for an unknown region", rec.Code)
-	}
-	if got := store.Get().Alerts.Region; got != before {
-		t.Fatalf("stored region = %q, want unchanged %q", got, before)
-	}
-	// The rejected page re-scans to show a retryable list, so Scan is
-	// expected here; Connect is not — the region is invalid before the
-	// device is ever asked to join anything.
-	for _, c := range fake.Calls() {
-		if c.Method == "Connect" {
-			t.Error("the device tried to connect before the region was even validated")
-		}
 	}
 }
 
@@ -274,7 +226,7 @@ func TestNetworkConnectSuccessShowsAddresses(t *testing.T) {
 	cookie := login(t, srv, "correct horse battery staple")
 
 	req := postForm("/network", url.Values{
-		"ssid": {"SiteWiFi"}, "password": {"sitepass1"}, "region": {"Харківська область"},
+		"ssid": {"SiteWiFi"}, "password": {"sitepass1"},
 	})
 	req.AddCookie(cookie)
 	rec := httptest.NewRecorder()
@@ -299,7 +251,7 @@ func TestNetworkConnectNeverEchoesThePassword(t *testing.T) {
 
 	const secret = "SuperSecretSitePassword1"
 	req := postForm("/network", url.Values{
-		"ssid": {"SiteWiFi"}, "password": {secret}, "region": {"Сумська область"},
+		"ssid": {"SiteWiFi"}, "password": {secret},
 	})
 	req.AddCookie(cookie)
 	rec := httptest.NewRecorder()
@@ -348,7 +300,7 @@ func TestNetworkConnectSurvivesTheClientDisconnecting(t *testing.T) {
 	setPassword(t, srv, "correct horse battery staple")
 	cookie := login(t, srv, "correct horse battery staple")
 
-	form := url.Values{"ssid": {"SiteWiFi"}, "password": {"sp0lohTest42"}, "region": {alertsource.Regions()[0]}}
+	form := url.Values{"ssid": {"SiteWiFi"}, "password": {"sp0lohTest42"}}
 	req := httptest.NewRequest(http.MethodPost, "/network", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Origin", "http://"+req.Host)
@@ -369,80 +321,6 @@ func TestNetworkConnectSurvivesTheClientDisconnecting(t *testing.T) {
 	}
 	if !probe.hadDeadline {
 		t.Error("Connect ran with no deadline; a wedged NetworkManager would hold this goroutine forever")
-	}
-}
-
-// There is no settings screen (Plan 2b has not shipped): /network is the
-// only place Alerts.Region is ever written anywhere in this codebase. If
-// Connect succeeds but the config write that follows it does not, the
-// success page must say so distinctly — otherwise the operator is told the
-// device is connected while the one value it needs to do its job was never
-// saved, with no reason to think they need to come back.
-func TestNetworkConnectSuccessWarnsWhenTheRegionCouldNotBeSaved(t *testing.T) {
-	dir := t.TempDir()
-	store, err := configstore.Open(filepath.Join(dir, "config.json"))
-	if err != nil {
-		t.Fatalf("configstore.Open: %v", err)
-	}
-	fake := &netmgr.Fake{}
-	srv, err := web.New(web.Deps{Config: store, Network: fake})
-	if err != nil {
-		t.Fatalf("web.New: %v", err)
-	}
-	setPassword(t, srv, "correct horse battery staple")
-	cookie := login(t, srv, "correct horse battery staple")
-	before := store.Get().Alerts.Region
-
-	// config.Save writes atomically through a temp file in the same
-	// directory (see internal/atomicfile), so a directory the process
-	// cannot write to is what makes Update fail deterministically here — the
-	// same trick internal/configstore's own tests use for a read-only SD
-	// card. This runs after setup/login, which already had to write
-	// successfully to get this far.
-	if err := os.Chmod(dir, 0o500); err != nil {
-		t.Fatalf("Chmod: %v", err)
-	}
-	t.Cleanup(func() { os.Chmod(dir, 0o700) })
-
-	req := postForm("/network", url.Values{
-		"ssid": {"SiteWiFi"}, "password": {"sitepass1"}, "region": {"Чернігівська область"},
-	})
-	req.AddCookie(cookie)
-	rec := httptest.NewRecorder()
-	srv.Handler().ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200 — the join itself succeeded", rec.Code)
-	}
-	body := rec.Body.String()
-	if !strings.Contains(body, "Пристрій підключено") {
-		t.Fatal("the page does not show the success view for a join that actually succeeded")
-	}
-	if !strings.Contains(body, "не збереглася") {
-		t.Error("the success page does not warn that the region failed to save")
-	}
-	if got := store.Get().Alerts.Region; got != before {
-		t.Fatalf("stored region = %q, want unchanged %q — the write genuinely failed", got, before)
-	}
-}
-
-// The warning above is for the one case where the config write fails after a
-// successful join; an ordinary success must not carry it, or the operator
-// would not be able to tell the two apart.
-func TestNetworkConnectPlainSuccessCarriesNoRegionWarning(t *testing.T) {
-	srv, _, _ := newServerWithNetwork(t)
-	setPassword(t, srv, "correct horse battery staple")
-	cookie := login(t, srv, "correct horse battery staple")
-
-	req := postForm("/network", url.Values{
-		"ssid": {"SiteWiFi"}, "password": {"sitepass1"}, "region": {"Чернігівська область"},
-	})
-	req.AddCookie(cookie)
-	rec := httptest.NewRecorder()
-	srv.Handler().ServeHTTP(rec, req)
-
-	if strings.Contains(rec.Body.String(), "не збереглася") {
-		t.Error("a plain, fully successful connect carries the region-not-saved warning")
 	}
 }
 
@@ -495,7 +373,7 @@ func TestNetworkConnectHoldsTheJoinGateForTheJoin(t *testing.T) {
 	}
 
 	req := postForm("/network", url.Values{
-		"ssid": {"SiteWiFi"}, "password": {"sitepass1"}, "region": {"Львівська область"},
+		"ssid": {"SiteWiFi"}, "password": {"sitepass1"},
 	})
 	req.AddCookie(cookie)
 	rec := httptest.NewRecorder()
@@ -523,7 +401,7 @@ func TestNetworkConnectReleasesTheJoinGateOnFailure(t *testing.T) {
 	cookie := login(t, srv, "correct horse battery staple")
 
 	req := postForm("/network", url.Values{
-		"ssid": {"SiteWiFi"}, "password": {"wrong"}, "region": {"Львівська область"},
+		"ssid": {"SiteWiFi"}, "password": {"wrong"},
 	})
 	req.AddCookie(cookie)
 	rec := httptest.NewRecorder()

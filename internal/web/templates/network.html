@@ -12,19 +12,6 @@ the network it just joined.
   <header>
     <h1 class="text-lg font-semibold">Пристрій підключено</h1>
   </header>
-  {{/*
-  A distinct warning, not a reuse of .Error: the join genuinely succeeded —
-  this is still the success view — but the config write that was meant to
-  follow it did not, and there is no settings screen to fall back on
-  (Plan 2b has not shipped). /network is the only place Alerts.Region is
-  ever written, so this is the operator's only way to learn the device
-  still cannot do its job and come back to fix it.
-  */}}
-  {{if .RegionSaveFailed}}
-  <div class="alert" data-variant="destructive" role="alert">
-    <section><p>Мережу підключено, але область для сповіщень не збереглася. Без неї пристрій не працюватиме. Поверніться на цю сторінку (/network) і оберіть область ще раз.</p></section>
-  </div>
-  {{end}}
   <p>Точку доступу пристрою вимкнено. Підключіть телефон до тієї самої мережі Wi-Fi і відкрийте одну з цих адрес:</p>
   {{if .Addresses}}
   {{range .Addresses}}<p class="font-mono text-2xl">{{.}}</p>{{end}}
@@ -91,13 +78,6 @@ the network it just joined.
         <input class="input" type="password" id="password" name="password" autocomplete="off">
       </div>
 
-      <div class="field">
-        <label for="region">Область для сповіщень</label>
-        <select class="select" id="region" name="region" required>
-          {{range .Regions}}<option value="{{.}}"{{if eq . $.CurrentRegion}} selected{{end}}>{{.}}</option>{{end}}
-        </select>
-      </div>
-
       {{/*
       Said above the button, not after: pressing it closes the access point
       the operator is using to read this very page, so everything they need
@@ -113,7 +93,7 @@ the network it just joined.
       */}}
       <div class="alert" data-variant="destructive" role="alert">
         <section>
-          <p>Після натискання кнопки точка доступу пристрою вимкнеться, і ваш телефон втратить із нею зв'язок. Пристрій отримає нову адресу вже в шкільній мережі — не ту, що вказана вище. Підключіть телефон до тієї самої мережі Wi-Fi: якщо наступна сторінка встигне завантажитися, вона покаже нову адресу.</p>
+          <p>Після натискання кнопки точка доступу пристрою вимкнеться, і ваш телефон втратить із нею зв'язок. Пристрій отримає нову адресу вже в тій мережі — не ту, що вказана вище. Підключіть телефон до тієї самої мережі Wi-Fi: якщо наступна сторінка встигне завантажитися, вона покаже нову адресу.</p>
         </section>
       </div>
 

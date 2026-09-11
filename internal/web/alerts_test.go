@@ -1,0 +1,397 @@
+package web_test
+
+import (
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"strings"
+	"testing"
+
+	"github.com/b-ovsepian/spoloh/internal/alertsource"
+	"github.com/b-ovsepian/spoloh/internal/config"
+)
+
+// This is the screen operator feedback asked for: the oblast used to live on
+// /network (network_test.go carried these cases before this task moved
+// them), findable only by someone who already knew it was there. These tests
+// prove the move kept every rule /network used to enforce, and cover the two
+// new ones the source cascade needs.
+
+// sourceSlotHTML returns the rendered markup for one cascade-position
+// <select> — from its opening tag to its closing "</select>" — so a test can
+// assert which option is selected at that specific position rather than
+// merely that the option's markup appears somewhere on a page that renders
+// the same six options six times over.
+func sourceSlotHTML(t *testing.T, body string, position int) string {
+	t.Helper()
+	marker := fmt.Sprintf(`id="source-%d"`, position)
+	start := strings.Index(body, marker)
+	if start < 0 {
+		t.Fatalf("no source slot rendered for position %d", position)
+	}
+	end := strings.Index(body[start:], "</select>")
+	if end < 0 {
+		t.Fatalf("source slot %d has no closing </select>", position)
+	}
+	return body[start : start+end]
+}
+
+// selectedOption is the exact markup an alerts.html <option> renders with
+// when it is the selected one — asserting this rather than a looser
+// substring proves the option is actually marked selected, not merely
+// present in the list.
+func selectedOption(value string) string {
+	return fmt.Sprintf(`<option value="%s" selected>`, value)
+}
+
+func TestAlertsRequiresSession(t *testing.T) {
+	srv := newServer(t)
+	setPassword(t, srv, "correct horse battery staple")
+
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/alerts", nil))
+
+	if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/login" {
+		t.Fatalf("GET /alerts with no session = %d %q, want 303 to /login", rec.Code, rec.Header().Get("Location"))
+	}
+}
+
+// A fresh device (config.Default()) already has a region and a cascade; the
+// page must show exactly those as selected, in the order they are stored —
+// not the canonical alphabetical-by-declaration order alertsource.Sources()
+// happens to return.
+func TestAlertsPageShowsTheStoredRegionAndCascadeOrder(t *testing.T) {
+	srv, store := newServerWithStore(t)
+	setPassword(t, srv, "correct horse battery staple")
+	cookie := login(t, srv, "correct horse battery staple")
+
+	cfg := store.Get()
+	if len(cfg.Alerts.Sources) < 2 {
+		t.Fatalf("setup: config.Default() sources = %v, want at least two to prove order", cfg.Alerts.Sources)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/alerts", nil)
+	req.AddCookie(cookie)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	body := rec.Body.String()
+
+	if !strings.Contains(body, fmt.Sprintf(`<option value="%s" selected>%s</option>`, cfg.Alerts.Region, cfg.Alerts.Region)) {
+		t.Errorf("the configured region %q is not rendered as selected", cfg.Alerts.Region)
+	}
+	for i, want := range cfg.Alerts.Sources {
+		slot := sourceSlotHTML(t, body, i+1)
+		if !strings.Contains(slot, selectedOption(want)) {
+			t.Errorf("position %d: want %q selected, slot markup = %s", i+1, want, slot)
+		}
+	}
+	// The position right after the stored cascade must fall back to "not
+	// used" — otherwise a shorter-than-full cascade would look padded with
+	// a source that was never actually configured there.
+	next := sourceSlotHTML(t, body, len(cfg.Alerts.Sources)+1)
+	if !strings.Contains(next, selectedOption("")) {
+		t.Errorf("position %d (past the stored cascade) is not left on \"not used\": %s", len(cfg.Alerts.Sources)+1, next)
+	}
+}
+
+func TestAlertsSaveRejectsCrossOrigin(t *testing.T) {
+	srv, store := newServerWithStore(t)
+	setPassword(t, srv, "correct horse battery staple")
+	cookie := login(t, srv, "correct horse battery staple")
+	before := store.Get().Alerts
+
+	req := postForm("/alerts", url.Values{
+		"region": {"Львівська область"}, "source": {"default", "skog"},
+	})
+	req.AddCookie(cookie)
+	req.Header.Set("Sec-Fetch-Site", "cross-site")
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+
+	if rec.Code == http.StatusOK {
+		t.Fatal("a cross-site /alerts submission was accepted")
+	}
+	if got := store.Get().Alerts; got.Region != before.Region || strings.Join(got.Sources, ",") != strings.Join(before.Sources, ",") {
+		t.Fatalf("stored alerts config changed on a cross-site submission: got %+v, want unchanged %+v", got, before)
+	}
+}
+
+// A crafted form could submit a region key that matches no known oblast,
+// which would silence the device permanently while the dashboard still
+// looked configured. This is the same rule /network used to enforce before
+// the oblast moved here.
+func TestAlertsSaveRejectsAnUnknownRegion(t *testing.T) {
+	srv, store := newServerWithStore(t)
+	setPassword(t, srv, "correct horse battery staple")
+	cookie := login(t, srv, "correct horse battery staple")
+	before := store.Get().Alerts.Region
+
+	req := postForm("/alerts", url.Values{
+		"region": {"Марсіанська область"}, "source": {"default", "skog"},
+	})
+	req.AddCookie(cookie)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+
+	if rec.Code == http.StatusOK {
+		t.Fatalf("status = %d, want a rejection for an unknown region", rec.Code)
+	}
+	if got := store.Get().Alerts.Region; got != before {
+		t.Fatalf("stored region = %q, want unchanged %q", got, before)
+	}
+}
+
+// An empty cascade is a device that never learns anything and never says
+// why, so it must be refused rather than silently stored.
+func TestAlertsSaveRejectsAnEmptyCascade(t *testing.T) {
+	srv, store := newServerWithStore(t)
+	setPassword(t, srv, "correct horse battery staple")
+	cookie := login(t, srv, "correct horse battery staple")
+	before := store.Get().Alerts.Sources
+
+	req := postForm("/alerts", url.Values{
+		"region": {"Львівська область"}, "source": {"", "", "", "", "", ""},
+	})
+	req.AddCookie(cookie)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+
+	if rec.Code == http.StatusOK {
+		t.Fatalf("status = %d, want a rejection for an empty cascade", rec.Code)
+	}
+	if got := strings.Join(store.Get().Alerts.Sources, ","); got != strings.Join(before, ",") {
+		t.Fatalf("stored sources = %q, want unchanged %q", got, strings.Join(before, ","))
+	}
+}
+
+// A cascade filled entirely with keys that match nothing in
+// alertsource.Sources() is, for the device, indistinguishable from an empty
+// one: every entry fails upstream and the device never learns anything. A
+// crafted form must not be able to reach that state by filling every slot
+// with garbage the checkboxes on the real page could never produce.
+func TestAlertsSaveRejectsACascadeOfOnlyUnknownSources(t *testing.T) {
+	srv, store := newServerWithStore(t)
+	setPassword(t, srv, "correct horse battery staple")
+	cookie := login(t, srv, "correct horse battery staple")
+	before := store.Get().Alerts.Sources
+
+	req := postForm("/alerts", url.Values{
+		"region": {"Львівська область"}, "source": {"not-a-real-source", "another-fake-one"},
+	})
+	req.AddCookie(cookie)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+
+	if rec.Code == http.StatusOK {
+		t.Fatalf("status = %d, want a rejection for a cascade of only unknown sources", rec.Code)
+	}
+	if got := strings.Join(store.Get().Alerts.Sources, ","); got != strings.Join(before, ",") {
+		t.Fatalf("stored sources = %q, want unchanged %q", got, strings.Join(before, ","))
+	}
+}
+
+// The whole point of asking for the cascade slot by slot is that the
+// submitted order is the order it is tried in — not sorted, and not
+// reordered to match alertsource.Sources()'s own declaration order.
+func TestAlertsSavePreservesTheSubmittedCascadeOrder(t *testing.T) {
+	srv, store := newServerWithStore(t)
+	setPassword(t, srv, "correct horse battery staple")
+	cookie := login(t, srv, "correct horse battery staple")
+
+	// alertsource.Sources() declares "default" before "jaam" before "skog";
+	// this submits them in the opposite order to prove nothing re-sorts them.
+	req := postForm("/alerts", url.Values{
+		"region": {"Одеська область"}, "source": {"skog", "jaam", "default"},
+	})
+	req.AddCookie(cookie)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	want := []string{"skog", "jaam", "default"}
+	got := store.Get().Alerts.Sources
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("stored sources = %v, want %v in the exact submitted order", got, want)
+	}
+}
+
+// A source repeated across two positions is kept only at the first one it
+// appears in: trying the same upstream twice in one cascade does nothing a
+// single try does not, and letting it occupy two slots would only crowd out
+// a source that could have used the second one.
+func TestAlertsSaveDropsARepeatedSourceKeepingItsFirstPosition(t *testing.T) {
+	srv, store := newServerWithStore(t)
+	setPassword(t, srv, "correct horse battery staple")
+	cookie := login(t, srv, "correct horse battery staple")
+
+	req := postForm("/alerts", url.Values{
+		"region": {"Одеська область"}, "source": {"skog", "default", "skog"},
+	})
+	req.AddCookie(cookie)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	want := []string{"skog", "default"}
+	got := store.Get().Alerts.Sources
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("stored sources = %v, want %v (the repeat dropped, not the original position)", got, want)
+	}
+}
+
+// A "not used" position in the middle of the cascade is skipped, not treated
+// as the end of the list: a source picked at a later position must not be
+// silently dropped just because an earlier one was left blank.
+func TestAlertsSaveSkipsAGapInTheMiddleOfTheCascade(t *testing.T) {
+	srv, store := newServerWithStore(t)
+	setPassword(t, srv, "correct horse battery staple")
+	cookie := login(t, srv, "correct horse battery staple")
+
+	req := postForm("/alerts", url.Values{
+		"region": {"Одеська область"}, "source": {"default", "", "skog"},
+	})
+	req.AddCookie(cookie)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	want := []string{"default", "skog"}
+	got := store.Get().Alerts.Sources
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("stored sources = %v, want %v (the gap skipped, not treated as the end of the cascade)", got, want)
+	}
+}
+
+// The happy path: a valid region and a valid cascade are both stored
+// exactly as submitted, and the page confirms it rather than redirecting.
+func TestAlertsSaveSucceedsAndStoresRegionAndSources(t *testing.T) {
+	srv, store := newServerWithStore(t)
+	setPassword(t, srv, "correct horse battery staple")
+	cookie := login(t, srv, "correct horse battery staple")
+
+	req := postForm("/alerts", url.Values{
+		"region": {"Харківська область"}, "source": {"default", "aiu", "ual"},
+	})
+	req.AddCookie(cookie)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "збережено") {
+		t.Error("the success page does not confirm the save")
+	}
+
+	cfg := store.Get()
+	if cfg.Alerts.Region != "Харківська область" {
+		t.Errorf("stored region = %q, want %q", cfg.Alerts.Region, "Харківська область")
+	}
+	want := []string{"default", "aiu", "ual"}
+	if strings.Join(cfg.Alerts.Sources, ",") != strings.Join(want, ",") {
+		t.Errorf("stored sources = %v, want %v", cfg.Alerts.Sources, want)
+	}
+}
+
+// alertsource.Regions() and alertsource.Sources() are what this page's
+// validation and picker both read; this pins their sizes so a change to
+// either package is felt here rather than only discovered by a page that
+// silently offers fewer choices than it used to.
+func TestAlertsPageOffersEveryKnownRegionAndSource(t *testing.T) {
+	srv := newServer(t)
+	setPassword(t, srv, "correct horse battery staple")
+	cookie := login(t, srv, "correct horse battery staple")
+
+	req := httptest.NewRequest(http.MethodGet, "/alerts", nil)
+	req.AddCookie(cookie)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+
+	body := rec.Body.String()
+	for _, region := range alertsource.Regions() {
+		if !strings.Contains(body, fmt.Sprintf(`<option value="%s"`, region)) {
+			t.Errorf("region %q is not offered on the page", region)
+		}
+	}
+	slot := sourceSlotHTML(t, body, 1)
+	for _, source := range alertsource.Sources() {
+		if !strings.Contains(slot, fmt.Sprintf(`<option value="%s"`, source)) {
+			t.Errorf("source %q is not offered in the cascade picker", source)
+		}
+	}
+}
+
+// A rejection caused by the region must not throw away a cascade the
+// operator already picked correctly — the same "don't lose what they typed"
+// contract network.go's renderNetworkRejected keeps for the selected SSID.
+// The region itself falls back to what is actually stored: a <select> that
+// only ever offers alertsource.Regions()'s 25 keys has no option to mark
+// selected for "Марсіанська область", so there is nothing to echo back.
+func TestAlertsSaveRejectionOnBadRegionKeepsTheSubmittedCascade(t *testing.T) {
+	srv, store := newServerWithStore(t)
+	setPassword(t, srv, "correct horse battery staple")
+	cookie := login(t, srv, "correct horse battery staple")
+	storedRegion := store.Get().Alerts.Region
+
+	req := postForm("/alerts", url.Values{
+		"region": {"Марсіанська область"}, "source": {"jaam", "ual"},
+	})
+	req.AddCookie(cookie)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+
+	body := rec.Body.String()
+	if !strings.Contains(body, fmt.Sprintf(`<option value="%s" selected>%s</option>`, storedRegion, storedRegion)) {
+		t.Errorf("the page does not fall back to the stored region %q", storedRegion)
+	}
+	if slot := sourceSlotHTML(t, body, 1); !strings.Contains(slot, selectedOption("jaam")) {
+		t.Errorf("position 1 does not keep the submitted source \"jaam\": %s", slot)
+	}
+	if slot := sourceSlotHTML(t, body, 2); !strings.Contains(slot, selectedOption("ual")) {
+		t.Errorf("position 2 does not keep the submitted source \"ual\": %s", slot)
+	}
+}
+
+// A rejection caused by the cascade must not throw away a region the
+// operator already picked correctly, mirroring the case above.
+func TestAlertsSaveRejectionOnEmptyCascadeKeepsTheSubmittedRegion(t *testing.T) {
+	srv, _ := newServerWithStore(t)
+	setPassword(t, srv, "correct horse battery staple")
+	cookie := login(t, srv, "correct horse battery staple")
+
+	req := postForm("/alerts", url.Values{
+		"region": {"Тернопільська область"}, "source": {""},
+	})
+	req.AddCookie(cookie)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+
+	body := rec.Body.String()
+	if !strings.Contains(body, `<option value="Тернопільська область" selected>Тернопільська область</option>`) {
+		t.Error("the validly submitted region was not kept across a cascade rejection")
+	}
+}
+
+// isKnownRegion moved here unchanged from network.go's own unit test intent;
+// config.Default()'s own region must, at minimum, be one alertsource.Regions()
+// actually reports, or every device would ship pre-broken.
+func TestDefaultRegionIsAKnownRegion(t *testing.T) {
+	def := config.Default()
+	for _, r := range alertsource.Regions() {
+		if r == def.Alerts.Region {
+			return
+		}
+	}
+	t.Fatalf("config.Default().Alerts.Region = %q, want one of alertsource.Regions()", def.Alerts.Region)
+}

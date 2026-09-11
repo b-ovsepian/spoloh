@@ -6,7 +6,6 @@ import (
 	"sort"
 	"time"
 
-	"github.com/b-ovsepian/spoloh/internal/alertsource"
 	"github.com/b-ovsepian/spoloh/internal/config"
 	"github.com/b-ovsepian/spoloh/internal/netmgr"
 )
@@ -45,11 +44,6 @@ type networkView struct {
 	// never looks like it silently found nothing.
 	ScanNotice string
 
-	// Regions is the fixed 25-key list a submitted oblast is validated
-	// against, and CurrentRegion is the one already configured, marked
-	// selected in the picker.
-	Regions       []string
-	CurrentRegion string
 	// SelectedSSID re-selects the network an operator just tried, when the
 	// page is re-rendered after a rejected or failed submission.
 	SelectedSSID string
@@ -67,37 +61,14 @@ type networkView struct {
 	// operator lands on cannot be a redirect they can no longer load.
 	Addresses []string
 
-	// Error is a rejected submission's reason: an unknown region, a manager
-	// that is not wired up, or the network manager's own Connect error. It
-	// never carries the Wi-Fi password the operator typed.
+	// Error is a rejected submission's reason: no network selected, a
+	// manager that is not wired up, or the network manager's own Connect
+	// error. It never carries the Wi-Fi password the operator typed.
 	Error string
 	// Connected switches the page from the connect form to the "you're
 	// about to lose this page" success view, once Connect has actually
 	// returned nil.
 	Connected bool
-	// RegionSaveFailed marks the one case where Connect succeeded but the
-	// config write that was meant to follow it did not. It is a field of
-	// its own rather than a reuse of Error: Error belongs to the rejected
-	// connect-form view, and this belongs to the success view — the join
-	// really did happen and the operator is about to lose this page either
-	// way, but here they additionally need to know the oblast did not save.
-	// There is no settings screen (Plan 2b has not shipped): /network is the
-	// only place Alerts.Region is ever written, so this is the operator's
-	// only way to notice and come back.
-	RegionSaveFailed bool
-}
-
-// isKnownRegion reports whether region is one of alertsource.Regions()'s 25
-// keys. A crafted form must not be able to write a region key that matches
-// nothing upstream ever reports, which would silence the device permanently
-// while the dashboard still looked configured.
-func isKnownRegion(region string) bool {
-	for _, r := range alertsource.Regions() {
-		if r == region {
-			return true
-		}
-	}
-	return false
 }
 
 // visibleNetworksBySignal drops any hidden network (nmcli reports one in
@@ -153,62 +124,47 @@ func (s *Server) scanNetworks(ctx context.Context) ([]netmgr.Network, string) {
 }
 
 // handleNetwork renders the page an operator sees over the device's own
-// access point: what Wi-Fi networks it can see, its own access point details
-// so a lost password can still be read off the screen, and the oblast
-// picker.
+// access point: what Wi-Fi networks it can see, and its own access point
+// details so a lost password can still be read off the screen.
 func (s *Server) handleNetwork(w http.ResponseWriter, r *http.Request) {
 	cfg := s.deps.Config.Get()
 	nets, notice := s.scanNetworks(r.Context())
 
 	view := networkView{
-		Networks:      nets,
-		ScanNotice:    notice,
-		Regions:       alertsource.Regions(),
-		CurrentRegion: cfg.Alerts.Region,
-		APSSID:        cfg.Network.APSSID,
-		APPassword:    cfg.Network.APPassword,
-		Addresses:     LocalAddresses(),
+		Networks:   nets,
+		ScanNotice: notice,
+		APSSID:     cfg.Network.APSSID,
+		APPassword: cfg.Network.APPassword,
+		Addresses:  LocalAddresses(),
 	}
 	s.render(w, http.StatusOK, "network.html", view)
 }
 
 // renderNetworkRejected re-renders the connect form after a rejected or
 // failed submission, with the network list rebuilt (the page an operator
-// retries from still has to show one) and the submitted ssid/region kept
-// selected for convenience. It never receives or echoes the submitted
-// password.
-func (s *Server) renderNetworkRejected(w http.ResponseWriter, r *http.Request, status int, cfg *config.Config, ssid, region, message string) {
+// retries from still has to show one) and the submitted ssid kept selected
+// for convenience. It never receives or echoes the submitted password.
+func (s *Server) renderNetworkRejected(w http.ResponseWriter, r *http.Request, status int, cfg *config.Config, ssid, message string) {
 	nets, notice := s.scanNetworks(r.Context())
 	view := networkView{
-		Networks:      nets,
-		ScanNotice:    notice,
-		Regions:       alertsource.Regions(),
-		CurrentRegion: region,
-		SelectedSSID:  ssid,
-		APSSID:        cfg.Network.APSSID,
-		APPassword:    cfg.Network.APPassword,
-		Addresses:     LocalAddresses(),
-		Error:         message,
+		Networks:     nets,
+		ScanNotice:   notice,
+		SelectedSSID: ssid,
+		APSSID:       cfg.Network.APSSID,
+		APPassword:   cfg.Network.APPassword,
+		Addresses:    LocalAddresses(),
+		Error:        message,
 	}
 	s.render(w, status, "network.html", view)
 }
 
-// handleNetworkConnect joins the device to the submitted network and, only on
-// success, stores the chosen oblast.
+// handleNetworkConnect joins the device to the submitted network.
 //
-// Connect first, then store the oblast: a failed connect must leave the
-// stored oblast untouched, and writing the region only after Connect returns
-// nil is what guarantees that directly, with nothing to roll back. If the
-// config write itself then fails after a successful join, that failure is
-// deliberately left as-is rather than retried or rolled back — the device is
-// already on the right network, and a rollback here would only add a second
-// failure mode on top of the first. But it is not silently swallowed: there
-// is no settings screen to fall back to (Plan 2b has not shipped, and
-// /network is the only place Alerts.Region is ever written anywhere in this
-// codebase), so the success view below is told to say so, distinctly, via
-// RegionSaveFailed — otherwise the operator is told the device is connected
-// while the one value it needs to do its job was never saved, with no reason
-// to think they need to come back.
+// This page no longer stores anything in config: the oblast it used to write
+// on a successful join moved to /alerts (see alerts.go), which is the only
+// place Alerts.Region is written now. There is nothing here to roll back on
+// a failed Connect any more, either — a join failure is reported and nothing
+// else happens.
 func (s *Server) handleNetworkConnect(w http.ResponseWriter, r *http.Request) {
 	if !sameOrigin(r) {
 		http.Error(w, "cross-origin request rejected", http.StatusForbidden)
@@ -220,20 +176,15 @@ func (s *Server) handleNetworkConnect(w http.ResponseWriter, r *http.Request) {
 	// echoed back into a rendered page — see renderNetworkRejected and the
 	// success branch below, neither of which reads this variable.
 	password := r.FormValue("password")
-	region := r.FormValue("region")
 
 	cfg := s.deps.Config.Get()
 
-	if !isKnownRegion(region) {
-		s.renderNetworkRejected(w, r, http.StatusBadRequest, cfg, ssid, cfg.Alerts.Region, "Оберіть область зі списку.")
-		return
-	}
 	if ssid == "" {
-		s.renderNetworkRejected(w, r, http.StatusBadRequest, cfg, ssid, region, "Оберіть мережу зі списку.")
+		s.renderNetworkRejected(w, r, http.StatusBadRequest, cfg, ssid, "Оберіть мережу зі списку.")
 		return
 	}
 	if s.deps.Network == nil {
-		s.renderNetworkRejected(w, r, http.StatusServiceUnavailable, cfg, ssid, region, "Мережевий модуль недоступний на цьому пристрої.")
+		s.renderNetworkRejected(w, r, http.StatusServiceUnavailable, cfg, ssid, "Мережевий модуль недоступний на цьому пристрої.")
 		return
 	}
 
@@ -276,35 +227,22 @@ func (s *Server) handleNetworkConnect(w http.ResponseWriter, r *http.Request) {
 	// below; see netmgr.JoinGate for why it is a deadline and not a flag.
 	// Deferred, not released inline: a panic inside Connect would otherwise
 	// skip the release and leave the supervisor standing down for the whole
-	// deadline. The extra time the hold covers — a config write and a render
-	// — is microseconds.
+	// deadline. The extra time the hold covers — the render below — is
+	// microseconds.
 	join := s.deps.JoinGate.HoldUntil(time.Now().Add(networkConnectTimeout + joinGateSlack))
 	defer s.deps.JoinGate.Release(join)
 
 	err := s.deps.Network.Connect(connectCtx, ssid, password)
 	if err != nil {
-		s.renderNetworkRejected(w, r, http.StatusBadGateway, cfg, ssid, region, err.Error())
+		s.renderNetworkRejected(w, r, http.StatusBadGateway, cfg, ssid, err.Error())
 		return
-	}
-
-	regionSaveFailed := false
-	if err := s.deps.Config.Update(func(c *config.Config) error {
-		c.Alerts.Region = region
-		return nil
-	}); err != nil {
-		// See the doc comment above: not rolled back, not retried, but not
-		// silent either — the success view below is told, since this page
-		// is the only way the operator would ever find out.
-		s.deps.Logger.Error("network: connected, but could not store the region", "err", err)
-		regionSaveFailed = true
 	}
 
 	// No redirect: the access point that served this request is about to
 	// close, so the response has to say everything the operator needs right
 	// now, including where to find the device afterwards.
 	s.render(w, http.StatusOK, "network.html", networkView{
-		Connected:        true,
-		Addresses:        LocalAddresses(),
-		RegionSaveFailed: regionSaveFailed,
+		Connected: true,
+		Addresses: LocalAddresses(),
 	})
 }

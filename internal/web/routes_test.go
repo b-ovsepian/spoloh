@@ -35,6 +35,7 @@ func TestEveryRouteIsPublicOrPrivateAsIntended(t *testing.T) {
 		"/play":               false,
 		"/stop":               false,
 		"/network":            false,
+		"/alerts":             false,
 		"/events":             false,
 		"/events/save":        false,
 		"/events/add":         false,
