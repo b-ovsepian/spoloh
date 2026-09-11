@@ -31,6 +31,7 @@ import (
 	"github.com/b-ovsepian/spoloh/internal/library"
 	"github.com/b-ovsepian/spoloh/internal/netmgr"
 	"github.com/b-ovsepian/spoloh/internal/player"
+	"github.com/b-ovsepian/spoloh/internal/timedate"
 	"github.com/b-ovsepian/spoloh/internal/watchdog"
 	"github.com/b-ovsepian/spoloh/internal/web"
 )
@@ -262,6 +263,20 @@ func run(configPath, dataDir, listen string) error {
 	joinGate := &netmgr.JoinGate{}
 	sup := netmgr.NewSupervisor(netManager, cfgFn, clock.System{Loc: loc}, logger, joinGate)
 
+	// timeManager is the write side of the tool clock.Timedatectl above
+	// reads: the /time page sets the zone, the clock and the NTP switch
+	// through it. A value type for the same reason NMCLI is one — it holds
+	// no state and each call is an independent process.
+	//
+	// ServerFile follows -config rather than being hard-coded, so a run
+	// against a config elsewhere (an e2e run, a manual invocation) writes its
+	// NTP server beside that config instead of into a deployed device's
+	// /etc/spoloh. On a real install the two are the same path, which is
+	// what deploy/spoloh-timesync.service reads.
+	timeManager := timedate.Timedatectl{
+		ServerFile: filepath.Join(filepath.Dir(configPath), "ntp-server"),
+	}
+
 	websrv, err := web.New(web.Deps{
 		Config:   store,
 		Engine:   eng,
@@ -271,6 +286,7 @@ func run(configPath, dataDir, listen string) error {
 		Network:  netManager,
 		JoinGate: joinGate,
 		Devices:  alsa,
+		Timedate: timeManager,
 		Logger:   logger,
 	})
 	if err != nil {
