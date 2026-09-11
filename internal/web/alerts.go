@@ -52,6 +52,12 @@ type sourceSlotOption struct {
 type sourceSlotView struct {
 	Position int
 	Options  []sourceSlotOption
+	// Source is the chosen key's registry entry (alertsource.Lookup), or the
+	// zero value when the slot is "not used". alerts.html shows a
+	// documentation link beside the picker only when Source.URL is
+	// non-empty: a chosen source with no established URL renders no link at
+	// all, the same as an unused slot, rather than a broken one.
+	Source alertsource.SourceInfo
 }
 
 // buildSourceSlots turns a stored (or just-submitted) cascade into the fixed
@@ -72,7 +78,12 @@ func buildSourceSlots(current []string) []sourceSlotView {
 		for _, k := range keys {
 			options = append(options, sourceSlotOption{Key: k, Selected: k == picked})
 		}
-		slots[i] = sourceSlotView{Position: i + 1, Options: options}
+		// alertsource.Lookup("") — the "not used" value — reports false and
+		// the zero SourceInfo, whose URL is empty, so an unused slot needs no
+		// special case here: it falls out of the same lookup every chosen
+		// slot goes through.
+		source, _ := alertsource.Lookup(picked)
+		slots[i] = sourceSlotView{Position: i + 1, Options: options, Source: source}
 	}
 	return slots
 }

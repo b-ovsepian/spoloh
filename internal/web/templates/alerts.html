@@ -42,6 +42,19 @@
             <select class="select" id="source-{{.Position}}" name="source">
               {{range .Options}}<option value="{{.Key}}"{{if .Selected}} selected{{end}}>{{if .Key}}{{.Key}}{{else}}— не використовується —{{end}}</option>{{end}}
             </select>
+            {{/*
+            Shown only when the chosen key has an established URL (see
+            alertsource.SourceInfo) — never for "не використовується", and
+            never a guessed link. The cascade tries sources in order and
+            stops at the first that answers, so this is deliberately worded
+            as "documentation", not as anything a later, untried slot would
+            wrongly claim about being contacted right now.
+            */}}
+            {{if .Source.URL}}
+            <p class="text-sm text-muted-foreground">
+              <a href="{{.Source.URL}}" target="_blank" rel="noopener noreferrer">Документація джерела «{{.Source.Name}}»</a>
+            </p>
+            {{end}}
           </div>
           {{end}}
         </div>

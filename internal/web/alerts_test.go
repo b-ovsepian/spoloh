@@ -46,6 +46,24 @@ func selectedOption(value string) string {
 	return fmt.Sprintf(`<option value="%s" selected>`, value)
 }
 
+// sourceSlotFieldHTML returns one cascade slot's whole "field" block — the
+// <select> and, when the chosen key has a documentation link, the <p> that
+// follows it. Unlike sourceSlotHTML, which stops at the select's own closing
+// tag, this can see whether a link was rendered after it.
+func sourceSlotFieldHTML(t *testing.T, body string, position int) string {
+	t.Helper()
+	marker := fmt.Sprintf(`id="source-%d"`, position)
+	start := strings.Index(body, marker)
+	if start < 0 {
+		t.Fatalf("no source slot rendered for position %d", position)
+	}
+	end := strings.Index(body[start:], "</div>")
+	if end < 0 {
+		t.Fatalf("source slot %d has no closing </div>", position)
+	}
+	return body[start : start+end]
+}
+
 func TestAlertsRequiresSession(t *testing.T) {
 	srv := newServer(t)
 	setPassword(t, srv, "correct horse battery staple")
@@ -553,5 +571,97 @@ func TestAlertsPageHeadingAndNavLabelReadDzherela(t *testing.T) {
 	}
 	if !strings.Contains(body, `'/alerts' ? 'page' : null">Джерела</a>`) {
 		t.Errorf("the nav link to /alerts is not labelled \"Джерела\"; body:\n%s", body)
+	}
+}
+
+// An operator who does not recognise a cascade key, or is debugging one that
+// keeps failing, needs a way to go and look at it — task-sources-brief.md's
+// whole point. config.Default() already puts "default" first, and
+// alertsource.Lookup("default") is the one key this repository can back with
+// a real URL (see internal/alertsource/registry.go), so a fresh device's own
+// /alerts page is enough to prove the link renders, opens safely, and does
+// not read as a live status.
+func TestAlertsPageShowsDocumentationLinkForAKnownSource(t *testing.T) {
+	srv, store := newServerWithStore(t)
+	setPassword(t, srv, "correct horse battery staple")
+	cookie := login(t, srv, "correct horse battery staple")
+
+	cfg := store.Get()
+	if len(cfg.Alerts.Sources) == 0 || cfg.Alerts.Sources[0] != "default" {
+		t.Fatalf("setup: want \"default\" first in the stored cascade, got %v", cfg.Alerts.Sources)
+	}
+	info, ok := alertsource.Lookup("default")
+	if !ok || info.URL == "" {
+		t.Fatalf("setup: alertsource.Lookup(\"default\") has no URL to assert against")
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/alerts", nil)
+	req.AddCookie(cookie)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+
+	field := sourceSlotFieldHTML(t, rec.Body.String(), 1)
+	if !strings.Contains(field, fmt.Sprintf(`href="%s"`, info.URL)) {
+		t.Errorf("position 1 (%q) does not link to %q; field markup: %s", "default", info.URL, field)
+	}
+	if !strings.Contains(field, `target="_blank"`) {
+		t.Errorf("the source link does not open in a new tab; field markup: %s", field)
+	}
+	if !strings.Contains(field, `rel="noopener noreferrer"`) {
+		t.Errorf("the source link does not carry rel=\"noopener noreferrer\"; field markup: %s", field)
+	}
+}
+
+// "не використовується" must never grow a link: there is nothing chosen for
+// it to document, and rendering one anyway would look like every other slot
+// that does have a source.
+func TestAlertsPageShowsNoDocumentationLinkForAnUnusedSlot(t *testing.T) {
+	srv, store := newServerWithStore(t)
+	setPassword(t, srv, "correct horse battery staple")
+	cookie := login(t, srv, "correct horse battery staple")
+
+	unusedPosition := len(store.Get().Alerts.Sources) + 1
+
+	req := httptest.NewRequest(http.MethodGet, "/alerts", nil)
+	req.AddCookie(cookie)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+
+	field := sourceSlotFieldHTML(t, rec.Body.String(), unusedPosition)
+	if strings.Contains(field, "<a ") {
+		t.Errorf("an unused slot rendered a documentation link; field markup: %s", field)
+	}
+}
+
+// A chosen source the registry cannot back with a URL — "skog", here — must
+// render with nothing broken and no link, the same as an unused slot: a
+// guessed URL on a device that really dials out to it is worse than none.
+func TestAlertsPageShowsNoLinkForAChosenSourceWithNoKnownURL(t *testing.T) {
+	srv, _ := newServerWithStore(t)
+	setPassword(t, srv, "correct horse battery staple")
+	cookie := login(t, srv, "correct horse battery staple")
+
+	info, ok := alertsource.Lookup("skog")
+	if !ok || info.URL != "" {
+		t.Fatalf("setup: want \"skog\" registered with no URL, got %+v (ok=%v)", info, ok)
+	}
+
+	req := postForm("/alerts", url.Values{
+		"region": {"Львівська область"}, "source": {"skog"},
+		"poll_interval": {"20"},
+	})
+	req.AddCookie(cookie)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body:\n%s", rec.Code, rec.Body.String())
+	}
+	field := sourceSlotFieldHTML(t, rec.Body.String(), 1)
+	if !strings.Contains(field, selectedOption("skog")) {
+		t.Fatalf("position 1 does not show \"skog\" selected: %s", field)
+	}
+	if strings.Contains(field, "<a ") {
+		t.Errorf("a source with no known URL rendered a link anyway; field markup: %s", field)
 	}
 }
