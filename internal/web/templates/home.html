@@ -165,13 +165,10 @@ already widened.
 
       The addresses themselves are printed here, where this line used to say
       "✓ є IP-адреса" and a separate card said which — the same fact told twice,
-      the weaker half first. They do two jobs at once and both are why they are
-      shaped the way they are: they are the network-health signal (holding none
-      at all is what "not on the network" looks like from inside the daemon —
-      see homeView.Addresses), and they are what somebody types into a browser,
-      so they stay large and monospaced, readable off a screen from across a
-      room and over a phone. The line above them says what they are for rather
-      than restating that they exist.
+      the weaker half first. They do two jobs at once: they are the
+      network-health signal (holding none at all is what "not on the network"
+      looks like from inside the daemon — see homeView.Addresses), and they are
+      what somebody types into a browser.
 
       Only addresses that actually resolve. The .local name appears once
       something on the device publishes it — avahi-daemon, installed by a later
@@ -185,18 +182,34 @@ already widened.
       this page.
       */}}
       {{/*
-      The addresses, and nothing else. They are read off a screen from across
-      a room and typed into a phone, so the only thing that helps is the
-      string itself — "✓ є адреса — наберіть у браузері:" was a sentence to
-      read before getting to the part that mattered.
+      One labelled line, the same weight and size as every other line in this
+      card. It was two oversized font-mono paragraphs — the .local name and
+      then each address — which put a shout between four ordinary lines and
+      broke the card's «Підпис: значення» rhythm; that was the operator's
+      report and they are right. Monospace stays, because this string is read
+      off a screen from across a room and typed into a phone, and 0 from O and
+      1 from l is the whole reason. Only the size goes.
 
-      The no-address case keeps its words, because there is nothing to show
-      and the absence has to be named: an empty space would read as a
+      The .local name is a suffix in parentheses rather than a line of its
+      own: it is another way to reach the same device, not another fact about
+      it. Nothing publishing one — or the device holding no address for it to
+      resolve to, see reachableMDNSName — means no parentheses at all, never
+      an empty pair.
+
+      Several addresses are joined onto the one line rather than only the
+      first being shown. LocalAddresses can return more than one, and the
+      case where it does is precisely the one where it matters: a device on
+      Wi-Fi that is also serving its own access point holds an address on
+      each, and whoever is standing in front of it reached it over exactly
+      one of them. The label stays singular — it is the wording the operator
+      asked for, and a template is the wrong place to decline a noun.
+
+      The no-address case keeps its own sentence, because there is nothing to
+      show and the absence has to be named: a blank value would read as a
       rendering fault rather than as "this device is not on the network".
       */}}
       {{if .Addresses}}
-      {{if .MDNS}}<p class="font-mono text-2xl">{{.MDNS}}</p>{{end}}
-      {{range .Addresses}}<p class="font-mono text-2xl">{{.}}</p>{{end}}
+      <p>IP адреса: <span class="font-mono">{{range $i, $addr := .Addresses}}{{if $i}}, {{end}}{{$addr}}{{end}}{{if .MDNS}} ({{.MDNS}}){{end}}</span></p>
       {{else}}
       <p>Мережа: ✕ немає IP-адреси — пристрій не в мережі.</p>
       {{end}}

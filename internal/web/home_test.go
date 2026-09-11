@@ -476,8 +476,13 @@ func stateCard(t *testing.T, body string) string {
 // The dashboard used to carry a separate «Адреса пристрою» card and, in Стан,
 // a «Мережа: ✓ є IP-адреса» line — the same fact told twice, the weaker half
 // first. The addresses are now the network line's own content, and they keep
-// both jobs they had: the size they are read at off a screen across a room,
-// and their standing as the page's network-health signal.
+// their standing as the page's network-health signal.
+//
+// They are one labelled «IP адреса:» line now, not a stack of oversized
+// paragraphs: at text-2xl they shouted between four ordinary lines and broke
+// the card's rhythm, which is what the operator reported. What is pinned is
+// the label and the address inside the card — not the size, which was the
+// thing that was wrong.
 //
 // What this can check from outside the package is bounded by
 // web.LocalAddresses() reading the real machine. On a host holding addresses
@@ -495,21 +500,29 @@ func TestHomeFoldsTheDeviceAddressesIntoTheStateCard(t *testing.T) {
 	}
 	state := stateCard(t, body)
 
-	// No "Мережа:" label is asserted any more: when the device holds an
-	// address, the address is the line. The label survives only in the
-	// no-address case below, where there is nothing to show and the absence
-	// has to be named — a blank space would read as a rendering fault.
 	addrs := web.LocalAddresses()
+	// The «Мережа:» label survives only in the no-address case, where there
+	// is nothing to show and the absence has to be named — a blank space
+	// would read as a rendering fault.
 	if len(addrs) == 0 {
 		if !strings.Contains(state, "не в мережі") {
 			t.Error("holding no address at all does not read as «not on the network» in the Стан card")
 		}
 		return
 	}
+	if !strings.Contains(state, "IP адреса:") {
+		t.Error("the address line carries no label, so it does not read like the rest of the card")
+	}
 	for _, addr := range addrs {
-		if !strings.Contains(state, `<p class="font-mono text-2xl">`+addr+`</p>`) {
-			t.Errorf("the address %s is not in the Стан card, in the size it is read at across a room", addr)
+		if !strings.Contains(state, addr) {
+			t.Errorf("the address %s is not in the Стан card at all", addr)
 		}
+	}
+	// The size was the complaint. text-2xl anywhere in this card means the
+	// oversized paragraphs came back, in this line or in another one copied
+	// from it.
+	if strings.Contains(state, "text-2xl") {
+		t.Error("the Стан card is shouting a line again; every line here is the card's ordinary size")
 	}
 }
 
