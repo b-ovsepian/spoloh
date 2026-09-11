@@ -54,15 +54,31 @@
       {{end}}
       <p>Гучність: {{.Current.Volume}} %{{if .Current.VolumeFixed}} — регулювання гучності недоступне для цього виходу{{else if .Current.MixerControl}} — регулятор «{{.Current.MixerControl}}»{{end}}</p>
       {{/*
-      Its own form, beside the settings form rather than inside it: HTML
-      forms do not nest, and this button must play through the output that
-      is stored right now, not through whatever the radio buttons below
-      happen to be showing before anyone pressed Зберегти.
+      Two forms, not one — HTML forms do not nest — beside the settings form
+      rather than inside it: this pair must act on the output that is stored
+      right now, not on whatever the radio buttons below happen to be
+      showing before anyone pressed Зберегти.
+
+      «Зупинити відтворення» is /sounds' own stop button, unchanged: one
+      stop for the page rather than one per row, because an operator
+      reaching for it is not thinking about which button started the sound,
+      and always visible rather than appearing only while something plays,
+      because knowing where the stop is before you need it is the point — a
+      button that materialises mid-siren is one the eye has to find under
+      exactly the wrong conditions. It answers the operator's own question,
+      «як закінчити перевірку звуку?»: pressing it with nothing playing is a
+      safe no-op; see handleStop.
       */}}
-      <form method="post" action="/audio">
-        <input type="hidden" name="action" value="test">
-        <button class="btn w-fit" data-variant="outline" type="submit">Перевірити звук</button>
-      </form>
+      <div class="flex flex-wrap gap-2">
+        <form method="post" action="/audio">
+          <input type="hidden" name="action" value="test">
+          <button class="btn w-fit" data-variant="outline" type="submit">Перевірити звук</button>
+        </form>
+        <form method="post" action="/stop">
+          <input type="hidden" name="return" value="/audio">
+          <button class="btn w-fit" data-variant="outline" type="submit">Зупинити відтворення</button>
+        </form>
+      </div>
     </div>
 
     {{if .Current.Missing}}
@@ -97,17 +113,32 @@
         selectable, deliberately: a board whose HDMI amplifier is switched
         on an hour from now must not have been permanently talked out of
         HDMI by one probe. Marked, not disabled.
+
+        The operator's report was «відмічати radio btn який зараз обраний
+        аудіо вихід, не дублювати "Не працює зараз"»: a `checked` radio is
+        not a mark a person skimming the page actually sees, and on the
+        real board two of three rows carry the same failing-output paragraph
+        — HDMI and the "default" that resolves to it — which is not an edge
+        case, it is what this screen looks like on the most common
+        hardware. So the selected row gets its own highlight and label here,
+        and the explanation (as opposed to the bare "Не працює зараз." —
+        still shown, briefly, so a candidate that cannot play is not hidden)
+        is reserved for the one row an operator actually has to read: the
+        one the device will use.
         */}}
         <div class="grid gap-2">
           {{range .Groups}}
-          <label class="flex items-center gap-2 rounded-md border {{if .Unusable}}border-destructive bg-destructive/10{{else}}border-border{{end}} p-3">
+          <label class="flex items-center gap-2 rounded-md border {{if .Unusable}}border-destructive bg-destructive/10{{else if .Selected}}border-border bg-accent{{else}}border-border{{end}} p-3">
             <input type="radio" name="device" value="{{.Value}}"{{if .Selected}} checked{{end}} required>
             <span class="grid gap-1">
-              <span class="font-semibold">{{.Label}}</span>
+              <span class="flex flex-wrap items-center gap-2">
+                <span class="font-semibold">{{.Label}}</span>
+                {{if .Selected}}<span class="text-sm font-semibold">Обрано</span>{{end}}
+              </span>
               <span class="font-mono text-sm text-muted-foreground">{{.Detail}}</span>
               {{if .Probed}}
               {{if .Unusable}}
-              <span class="text-sm text-destructive">Не працює зараз. {{.Note}}</span>
+              <span class="text-sm text-destructive">Не працює зараз.{{if .Selected}} {{.Note}}{{end}}</span>
               {{else}}
               <span class="text-sm text-muted-foreground">Перевірено: вихід вдається відкрити.</span>
               {{end}}
@@ -130,9 +161,15 @@
           <summary class="cursor-pointer text-sm text-muted-foreground">Повний список виходів ALSA</summary>
           <div class="mt-2 grid gap-2">
             {{range .Options}}
-            <label class="flex items-center gap-2 rounded-md border border-border p-3">
+            {{/*
+            The same "unmistakable, not just checked" mark the grouped rows
+            above carry — this list is the other place a `checked` radio
+            rendered with nothing else calling it out.
+            */}}
+            <label class="flex flex-wrap items-center gap-2 rounded-md border {{if .Selected}}border-border bg-accent{{else}}border-border{{end}} p-3">
               <input type="radio" name="device" value="{{.Value}}"{{if .Selected}} checked{{end}}>
               <span class="font-mono text-sm">{{.Label}}</span>
+              {{if .Selected}}<span class="text-sm font-semibold">Обрано</span>{{end}}
             </label>
             {{end}}
           </div>

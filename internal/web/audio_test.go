@@ -972,9 +972,20 @@ func TestAudioWordsAWedgedOutputDifferentlyFromARefusedOne(t *testing.T) {
 			"plughw:CARD=Headphones,DEV=0": {TimedOut: true},
 		},
 	}
-	srv, _ := newServerWithProber(t, lister)
+	srv, store := newServerWithProber(t, lister)
 	setPassword(t, srv, "correct horse battery staple")
 	cookie := login(t, srv, "correct horse battery staple")
+
+	// The explanation is now shown only for the selected row (Item 8), so
+	// the wedged output has to be the one selected for "не відповів
+	// вчасно" — which lives in that explanation, not in the bare marker —
+	// to appear at all. See TestAudioShowsTheExplanationOnTheSelectedFailingRow.
+	if err := store.Update(func(c *config.Config) error {
+		c.Audio.Device = "plughw:CARD=Headphones,DEV=0"
+		return nil
+	}); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
 
 	body := getAudio(t, srv, cookie, "")
 
@@ -1144,5 +1155,156 @@ func TestAudioSaveProbesTheOutputItJustStored(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("the saved output was never probed; probed %v", lister.probed)
+	}
+}
+
+// Item 8 of the operator fixes: «відмічати radio btn який зараз обраний
+// аудіо вихід» — a `checked` attribute is not a mark a person skimming the
+// page actually sees, and it renders in two places: the grouped picker and
+// the full list behind the disclosure. Both have to carry a mark nothing
+// else on the row could be mistaken for.
+func TestAudioMarksTheSelectedRowUnmistakably(t *testing.T) {
+	srv, store := newServerWithDevices(t, []player.Device{
+		{Name: "default", Description: "PLUG plugin"},
+		{Name: "plughw:CARD=Headphones,DEV=0", Description: "bcm2835 Headphones"},
+	})
+	setPassword(t, srv, "correct horse battery staple")
+	cookie := login(t, srv, "correct horse battery staple")
+
+	if err := store.Update(func(c *config.Config) error {
+		c.Audio.Device = "plughw:CARD=Headphones,DEV=0"
+		return nil
+	}); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+
+	body := getAudio(t, srv, cookie, "")
+
+	// One mark in the grouped picker's row, one in the full list's row
+	// behind the disclosure: the same selection, rendered twice.
+	if got := strings.Count(body, "Обрано"); got != 2 {
+		t.Errorf(`"Обрано" appears %d times, want 2 (grouped row + full-list row); body:%s`, got, body)
+	}
+
+	// Everything before the selected device's own grouped row — which is
+	// exactly the intro paragraph plus the unselected "default" row — must
+	// carry none of it.
+	fieldset := body[strings.Index(body, "<fieldset"):]
+	beforeSelected := fieldset[:strings.Index(fieldset, `value="plughw:CARD=Headphones,DEV=0"`)]
+	if strings.Contains(beforeSelected, "Обрано") {
+		t.Errorf("the unselected \"default\" row was marked as selected; body:\n%s", body)
+	}
+}
+
+// The other half of Item 8: «не дублювати "Не працює зараз"». Two of three
+// rows on the operator's own board fail for the same reason (HDMI, and the
+// "default" that resolves to it), so a row that is not the one selected
+// keeps only the brief marker — the explanatory paragraph is reserved for
+// the row that matters.
+func TestAudioDoesNotRepeatTheExplanationOnAnUnselectedFailingRow(t *testing.T) {
+	srv, _ := newServerWithProber(t, realBoardProber())
+	setPassword(t, srv, "correct horse battery staple")
+	cookie := login(t, srv, "correct horse battery staple")
+
+	// config.Default's own initial device is "default", which realBoardProber
+	// refuses — so the HDMI grouped row is the *other* unusable row, and is
+	// not the one selected.
+	body := getAudio(t, srv, cookie, "")
+
+	fieldset := body[strings.Index(body, "<fieldset"):]
+	hdmiRow := fieldset[strings.Index(fieldset, `value="plughw:CARD=vc4hdmi,DEV=0"`):]
+	hdmiRow = hdmiRow[:strings.Index(hdmiRow, "</label>")]
+
+	if !strings.Contains(hdmiRow, "Не працює зараз.") {
+		t.Errorf("the unselected failing row lost its brief marker; row:\n%s", hdmiRow)
+	}
+	if strings.Contains(audioText(hdmiRow), "HDMI передає звук лише тоді") {
+		t.Errorf("the unselected failing row repeats the explanation; row:\n%s", hdmiRow)
+	}
+}
+
+// And the row that *is* selected keeps the explanation — an operator reading
+// this screen has to be told why the output the device will actually use
+// cannot play, not just that it cannot.
+func TestAudioShowsTheExplanationOnTheSelectedFailingRow(t *testing.T) {
+	srv, _ := newServerWithProber(t, realBoardProber())
+	setPassword(t, srv, "correct horse battery staple")
+	cookie := login(t, srv, "correct horse battery staple")
+
+	// The stored device is "default" (config.Default's own initial value),
+	// which realBoardProber refuses.
+	body := getAudio(t, srv, cookie, "")
+
+	fieldset := body[strings.Index(body, "<fieldset"):]
+	defaultRow := fieldset[strings.Index(fieldset, `value="default"`):]
+	defaultRow = defaultRow[:strings.Index(defaultRow, "</label>")]
+
+	if !strings.Contains(audioText(defaultRow), "HDMI передає звук лише тоді") {
+		t.Errorf("the selected failing row lost its explanation; row:\n%s", defaultRow)
+	}
+}
+
+// Item 9: «як закінчити перевірку звуку?». /audio needs a way to silence the
+// test sound without leaving the page, and it has to use returnPath's
+// existing pattern — the hidden "return" field /sounds already carries —
+// rather than a second one.
+func TestAudioOffersAStopControlThatReturnsToAudio(t *testing.T) {
+	srv, _ := newServerWithDevices(t, realBoardDevices)
+	setPassword(t, srv, "correct horse battery staple")
+	cookie := login(t, srv, "correct horse battery staple")
+
+	body := getAudio(t, srv, cookie, "")
+
+	if !strings.Contains(body, `<form method="post" action="/stop">`) {
+		t.Errorf("the page offers no stop control; body:\n%s", body)
+	}
+	if !strings.Contains(body, `<input type="hidden" name="return" value="/audio">`) {
+		t.Errorf("the stop control does not name /audio as where to return; body:\n%s", body)
+	}
+	if !strings.Contains(body, "Зупинити відтворення") {
+		t.Errorf("the stop button is not labelled; body:\n%s", body)
+	}
+
+	form := url.Values{"return": {"/audio"}}
+	req := httptest.NewRequest(http.MethodPost, "/stop", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Origin", "http://example.test")
+	req.Host = "example.test"
+	req.AddCookie(cookie)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("status = %d, want 303; body:\n%s", rec.Code, rec.Body.String())
+	}
+	loc := rec.Header().Get("Location")
+	if !strings.HasPrefix(loc, "/audio?") {
+		t.Errorf("Location = %q, want a return to /audio", loc)
+	}
+	if !strings.Contains(loc, "stopped=1") {
+		t.Errorf("Location = %q, want it to carry the stopped flash", loc)
+	}
+}
+
+// An off-site value smuggled into the same "return" field this page's own
+// stop control carries must still fall back to "/" — returnPath's own rule,
+// exercised again from this page because a crafted request need not be the
+// button this page renders.
+func TestAudioStopRefusesAnOffSiteReturn(t *testing.T) {
+	srv, _ := newServerWithDevices(t, realBoardDevices)
+	setPassword(t, srv, "correct horse battery staple")
+	cookie := login(t, srv, "correct horse battery staple")
+
+	form := url.Values{"return": {"http://evil.example/x"}}
+	req := httptest.NewRequest(http.MethodPost, "/stop", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Origin", "http://example.test")
+	req.Host = "example.test"
+	req.AddCookie(cookie)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+
+	if loc := rec.Header().Get("Location"); !strings.HasPrefix(loc, "/?") {
+		t.Errorf("Location = %q, want the / fallback", loc)
 	}
 }

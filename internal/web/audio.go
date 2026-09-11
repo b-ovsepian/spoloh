@@ -111,7 +111,14 @@ type deviceRowView struct {
 	Unusable bool
 	// Note is the sentence under an unusable row, in terms an operator can
 	// act on — a cable, a screen, an amplifier — never aplay's own
-	// "Unknown error 524".
+	// "Unknown error 524". Computed for every unusable row, but audio.html
+	// renders it only for the one that is Selected: on the operator's board
+	// two of three rows are unusable for the same reason (HDMI, and the
+	// "default" that resolves to it), and repeating this paragraph on both
+	// was the "не дублювати" half of their report. Every unusable row still
+	// gets the bare "Не працює зараз." so a candidate that cannot play is
+	// not hidden — only the explanation is reserved for the row that
+	// matters.
 	Note string
 }
 
