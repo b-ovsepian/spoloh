@@ -16,15 +16,41 @@
   recording, not to browse what is already there. library.Add already
   converts on upload (spec §5.4), so this form is nothing but a file picker
   and a submit button.
+
+  The form is a plain multipart POST first and an XHR second. Alpine only
+  intercepts the submit — with JavaScript off, with Alpine failing to load, or
+  with the inline script blocked, @submit.prevent is an inert attribute and the
+  browser posts the form itself, to the same URL, and the server answers with
+  this whole page re-rendered. This device is safety equipment; the one way to
+  put a siren on it must not need a working script.
+
+  Two <progress> elements rather than one whose value Alpine clears: a
+  <progress> with no value attribute is the browser's own indeterminate bar,
+  and rendering both states while hiding one is the same approach home.html
+  takes — with the inline display:none that x-show itself would set, so a
+  browser with no JavaScript sees exactly what the server rendered.
   */}}
   <section class="card p-4 grid gap-3">
     <header><h2 class="font-semibold">Завантажити звук</h2></header>
-    <form method="post" action="/sounds/upload" enctype="multipart/form-data" class="grid gap-3">
+    <form method="post" action="/sounds/upload" enctype="multipart/form-data" class="grid gap-3"
+          x-data="upload()" @submit.prevent="send($event)">
       <div class="field">
         <label for="sound-file">Файл</label>
         <input class="input" type="file" id="sound-file" name="sound" accept="audio/*" required>
       </div>
-      <button class="btn w-fit" type="submit">Завантажити</button>
+      <button class="btn w-fit" type="submit" :disabled="busy">Завантажити</button>
+      <div class="grid gap-1" x-show="busy" style="display: none">
+        <progress class="w-full" max="100" :value="pct" x-show="phase === 'sending'" aria-label="Завантаження файлу"></progress>
+        {{/*
+        The transcode starts only once the last byte has arrived and reports
+        nothing at all while it runs, so there is no honest percentage to show
+        for it — on a board turning a several-MB mp3 into WAV that is most of
+        the wait.
+        */}}
+        <progress class="w-full" x-show="phase === 'processing'" aria-label="Обробка файлу"></progress>
+        <p class="text-sm text-muted-foreground" role="status" x-text="phase === 'sending' ? pct + '%' : 'Обробка…'"></p>
+      </div>
+      <p class="text-sm text-destructive" role="alert" x-show="error" style="display: none" x-text="error"></p>
     </form>
   </section>
 
@@ -90,4 +116,60 @@
     {{end}}
   </section>
 </div>
+
+<script>
+// Upload progress, which only XMLHttpRequest can report: fetch has no hook for
+// bytes going up, and without one the page simply sits there for however long
+// the transcode takes, looking broken.
+function upload() {
+  return {
+    // 'idle' | 'sending' (bytes going up, measurable) | 'processing' (the
+    // server converting, no progress to be had).
+    phase: 'idle',
+    pct: 0,
+    error: '',
+    get busy() { return this.phase !== 'idle'; },
+
+    send(event) {
+      const form = event.target;
+      const body = new FormData(form);
+      const xhr = new XMLHttpRequest();
+
+      this.phase = 'sending';
+      this.pct = 0;
+      this.error = '';
+
+      xhr.open('POST', form.action);
+      // Asks handleSoundsUpload for its one-sentence JSON result instead of
+      // this whole page. The URL is the form's own action either way — see
+      // wantsJSON in sounds.go.
+      xhr.setRequestHeader('Accept', 'application/json');
+      xhr.upload.onprogress = (e) => {
+        if (e.lengthComputable) { this.pct = Math.round((e.loaded / e.total) * 100); }
+      };
+      // The bytes being gone is not the job being done: ffmpeg has not even
+      // started until the last one lands.
+      xhr.upload.onloadend = () => { if (this.phase === 'sending') { this.phase = 'processing'; } };
+      xhr.onload = () => {
+        let result = null;
+        try { result = JSON.parse(xhr.responseText); } catch (e) { /* not JSON: fall through to the generic message */ }
+        // Reload rather than splicing a row in: the new sound has to appear in
+        // the list, and the server already renders that list from the library.
+        if (xhr.status === 200 && result && result.ok) { location.reload(); return; }
+        this.phase = 'idle';
+        // The server's own sentence, which is the only thing that knows why
+        // this file was refused. Anything that did not answer in JSON — a 403
+        // from the same-origin check, a proxy, a restarted daemon redirecting
+        // to /login — has no sentence to offer, so say something true instead.
+        this.error = (result && result.message) || 'Не вдалося завантажити файл. Спробуйте ще раз.';
+      };
+      xhr.onerror = () => {
+        this.phase = 'idle';
+        this.error = 'Пристрій не відповідає. Перевірте мережу та спробуйте ще раз.';
+      };
+      xhr.send(body);
+    },
+  };
+}
+</script>
 {{end}}

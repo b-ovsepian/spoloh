@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"encoding/json"
 	"errors"
 	"mime/multipart"
 	"net/http"
@@ -414,5 +415,165 @@ func TestSoundsPageRendersWithNilLibrary(t *testing.T) {
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200 even with no library", rec.Code)
+	}
+}
+
+// The upload form's progress bar is Alpine plus XMLHttpRequest, and Go can
+// run neither. Nothing below proves that a bar animates, that
+// xhr.upload.onprogress fires, that the «Обробка…» state appears when the
+// bytes are gone, or that a browser with JavaScript off still posts the form
+// — those are the browser's half of this feature and they were checked by
+// hand. What Go can see is the other half: that the server offers a JSON
+// representation for the script to read, that it says the same sentences the
+// page would have said, and that an ordinary form post is completely
+// unaffected by any of it. That last one is what matters most here: this
+// device is safety equipment and its upload form must keep working when the
+// script does not.
+
+// jsonUploadRequest is the request the page's XHR makes: the same URL and the
+// same multipart body as the plain form, asking only for a different
+// representation of the answer.
+func jsonUploadRequest(t *testing.T, filename string, body []byte) *http.Request {
+	t.Helper()
+	req := uploadRequest(t, filename, body)
+	req.Header.Set("Accept", "application/json")
+	return req
+}
+
+func decodeUploadResult(t *testing.T, rec *httptest.ResponseRecorder) struct {
+	OK      bool   `json:"ok"`
+	Message string `json:"message"`
+} {
+	t.Helper()
+	var result struct {
+		OK      bool   `json:"ok"`
+		Message string `json:"message"`
+	}
+	if ct := rec.Header().Get("Content-Type"); !strings.HasPrefix(ct, "application/json") {
+		t.Fatalf("Content-Type = %q, want application/json; body:\n%s", ct, rec.Body.String())
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &result); err != nil {
+		t.Fatalf("response is not the JSON result: %v; body:\n%s", err, rec.Body.String())
+	}
+	return result
+}
+
+func TestSoundsUploadAnswersJSONWhenAsked(t *testing.T) {
+	srv, _ := newServerWithLibrary(t, "siren.wav")
+	setPassword(t, srv, "correct horse battery staple")
+	cookie := login(t, srv, "correct horse battery staple")
+
+	req := jsonUploadRequest(t, "announcement.wav", conformingWAV())
+	req.AddCookie(cookie)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body:\n%s", rec.Code, rec.Body.String())
+	}
+	// A whole rendered page instead of the small result would be many
+	// kilobytes of HTML the script cannot read, on a link the operator is
+	// standing next to the device waiting on.
+	if strings.Contains(rec.Body.String(), "<!doctype") {
+		t.Errorf("the JSON branch rendered the page instead; body:\n%s", rec.Body.String())
+	}
+	result := decodeUploadResult(t, rec)
+	if !result.OK {
+		t.Errorf("ok = false for a successful upload; body:\n%s", rec.Body.String())
+	}
+	if !strings.Contains(result.Message, "announcement.wav") {
+		t.Errorf("the confirmation does not name the sound: %q", result.Message)
+	}
+
+	// The script reloads the page on success, so the sound has to actually be
+	// in the library and not merely reported as added.
+	req2 := httptest.NewRequest(http.MethodGet, "/sounds", nil)
+	req2.AddCookie(cookie)
+	rec2 := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec2, req2)
+	if !strings.Contains(rec2.Body.String(), "announcement.wav") {
+		t.Error("the sound does not appear in the library after a JSON upload")
+	}
+}
+
+// The whole point of the JSON branch is that the script has a sentence to put
+// on the screen. It must be the same curated Ukrainian one the page would have
+// shown — not library.Add's own error, which is developer English at best and
+// an ffmpeg stderr transcript at worst.
+func TestSoundsUploadJSONCarriesTheServersOwnRejectionSentence(t *testing.T) {
+	srv, _ := newServerWithLibrary(t, "siren.wav")
+	setPassword(t, srv, "correct horse battery staple")
+	cookie := login(t, srv, "correct horse battery staple")
+
+	req := jsonUploadRequest(t, "bad.wav", []byte("this is not a wav file"))
+	req.AddCookie(cookie)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body:\n%s", rec.Code, rec.Body.String())
+	}
+	result := decodeUploadResult(t, rec)
+	if result.OK {
+		t.Error("ok = true for a rejected upload")
+	}
+	if !strings.Contains(result.Message, "аудіо") {
+		t.Errorf("the rejection is not the generic Ukrainian message: %q", result.Message)
+	}
+	if strings.Contains(result.Message, "RIFF/WAVE") {
+		t.Errorf("the rejection leaked the library's own developer-English error: %q", result.Message)
+	}
+}
+
+// An ordinary browser form post — which is what the device gets whenever the
+// script does not run — must be completely unaffected: the whole page back,
+// with the rejection in it. A browser's Accept header ends in "*/*", and
+// matching that would have quietly turned every no-JavaScript submit into a
+// JSON document the operator would be left staring at.
+func TestSoundsUploadFromAPlainFormStillGetsTheWholePage(t *testing.T) {
+	srv, _ := newServerWithLibrary(t, "siren.wav")
+	setPassword(t, srv, "correct horse battery staple")
+	cookie := login(t, srv, "correct horse battery staple")
+
+	req := uploadRequest(t, "bad.wav", []byte("this is not a wav file"))
+	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8")
+	req.AddCookie(cookie)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body:\n%s", rec.Code, rec.Body.String())
+	}
+	if ct := rec.Header().Get("Content-Type"); !strings.HasPrefix(ct, "text/html") {
+		t.Fatalf("Content-Type = %q, want text/html", ct)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "<!doctype html>") {
+		t.Errorf("a plain form post did not get the page back; body:\n%s", body)
+	}
+	if !strings.Contains(body, "аудіо") {
+		t.Errorf("the re-rendered page does not carry the rejection; body:\n%s", body)
+	}
+}
+
+// The progress bar is an enhancement layered onto a form that works without
+// it. If this ever becomes a button that only a script can submit, the device
+// loses the ability to be given a siren from a browser with JavaScript off —
+// so the plain form is pinned here rather than left to a reviewer's eye.
+func TestSoundsPageKeepsAFormThatPostsWithoutJavaScript(t *testing.T) {
+	srv, _ := newServerWithLibrary(t, "siren.wav")
+	setPassword(t, srv, "correct horse battery staple")
+	cookie := login(t, srv, "correct horse battery staple")
+
+	req := httptest.NewRequest(http.MethodGet, "/sounds", nil)
+	req.AddCookie(cookie)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+
+	if !strings.Contains(rec.Body.String(), `<form method="post" action="/sounds/upload" enctype="multipart/form-data"`) {
+		t.Errorf("the upload form is no longer a plain multipart POST; body:\n%s", rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `type="submit"`) {
+		t.Errorf("the upload form has no submit button; body:\n%s", rec.Body.String())
 	}
 }

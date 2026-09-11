@@ -2,6 +2,7 @@ package web
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -116,6 +117,66 @@ func uploadRejectionMessage(err error) string {
 	}
 }
 
+// soundsUploadResult is what the upload form's XHR reads instead of a whole
+// re-rendered page. One sentence either way: Message carries the
+// confirmation when OK, and the rejection when not — the same text the HTML
+// branch would have put in soundsView.Message or soundsView.Error, so the
+// two paths can never drift into telling an operator different things.
+type soundsUploadResult struct {
+	OK      bool   `json:"ok"`
+	Message string `json:"message"`
+}
+
+// wantsJSON reports whether the caller asked for the small JSON result rather
+// than the whole screen.
+//
+// Content negotiation rather than a query parameter or a custom header,
+// because it leaves the form's action attribute alone: the progress bar's
+// XHR and the plain no-JavaScript submit post to exactly the same URL, and
+// only the representation of the answer differs. A browser form post never
+// asks for this — its Accept is "text/html,application/xhtml+xml,...,*/*" —
+// so the HTML path stays byte-identical, including leak_test.go's route walk,
+// which sends no Accept header at all.
+//
+// "*/*" deliberately does not match: several things that are not this page's
+// script (curl, a probe, an operator poking at the device) send it, and they
+// should get the page a browser gets.
+func wantsJSON(r *http.Request) bool {
+	for _, accept := range r.Header.Values("Accept") {
+		if strings.Contains(accept, "application/json") {
+			return true
+		}
+	}
+	return false
+}
+
+// respondToUpload answers one upload attempt in whichever shape the caller
+// asked for. Every exit from handleSoundsUpload below goes through here, so
+// the status code an operator's browser sees is the same either way.
+func (s *Server) respondToUpload(w http.ResponseWriter, r *http.Request, status int, ok bool, message string) {
+	if wantsJSON(r) {
+		// Buffered like render(), and for the same reason: an encode that
+		// fails half-way must not leave a truncated body behind a 200.
+		body, err := json.Marshal(soundsUploadResult{OK: ok, Message: message})
+		if err != nil {
+			s.deps.Logger.Error("sounds: encoding the upload result", "err", err)
+			http.Error(w, "internal error", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.WriteHeader(status)
+		_, _ = w.Write(body)
+		return
+	}
+	s.renderSoundsPage(w, status, func(v *soundsView) {
+		if ok {
+			v.Message = message
+			return
+		}
+		v.Error = message
+	})
+}
+
 // soundsBaseView builds the view a fresh GET, a success and a rejection all
 // start from, the same shape eventsBaseView gives /events.
 func (s *Server) soundsBaseView(cfg *config.Config) soundsView {
@@ -183,9 +244,7 @@ func (s *Server) handleSoundsUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if s.deps.Library == nil {
-		s.renderSoundsPage(w, http.StatusServiceUnavailable, func(v *soundsView) {
-			v.Error = "Бібліотека звуків недоступна на цьому пристрої."
-		})
+		s.respondToUpload(w, r, http.StatusServiceUnavailable, false, "Бібліотека звуків недоступна на цьому пристрої.")
 		return
 	}
 
@@ -196,9 +255,7 @@ func (s *Server) handleSoundsUpload(w http.ResponseWriter, r *http.Request) {
 		if errors.As(err, &tooLarge) {
 			message = fmt.Sprintf("Файл завеликий: максимум %d МБ.", maxUploadBytes/(1<<20))
 		}
-		s.renderSoundsPage(w, http.StatusBadRequest, func(v *soundsView) {
-			v.Error = message
-		})
+		s.respondToUpload(w, r, http.StatusBadRequest, false, message)
 		return
 	}
 	if r.MultipartForm != nil {
@@ -207,9 +264,7 @@ func (s *Server) handleSoundsUpload(w http.ResponseWriter, r *http.Request) {
 
 	file, header, err := r.FormFile("sound")
 	if err != nil {
-		s.renderSoundsPage(w, http.StatusBadRequest, func(v *soundsView) {
-			v.Error = "Оберіть файл для завантаження."
-		})
+		s.respondToUpload(w, r, http.StatusBadRequest, false, "Оберіть файл для завантаження.")
 		return
 	}
 	defer file.Close()
@@ -231,15 +286,11 @@ func (s *Server) handleSoundsUpload(w http.ResponseWriter, r *http.Request) {
 	if _, err := s.deps.Library.Add(ctx, header.Filename, file); err != nil {
 		s.deps.Logger.Warn("sounds: upload rejected", "filename", header.Filename, "err", err)
 		message := uploadRejectionMessage(err)
-		s.renderSoundsPage(w, http.StatusBadRequest, func(v *soundsView) {
-			v.Error = fmt.Sprintf("Не вдалося завантажити «%s»: %s", header.Filename, message)
-		})
+		s.respondToUpload(w, r, http.StatusBadRequest, false, fmt.Sprintf("Не вдалося завантажити «%s»: %s", header.Filename, message))
 		return
 	}
 
-	s.renderSoundsPage(w, http.StatusOK, func(v *soundsView) {
-		v.Message = fmt.Sprintf("Звук «%s» завантажено.", header.Filename)
-	})
+	s.respondToUpload(w, r, http.StatusOK, true, fmt.Sprintf("Звук «%s» завантажено.", header.Filename))
 }
 
 // handleSoundsDelete removes a sound from the library — unless some event
