@@ -22,5 +22,13 @@
     </div>
     <button class="btn" type="submit">Зберегти</button>
   </form>
+  {{/*
+  Session cookies are signed with a key derived from the password hash (see
+  auth.go's sessionKey), so a password change is the only revocation that
+  survives a restart — logging out denies a cookie for the running process
+  only. That is documented in Go and nowhere a person reading this form would
+  see it, so it is said here, once, next to the field that triggers it.
+  */}}
+  <p class="mt-4 text-sm text-muted-foreground">Зміна пароля завершить сеанси на всіх пристроях, де ви ввійшли, — усім доведеться увійти знову.</p>
 </div>
 {{end}}

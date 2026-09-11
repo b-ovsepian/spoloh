@@ -191,6 +191,21 @@ func TestSetupPageRendersTheForm(t *testing.T) {
 	}
 }
 
+// The signing key is derived from the password hash (see sessionKey), so a
+// password change is the only revocation that survives a restart — a fact
+// documented in Go and nowhere an operator would read it, until now.
+func TestSetupPageSaysAPasswordChangeSignsOutEveryDevice(t *testing.T) {
+	srv, _ := newServerWithStore(t)
+	rec := httptest.NewRecorder()
+
+	srv.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/setup", nil))
+
+	body := rec.Body.String()
+	if !strings.Contains(body, "завершить сеанси на всіх пристроях") {
+		t.Errorf("setup page does not say that a password change signs out every device; body: %q", body)
+	}
+}
+
 func TestLoginPageRendersTheFormAndNothingFromSetup(t *testing.T) {
 	srv, _ := newServerWithStore(t)
 	setPassword(t, srv, "correct horse battery staple")

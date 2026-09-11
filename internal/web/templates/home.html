@@ -173,6 +173,23 @@
 </div>
 
 <script>
+// The stream closing means one of two things and the page cannot tell them
+// apart: the daemon restarted and redirected this stream to /login, where a
+// reload is exactly right, or the device is gone, where a reload replaces a
+// readable stale reading and its badge with a browser error page that says
+// nothing and offers no way back. So ask first, and keep showing what we last
+// knew until something answers.
+let probeDelay = 2000;
+const probe = () => {
+  fetch('/', { method: 'HEAD', cache: 'no-store' })
+    .then((r) => { if (r.ok || r.status === 303) location.reload(); else retry(); })
+    .catch(retry);
+};
+const retry = () => {
+  probeDelay = Math.min(probeDelay * 2, 30000);
+  setTimeout(probe, probeDelay);
+};
+
 function status() {
   return {
     alert: {{.Status.Alert}}, region: {{.Status.Region}}, since: {{.SinceText}},
@@ -214,7 +231,7 @@ function status() {
       es.onerror = () => {
         this.stale = true;
         if (es.readyState === EventSource.CLOSED) {
-          setTimeout(() => location.reload(), 5000);
+          probe();
         }
       };
     },

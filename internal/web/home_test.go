@@ -222,8 +222,32 @@ func TestHomeCarriesAStalenessBadgeAndAStreamErrorHandler(t *testing.T) {
 	if !strings.Contains(body, "EventSource.CLOSED") {
 		t.Error("the page cannot tell a retrying stream from one the browser gave up on")
 	}
-	if !strings.Contains(body, "location.reload()") {
-		t.Error("a closed stream never recovers: nothing reloads the page")
+
+	// A closed stream must not reload straight away: that would replace a
+	// readable stale reading with a browser error page the moment the device
+	// is merely gone, rather than restarted. It has to ask first.
+	if !strings.Contains(body, "EventSource.CLOSED) {\n          probe();") {
+		t.Error("a closed stream reloads directly instead of probing first")
+	}
+	if !strings.Contains(body, `fetch('/', { method: 'HEAD', cache: 'no-store' })`) {
+		t.Error("nothing probes the device with a HEAD request before reloading")
+	}
+	// Reloading is what the probe is for, but only once the device actually
+	// answered — a 200 for the case the daemon is fine, or a 303 for the case
+	// it restarted and redirected the stream to /login.
+	if !strings.Contains(body, "if (r.ok || r.status === 303) location.reload();") {
+		t.Error("the probe does not reload once the device answers")
+	}
+	// A network error (the case this change exists for: the device is
+	// genuinely gone) must retry, not reload — reloading there is exactly
+	// the browser error page this change removes.
+	if !strings.Contains(body, "else retry();") || !strings.Contains(body, ".catch(retry);") {
+		t.Error("the probe reloads (or gives up) on a network error instead of retrying")
+	}
+	// The back-off must widen rather than hammer a device that is still
+	// booting, and it must be capped rather than grow without bound.
+	if !strings.Contains(body, "probeDelay = Math.min(probeDelay * 2, 30000);") {
+		t.Error("the probe's retry does not back off with a cap")
 	}
 }
 
