@@ -26,6 +26,7 @@ import (
 	"github.com/b-ovsepian/spoloh/internal/clock"
 	"github.com/b-ovsepian/spoloh/internal/config"
 	"github.com/b-ovsepian/spoloh/internal/configstore"
+	"github.com/b-ovsepian/spoloh/internal/control"
 	"github.com/b-ovsepian/spoloh/internal/engine"
 	"github.com/b-ovsepian/spoloh/internal/eventlog"
 	"github.com/b-ovsepian/spoloh/internal/library"
@@ -49,12 +50,17 @@ const logCapacity = 2000
 func main() {
 	// Dispatched before flag.Parse: the daemon's own flags are defined below
 	// and a subcommand must not be mistaken for one of them.
-	switch subcommand(os.Args) {
-	case "":
-	case "update":
+	switch cmd := subcommand(os.Args); {
+	case cmd == "":
+	case cmd == "update":
 		os.Exit(runUpdate(os.Args[2:], os.Stdout, &http.Client{Timeout: 5 * time.Minute}))
+	case control.IsCommand(cmd):
+		// Everything else in this switch runs in the daemon's own process.
+		// These talk to a daemon that is already running, over the unix
+		// socket it listens on, and exit — see internal/control.
+		os.Exit(control.Run(cmd, os.Args[2:], os.Stdout))
 	default:
-		fmt.Fprintf(os.Stderr, "unknown command %q; the only one is \"update\"\n", os.Args[1])
+		fmt.Fprintf(os.Stderr, "unknown command %q; the commands are:\n%s\n", os.Args[1], control.Usage)
 		os.Exit(2)
 	}
 
@@ -65,6 +71,13 @@ func main() {
 	// with no recovery path short of pulling the SD card. CAP_NET_BIND_SERVICE
 	// in deploy/spoloh.service is what lets this default bind :80 without root.
 	listen := flag.String("listen", ":80", "address the dashboard listens on")
+	// A flag for the same reason -listen is one: the path the daemon
+	// publishes and the path the CLI dials have to agree, and the unit file
+	// is where that agreement is visible and editable without a rebuild.
+	socket := flag.String("socket", control.DefaultSocket, "path of the control socket the command line connects to")
+	// Answered from this binary, without a daemon: `spoloh version` asks the
+	// running daemon what it is, which is the different and usually more
+	// useful question, but it needs the daemon to be up to answer at all.
 	showVersion := flag.Bool("version", false, "print the version and exit")
 	flag.Parse()
 
@@ -72,13 +85,13 @@ func main() {
 		fmt.Println(version)
 		return
 	}
-	if err := run(*configPath, *dataDir, *listen); err != nil {
+	if err := run(*configPath, *dataDir, *listen, *socket); err != nil {
 		slog.Error("spoloh stopped", "err", err)
 		os.Exit(1)
 	}
 }
 
-func run(configPath, dataDir, listen string) error {
+func run(configPath, dataDir, listen, socket string) error {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	slog.SetDefault(logger)
 
@@ -332,7 +345,7 @@ func run(configPath, dataDir, listen string) error {
 	// codebase outlives ListenAndServe this way; a second thing that did
 	// would need this paragraph re-examined.
 	var players sync.WaitGroup
-	players.Add(3)
+	players.Add(4)
 	go func() {
 		defer players.Done()
 		pl.Run(ctx)
@@ -353,6 +366,13 @@ func run(configPath, dataDir, listen string) error {
 		// beyond running it alongside the rest.
 		sup.Run(ctx)
 	}()
+	go func() {
+		defer players.Done()
+		// The control socket joins the same WaitGroup for the reason the
+		// dashboard does: its commands reach the engine, the player and the
+		// event log, so it has to be confirmed stopped before lg.Close().
+		serveControl(ctx, socket, controlDevice{engine: eng, lib: lib, log: lg, cfg: cfgFn}, logger)
+	}()
 
 	logger.Info("spoloh started",
 		"version", version,
@@ -360,6 +380,7 @@ func run(configPath, dataDir, listen string) error {
 		"sounds", soundsDir,
 		"audio_device", cfg.Audio.Device,
 		"listen", listen,
+		"socket", socket,
 	)
 	wd.Ready()
 
@@ -380,13 +401,13 @@ func run(configPath, dataDir, listen string) error {
 	return nil
 }
 
-// dashboardFirstRetry and dashboardMaxRetry bound how hard serveDashboard
-// tries. One second so a port released a moment later is picked up almost
-// at once; thirty so a dashboard that is never coming back costs two log
-// lines a minute rather than a thousand.
+// firstRetry and maxRetry bound how hard serveWithRetry tries. One second so
+// a port released a moment later is picked up almost at once; thirty so a
+// subsystem that is never coming back costs two log lines a minute rather
+// than a thousand.
 const (
-	dashboardFirstRetry = 1 * time.Second
-	dashboardMaxRetry   = 30 * time.Second
+	firstRetry = 1 * time.Second
+	maxRetry   = 30 * time.Second
 )
 
 // serveDashboard runs the dashboard, and keeps running it.
@@ -407,7 +428,15 @@ const (
 // a working siren for a clearer systemd status, and the siren is the
 // product.
 func serveDashboard(ctx context.Context, serve func(context.Context) error, logger *slog.Logger) {
-	delay := dashboardFirstRetry
+	serveWithRetry(ctx, "dashboard", serve, logger)
+}
+
+// serveWithRetry is the shape above, generalised for the second subsystem
+// that has the same obligation: the control socket. name is what the log
+// lines call it, so an operator reading the journal can tell which one is
+// failing without matching error text.
+func serveWithRetry(ctx context.Context, name string, serve func(context.Context) error, logger *slog.Logger) {
+	delay := firstRetry
 	for {
 		err := serve(ctx)
 		switch {
@@ -417,20 +446,20 @@ func serveDashboard(ctx context.Context, serve func(context.Context) error, logg
 			// ctx was already cancelled when serve returned, so this is the
 			// shutdown backstop firing, not a failure the operator needs to
 			// act on — logging it at Error would train whoever reads these
-			// logs to ignore the one line that means the dashboard could
+			// logs to ignore the one line that means the subsystem could
 			// not come up at all.
-			logger.Warn("dashboard did not shut down cleanly", "err", err)
+			logger.Warn(name+" did not shut down cleanly", "err", err)
 			return
 		}
 
-		logger.Error("dashboard stopped, retrying", "err", err, "retry_in", delay)
+		logger.Error(name+" stopped, retrying", "err", err, "retry_in", delay)
 		select {
 		case <-ctx.Done():
 			return
 		case <-time.After(delay):
 		}
-		// Only ever grows on consecutive failures, so a dashboard that
+		// Only ever grows on consecutive failures, so a subsystem that
 		// served for months and then failed once still retries in a second.
-		delay = min(delay*2, dashboardMaxRetry)
+		delay = min(delay*2, maxRetry)
 	}
 }
