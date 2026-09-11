@@ -2,6 +2,7 @@ package web_test
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -9,15 +10,41 @@ import (
 	"time"
 )
 
-// Every private page, fetched with a live session, must be free of the two
-// values that together sign session cookies. This is a build-level guard
-// rather than a convention: a screen added later is covered the moment its
-// route joins the table, without anyone remembering to think about it.
+// TestNoPageRendersAnAuthSecret walks every route srv.Patterns() registers
+// and requests each one twice with a live session — once with GET, once with
+// POST and an empty form — failing if either response body contains the
+// password hash or the session secret. The POST leg matters as much as the
+// GET one: every screen this plan adds re-renders its own view on a rejected
+// submission (an unknown sound, a volume out of range, a device ALSA never
+// reported, ...), and that render is reachable only through POST. A GET-only
+// walk would never see it.
+//
+// An empty form is deliberately the payload, not an incidental choice: every
+// POST route in this codebase rejects one today — no SSID, no password, no
+// sound — without writing anything, so the body scanned back is exactly the
+// rejection render and nothing has mutated. That was checked by hand for
+// each POST route as of this test (see task-1-report.md); a route that
+// starts accepting an empty form and changing state would silently drop out
+// of that guarantee; the fresh session below is what keeps the walk correct
+// regardless of what it changed.
+//
+// A fresh cookie is fetched for every route rather than one reused for the
+// whole walk: POST /logout ends whatever session it is given, and a stale,
+// revoked cookie would make every route requested after it look
+// unauthenticated — redirected to /login, not actually rendered — rather
+// than genuinely scanned.
+//
+// What this still does not reach: path resolution below only understands
+// "{$}", the one exact-match marker in use today, so a future route
+// registered with a wildcard segment (e.g. "{id}") would be requested
+// literally, with the braces in the path, and 404 rather than render
+// anything. And this only ever sends GET and an empty POST — a rejection
+// or success render reachable solely through a specific field value (rather
+// than an empty one) is not exercised here.
 func TestNoPageRendersAnAuthSecret(t *testing.T) {
 	const password = "correct horse battery staple"
 	srv, store := newServerWithStore(t)
 	setPassword(t, srv, password)
-	cookie := login(t, srv, password)
 
 	cfg := store.Get()
 	secrets := map[string]string{
@@ -27,6 +54,40 @@ func TestNoPageRendersAnAuthSecret(t *testing.T) {
 	for name, v := range secrets {
 		if v == "" {
 			t.Fatalf("%s is empty, so this test would pass against anything", name)
+		}
+	}
+
+	// checkNoSecrets fires one request at the given method and path, bounded
+	// so /events (which streams over SSE until its context ends) returns
+	// instead of hanging the walk, and fails the test if the body contains
+	// either secret.
+	checkNoSecrets := func(t *testing.T, cookie *http.Cookie, method, path string) {
+		t.Helper()
+
+		ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+		defer cancel()
+
+		var reqBody io.Reader
+		if method == http.MethodPost {
+			reqBody = strings.NewReader("") // an empty form, url-encoded
+		}
+		req := httptest.NewRequest(method, path, reqBody).WithContext(ctx)
+		if method == http.MethodPost {
+			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+			// sameOrigin rejects with 403 before any handler runs unless a
+			// browser-style same-origin signal is present.
+			req.Header.Set("Origin", "http://"+req.Host)
+		}
+		req.AddCookie(cookie)
+
+		rec := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(rec, req)
+
+		got := rec.Body.String()
+		for name, v := range secrets {
+			if strings.Contains(got, v) {
+				t.Errorf("%s %s renders the %s", method, path, name)
+			}
 		}
 	}
 
@@ -41,20 +102,9 @@ func TestNoPageRendersAnAuthSecret(t *testing.T) {
 		if path == "" {
 			path = "/"
 		}
-		// /events streams over SSE until its request context ends; bound it
-		// so this walk terminates instead of hanging on that one route.
-		ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
-		req := httptest.NewRequest(http.MethodGet, path, nil).WithContext(ctx)
-		req.AddCookie(cookie)
-		rec := httptest.NewRecorder()
-		srv.Handler().ServeHTTP(rec, req)
-		cancel()
 
-		body := rec.Body.String()
-		for name, v := range secrets {
-			if strings.Contains(body, v) {
-				t.Errorf("%s renders the %s", path, name)
-			}
-		}
+		cookie := login(t, srv, password)
+		checkNoSecrets(t, cookie, http.MethodGet, path)
+		checkNoSecrets(t, cookie, http.MethodPost, path)
 	}
 }
