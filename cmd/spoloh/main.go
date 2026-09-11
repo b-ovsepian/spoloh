@@ -339,27 +339,9 @@ func run(configPath, dataDir, listen string) error {
 	}()
 	go func() {
 		defer players.Done()
-		// A dashboard that fails to bind — or that stops for any other
-		// reason — must not take the daemon down: announcing alerts is the
-		// job, and serving a web page is not.
-		err := websrv.ListenAndServe(ctx, listen)
-		switch {
-		case err == nil:
-			// A clean stop: nothing to tell the operator.
-		case ctx.Err() != nil:
-			// ctx was already cancelled when ListenAndServe returned, so
-			// this is the shutdown backstop firing (or some other hiccup
-			// during a stop the daemon itself requested), not a failure the
-			// operator needs to act on — logging it at Error would train
-			// whoever reads these logs to ignore the one line that means
-			// the dashboard could not come up at all.
-			logger.Warn("dashboard did not shut down cleanly", "err", err)
-		default:
-			// The dashboard failed on its own — most likely a bind
-			// failure at startup — while the daemon was not asking it to
-			// stop. This is the one an operator should see.
-			logger.Error("dashboard stopped", "err", err)
-		}
+		serveDashboard(ctx, func(ctx context.Context) error {
+			return websrv.ListenAndServe(ctx, listen)
+		}, logger)
 	}()
 	go func() {
 		defer players.Done()
@@ -396,4 +378,59 @@ func run(configPath, dataDir, listen string) error {
 	}
 	logger.Info("spoloh stopped cleanly")
 	return nil
+}
+
+// dashboardFirstRetry and dashboardMaxRetry bound how hard serveDashboard
+// tries. One second so a port released a moment later is picked up almost
+// at once; thirty so a dashboard that is never coming back costs two log
+// lines a minute rather than a thousand.
+const (
+	dashboardFirstRetry = 1 * time.Second
+	dashboardMaxRetry   = 30 * time.Second
+)
+
+// serveDashboard runs the dashboard, and keeps running it.
+//
+// A dashboard that fails must not take the daemon down — announcing alerts
+// is the job, and serving a web page is not — but it must not be given up
+// on either. Observed on a real board: a stale instance still held the
+// port, the new one logged "bind: address already in use" at Error, and
+// then went on polling sources and standing ready to sound a siren with no
+// dashboard at all. The device looked alive and was unmanageable, and the
+// one line explaining why was in a log reachable only over SSH — which is
+// exactly the tool this product exists so nobody needs.
+//
+// Retrying is what the rest of this daemon already does with anything that
+// can fail transiently: the alert source cascade, the network supervisor's
+// back-off, the dashboard's own probe-before-reload. A held port is almost
+// always transient. Exiting instead was considered and rejected: it trades
+// a working siren for a clearer systemd status, and the siren is the
+// product.
+func serveDashboard(ctx context.Context, serve func(context.Context) error, logger *slog.Logger) {
+	delay := dashboardFirstRetry
+	for {
+		err := serve(ctx)
+		switch {
+		case err == nil:
+			return
+		case ctx.Err() != nil:
+			// ctx was already cancelled when serve returned, so this is the
+			// shutdown backstop firing, not a failure the operator needs to
+			// act on — logging it at Error would train whoever reads these
+			// logs to ignore the one line that means the dashboard could
+			// not come up at all.
+			logger.Warn("dashboard did not shut down cleanly", "err", err)
+			return
+		}
+
+		logger.Error("dashboard stopped, retrying", "err", err, "retry_in", delay)
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(delay):
+		}
+		// Only ever grows on consecutive failures, so a dashboard that
+		// served for months and then failed once still retries in a second.
+		delay = min(delay*2, dashboardMaxRetry)
+	}
 }
