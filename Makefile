@@ -10,14 +10,25 @@ test:
 build:
 	go build -ldflags "$(LDFLAGS)" -o spoloh ./cmd/spoloh
 
-# One binary per supported board family. CGO is off, so this needs no cross
-# toolchain: a laptop builds every target.
+# ARCH names the release artifact a binary is, which is not the same question
+# as what the board can run: an armv6 binary runs happily on an armv7 board,
+# so runtime.GOARCH would have an armv7 device quietly downgrade itself to the
+# armv6 artifact on every update. Stamping it here is the only place that
+# knows the answer.
+ldflags_for = -s -w -X main.version=$(VERSION) -X main.arch=$(1)
+
 dist:
+	rm -rf dist
 	mkdir -p dist
-	GOOS=linux GOARCH=arm   GOARM=6 go build -ldflags "$(LDFLAGS)" -o dist/spoloh-linux-armv6 ./cmd/spoloh
-	GOOS=linux GOARCH=arm   GOARM=7 go build -ldflags "$(LDFLAGS)" -o dist/spoloh-linux-armv7 ./cmd/spoloh
-	GOOS=linux GOARCH=arm64         go build -ldflags "$(LDFLAGS)" -o dist/spoloh-linux-arm64 ./cmd/spoloh
-	cd dist && sha256sum spoloh-linux-* > SHA256SUMS
+	GOOS=linux GOARCH=arm   GOARM=6 go build -ldflags "$(call ldflags_for,linux-armv6)" -o dist/spoloh-linux-armv6 ./cmd/spoloh
+	GOOS=linux GOARCH=arm   GOARM=7 go build -ldflags "$(call ldflags_for,linux-armv7)" -o dist/spoloh-linux-armv7 ./cmd/spoloh
+	GOOS=linux GOARCH=arm64         go build -ldflags "$(call ldflags_for,linux-arm64)" -o dist/spoloh-linux-arm64 ./cmd/spoloh
+	# The deployment files ship in the release beside the binaries and are
+	# covered by the same SHA256SUMS, so install.sh verifies the unit file the
+	# way it verifies the binary, and always gets the one matching the version
+	# it is installing.
+	cp deploy/spoloh.service deploy/spoloh.sysusers deploy/spoloh.tmpfiles deploy/50-spoloh-networkmanager.rules dist/
+	cd dist && sha256sum spoloh-linux-* spoloh.service spoloh.sysusers spoloh.tmpfiles 50-spoloh-networkmanager.rules > SHA256SUMS
 
 clean:
 	rm -rf dist spoloh

@@ -1,0 +1,26 @@
+name: release
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # make dist takes its version from git describe
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+      - run: go test ./... -race
+      - run: make dist
+      # Every file in dist/ is an asset, SHA256SUMS included: install.sh and
+      # the updater both fetch it to verify what they downloaded.
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true

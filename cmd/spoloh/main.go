@@ -35,6 +35,11 @@ import (
 // version is overwritten at build time with -ldflags.
 var version = "dev"
 
+// arch is the release artifact this binary was built as, stamped by the
+// Makefile. "dev" means a local build that was never published, which the
+// updater refuses to update — see internal/updater.
+var arch = "dev"
+
 const logCapacity = 2000
 
 func main() {
