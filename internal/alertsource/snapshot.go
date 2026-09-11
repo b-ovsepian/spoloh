@@ -1,6 +1,14 @@
 // Package alertsource fetches and parses air raid alert snapshots from
-// upstream providers. The Ubilling endpoint needs no key and no registration,
-// which is what lets a Spoloh device work with no account behind it.
+// upstream providers.
+//
+// There are two, and they differ in more than their address. The Ubilling
+// endpoint (Client, below) needs no key and no registration, which is what
+// lets a Spoloh device work with no account behind it, and reports a bare
+// boolean per oblast. alerts.in.ua (AlertsUA, in alertsua.go) needs a token
+// the operator obtains themselves, and reports a severity level and a
+// location down to the hromada. A cascade may mix them, so everything a
+// caller reads — RegionState most of all — has to mean the same thing
+// whichever answered.
 package alertsource
 
 import (
@@ -33,11 +41,34 @@ var Kyiv = sync.OnceValue(func() *time.Location {
 	return time.FixedZone("EET", 2*3600)
 })
 
-// RegionState is one oblast's alert state at a point in time.
+// RegionState is one location's alert state at a point in time.
 type RegionState struct {
 	Region  string
 	Alert   bool
 	Changed time.Time // zero when upstream has never observed a change
+
+	// Level is how severe upstream says this alert is — and LevelUnknown,
+	// the zero value, whenever it did not say. Every state Parse produces
+	// is unknown, because the Ubilling endpoint reports a boolean and
+	// nothing more. Unknown is handled as red; read Level's own comment
+	// before writing anything that branches on this field.
+	Level Level
+
+	// Type is upstream's own alert_type — "air_raid",
+	// "artillery_shelling", "urban_fights", "chemical" or "nuclear" — and
+	// empty for a source that does not report one.
+	//
+	// It is carried because the same parse that reads the level hands it
+	// over for free, and dropping it would mean going back to the network
+	// to get it again. Nothing in this repository branches on it, and
+	// nothing should until there is an actual decision to make with it:
+	// an unread field is cheap, a half-built policy nobody tested is not.
+	Type string
+
+	// UID is the published alerts.in.ua location UID this state is for, or
+	// 0 for a source that names no UID — which is all six Ubilling keys,
+	// whose states are keyed by oblast name only.
+	UID int
 }
 
 // Snapshot is one complete upstream response.
@@ -69,6 +100,11 @@ type wireSnapshot struct {
 // valid alert booleans to be discarded. Consequently, a malformed timestamp
 // is indistinguishable from the "never observed" sentinel; this trade-off
 // preserves the most critical data (alertnow) for a safety-critical device.
+//
+// Every state this produces carries LevelUnknown, because "?source=" answers
+// with a boolean and no severity at all. That is not a gap to be filled in
+// with a guess: unknown is handled as red, so a Ubilling alert is announced
+// at full weight. See Level.
 func Parse(data []byte) (Snapshot, error) {
 	var w wireSnapshot
 	if err := json.Unmarshal(data, &w); err != nil {
