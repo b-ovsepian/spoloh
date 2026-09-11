@@ -2,11 +2,13 @@
 # Install Spoloh on a Raspberry Pi or similar ARM board running Raspberry Pi
 # OS Lite or Armbian. Run as root:
 #
-#   curl -fsSL https://raw.githubusercontent.com/b-ovsepian/spoloh/main/deploy/install.sh | sudo sh
+#   curl -fsSL https://github.com/b-ovsepian/spoloh/releases/latest/download/install.sh | sudo sh
 #
-# Everything it fetches is verified against the SHA256SUMS published with the
-# release. The variables below exist so the test can run this with fakes; an
-# operator never sets them.
+# Everything it fetches is checked against the SHA256SUMS published with the
+# release. That file comes over HTTPS from the same host as the files it
+# describes and carries no signature, so it proves a download arrived as
+# published - not that what was published is legitimate. The variables below
+# exist so the test can run this with fakes; an operator never sets them.
 set -eu
 
 BASE_URL="${SPOLOH_BASE_URL:-https://github.com/b-ovsepian/spoloh/releases}"
@@ -74,7 +76,11 @@ main() {
     want=$(awk -v n="$f" '$2 == n { print $1 }' SHA256SUMS)
     [ -n "$want" ] || die "the release publishes no checksum for $f; it may not have finished uploading"
     got=$(sha256sum "$f" | awk '{ print $1 }')
-    [ "$want" = "$got" ] || die "checksum mismatch for $f: the download is corrupt or tampered with, nothing was installed"
+    # "corrupt" and not "tampered with": the checksum came over HTTPS from
+    # the same host as the file, so a mismatch proves the download does not
+    # match what that host published, and nothing about whether what it
+    # published is legitimate.
+    [ "$want" = "$got" ] || die "checksum mismatch for $f: it does not match what the release publishes, so the download did not arrive intact; nothing was installed"
   done
   say "checksums verified"
 

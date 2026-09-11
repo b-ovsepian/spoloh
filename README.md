@@ -15,7 +15,7 @@ On a Raspberry Pi (2, 3, 4 or Zero 2) or a comparable ARM board running
 Raspberry Pi OS Lite or Armbian:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/b-ovsepian/spoloh/main/deploy/install.sh | sudo sh
+curl -fsSL https://github.com/b-ovsepian/spoloh/releases/latest/download/install.sh | sudo sh
 ```
 
 The installer downloads the release for your board, verifies it, installs the

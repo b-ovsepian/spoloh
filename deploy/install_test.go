@@ -519,6 +519,22 @@ func TestTheMakefileAndTheInstallerAgreeOnTheDeploymentFilenames(t *testing.T) {
 	hashed := names(sum[1], "")
 	fetched := names(files[1], "")
 
+	// install.sh is the one file that is in the release but not in FILES:
+	// it is the script doing the downloading, not something it downloads.
+	// Checked rather than silently skipped, so it cannot fall out of the
+	// release unnoticed — the README points people at
+	// releases/latest/download/install.sh, and a release without it is a
+	// 404 for every new install.
+	const self = "install.sh"
+	if !slices.Contains(copied, self) || !slices.Contains(hashed, self) {
+		t.Errorf("the release no longer ships %s (copied %v, hashed %v); the README fetches it from releases/latest/download", self, copied, hashed)
+	}
+	if slices.Contains(fetched, self) {
+		t.Errorf("install.sh downloads itself; FILES = %v", fetched)
+	}
+	copied = slices.DeleteFunc(copied, func(n string) bool { return n == self })
+	hashed = slices.DeleteFunc(hashed, func(n string) bool { return n == self })
+
 	if !slices.Equal(copied, hashed) {
 		t.Errorf("the Makefile copies %v into dist/ but publishes checksums for %v; a file in one list and not the other either ships unverifiable or is a checksum for something that is not there", copied, hashed)
 	}

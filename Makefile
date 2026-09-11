@@ -27,8 +27,14 @@ dist:
 	# covered by the same SHA256SUMS, so install.sh verifies the unit file the
 	# way it verifies the binary, and always gets the one matching the version
 	# it is installing.
-	cp deploy/spoloh.service deploy/spoloh.sysusers deploy/spoloh.tmpfiles deploy/50-spoloh-networkmanager.rules dist/
-	cd dist && sha256sum spoloh-linux-* spoloh.service spoloh.sysusers spoloh.tmpfiles 50-spoloh-networkmanager.rules > SHA256SUMS
+	#
+	# install.sh itself ships too. It is the only file here that is not
+	# downloaded by install.sh — it is the file being run — but a release
+	# that does not carry it leaves the README fetching the script from main
+	# while the script installs a tagged release, so the two can drift for
+	# the whole window between a merge and the next tag.
+	cp deploy/install.sh deploy/spoloh.service deploy/spoloh.sysusers deploy/spoloh.tmpfiles deploy/50-spoloh-networkmanager.rules dist/
+	cd dist && sha256sum spoloh-linux-* install.sh spoloh.service spoloh.sysusers spoloh.tmpfiles 50-spoloh-networkmanager.rules > SHA256SUMS
 
 clean:
 	rm -rf dist spoloh
