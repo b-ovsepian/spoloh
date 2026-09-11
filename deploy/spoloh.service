@@ -26,7 +26,21 @@ WatchdogSec=60
 # deploy/spoloh.sysusers (see that file's header for the exact command);
 # ProtectHome/ProtectSystem below give it no other way onto the box.
 User=spoloh
-Group=audio
+# Group= is the socket's group, and the socket's group is the CLI's
+# authorisation: /run/spoloh/control.sock is created 0660 owned by this
+# User=/Group= pair, so "may run `spoloh status`" means "is in this group"
+# and nothing else. That has to be a group that exists for this purpose, not
+# one that already means something else on the board — with Group=audio,
+# adding an operator to the group that lets them use the CLI would also hand
+# them every sound card on the device.
+#
+# The audio access the daemon itself needs (aplay, amixer) is a supplementary
+# group instead. Group membership is group membership: nothing about ALSA
+# cares which of the two it arrives through. deploy/spoloh.sysusers already
+# puts the spoloh user in audio; naming it here as well means the unit does
+# not depend on that having been read correctly.
+Group=spoloh
+SupplementaryGroups=audio
 # No -listen flag: the dashboard binds its default of :80. The address is a
 # flag rather than a config.json field on purpose (see cmd/spoloh/main.go),
 # so recovering an unreachable dashboard never needs more than editing this
@@ -53,6 +67,16 @@ StateDirectory=spoloh
 # exception ProtectSystem=full
 # would otherwise deny for a directory outside StateDirectory/RuntimeDirectory.
 ReadWritePaths=-/etc/spoloh
+# /run/spoloh, where the daemon publishes its control socket. systemd creates
+# it owned by User=/Group= before ExecStart and removes it when the unit
+# stops, which deploy/spoloh.tmpfiles could not do as cleanly: tmpfiles
+# declares a directory that then persists, so a socket left by an unclean
+# shutdown would survive to be inherited by the next start. Here there is
+# normally nothing to inherit. 0750 so only the spoloh group can traverse
+# into it — the socket's own 0660 is the gate, and this is the lock on the
+# door in front of it.
+RuntimeDirectory=spoloh
+RuntimeDirectoryMode=0750
 
 [Install]
 WantedBy=multi-user.target

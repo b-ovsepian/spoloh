@@ -13,6 +13,8 @@
 #
 # Type Name   ID  GECOS                       Home directory
 u     spoloh  -   "Spoloh alert announcer"    /var/lib/spoloh
-# Grants the aplay/amixer access the audio group carries; matches Group=audio
-# in the unit.
+# Grants the aplay/amixer access the audio group carries. The unit names it
+# too, as SupplementaryGroups=audio: its Group= is spoloh, because the group
+# the unit runs as is the group of the control socket, and that is what
+# decides who may drive the device from a shell.
 m     spoloh  audio

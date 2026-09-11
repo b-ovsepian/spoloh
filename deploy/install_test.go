@@ -822,3 +822,61 @@ func TestTheTimesyncUnitWritesTheStanzaItselfAndClearsItWhenEmpty(t *testing.T) 
 		}
 	}
 }
+
+// The control socket crosses a seam nothing else checks, in three languages.
+// internal/control puts the socket at a compiled-in path; the unit file is
+// what makes that path exist, with the ownership that is the CLI's entire
+// authorisation model; and an operator adds themselves to a group named in
+// neither place unless it is written down.
+//
+// Each half of it fails silently. A RuntimeDirectory that stopped matching
+// control.DefaultSocket leaves the daemon unable to create its socket on
+// every boot — a retry loop logging forever and a CLI that never works. A
+// Group= changed back to audio makes "may run the CLI" mean "may open every
+// sound card on the board". And SupplementaryGroups=audio going missing is
+// the one that matters most: the daemon loses its ALSA access and the device
+// goes quiet, which is the worst outcome this project has.
+func TestTheUnitPublishesTheControlSocketWithTheGroupThatAuthorisesIt(t *testing.T) {
+	unit, err := os.ReadFile("spoloh.service")
+	if err != nil {
+		t.Fatalf("read the unit: %v", err)
+	}
+	// Directives only. Every one of these words also appears in the prose
+	// above it, which proves nothing about what systemd reads.
+	var body strings.Builder
+	for _, line := range strings.Split(string(unit), "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), "#") {
+			continue
+		}
+		body.WriteString(line)
+		body.WriteString("\n")
+	}
+	directive := func(name string) string {
+		m := regexp.MustCompile(`(?m)^` + name + `=(.*)$`).FindStringSubmatch(body.String())
+		if m == nil {
+			return ""
+		}
+		return strings.TrimSpace(m[1])
+	}
+
+	// internal/control's DefaultSocket is /run/<RuntimeDirectory>/... — the
+	// only thing that makes the daemon's path and systemd's directory agree.
+	const socket = "/run/spoloh/control.sock"
+	runtimeDir := directive("RuntimeDirectory")
+	if runtimeDir == "" {
+		t.Fatalf("the unit declares no RuntimeDirectory; nothing creates the directory %s lives in, so the daemon can never publish a control socket", socket)
+	}
+	if want := filepath.Dir(socket); "/run/"+runtimeDir != want {
+		t.Errorf("RuntimeDirectory=%s makes /run/%s, but the daemon publishes its socket in %s", runtimeDir, runtimeDir, want)
+	}
+	if got := directive("RuntimeDirectoryMode"); got != "0750" {
+		t.Errorf("RuntimeDirectoryMode=%q, want 0750; the socket's own 0660 is no gate if anyone can walk into the directory holding it", got)
+	}
+	if got := directive("Group"); got != "spoloh" {
+		t.Errorf("Group=%q, want spoloh; the socket takes the unit's group, and that group is what "+
+			"an operator is added to in order to use the CLI — it must not be a group that already means something else", got)
+	}
+	if got := directive("SupplementaryGroups"); !slices.Contains(strings.Fields(got), "audio") {
+		t.Errorf("SupplementaryGroups=%q does not include audio; the daemon would lose aplay and amixer and the device would be silent", got)
+	}
+}
