@@ -25,7 +25,11 @@ type homeView struct {
 	// Addresses is both the "what do I type into a browser" answer and the
 	// page's network-health signal: holding no address at all is what "not on
 	// the network" looks like from inside the daemon.
-	Addresses       []string
+	Addresses []string
+	// MDNS is the name an operator can type instead of an address, empty
+	// when nothing publishes one. It sits beside Addresses because it
+	// answers the same question and fails the same way — see MDNSName.
+	MDNS            string
 	SinceText       string
 	LastSuccessText string
 	NextEventAtText string
@@ -81,6 +85,7 @@ func (s *Server) handleHome(w http.ResponseWriter, r *http.Request) {
 	view := homeView{
 		Status:    st,
 		Addresses: LocalAddresses(),
+		MDNS:      MDNSName(),
 	}
 	if !st.Since.IsZero() {
 		view.SinceText = st.Since.In(loc).Format("2006-01-02 15:04")

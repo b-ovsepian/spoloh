@@ -182,3 +182,20 @@ func TestHomeCarriesAStalenessBadgeAndAStreamErrorHandler(t *testing.T) {
 		t.Error("a closed stream never recovers: nothing reloads the page")
 	}
 }
+
+func TestHomeOmitsTheMDNSNameWhenThereIsNone(t *testing.T) {
+	// The test process has no avahi socket, so the line must not render at
+	// all — not as an empty element, which would leave a stray label.
+	srv, _ := newServerWithStore(t)
+	setPassword(t, srv, "correct horse battery staple")
+	cookie := login(t, srv, "correct horse battery staple")
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.AddCookie(cookie)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+
+	if strings.Contains(rec.Body.String(), ".local") {
+		t.Error("home page printed a .local name with nothing publishing one")
+	}
+}

@@ -76,19 +76,19 @@
   {{if .Flash}}<div class="alert" role="status"><section><p>{{.Flash}}</p></section></div>{{end}}
 
   {{/*
-  Only addresses that actually resolve. This card used to print
-  "http://<name>.local" as well, but nothing in this branch publishes mDNS —
-  there is no avahi-daemon dependency in the unit and no publisher anywhere;
-  that is Plan 3. It was the most memorable line on the page and therefore the
-  first thing an operator tried, and it did not work. Plan 3 puts it back at
-  the moment something answers it, and it must stay ASCII when it does: a
-  Cyrillic hostname becomes punycode and stops being readable over the phone.
+  Only addresses that actually resolve. The .local line only appears once
+  something on the device actually publishes it — avahi-daemon, installed by
+  a later task — because it was the most memorable line on the page and
+  therefore the first thing an operator tried; a printed name that does not
+  resolve is worse than none. See MDNSName for why it is always ASCII: it
+  comes from the system hostname, never the Cyrillic device name from config.
 
   With no address at all there is nothing to read out, which is worth saying
   rather than leaving an empty card.
   */}}
   <section class="card p-4">
     <h2 class="text-sm font-semibold text-muted-foreground">Адреса пристрою</h2>
+    {{if .MDNS}}<p class="font-mono text-2xl">{{.MDNS}}</p>{{end}}
     {{if .Addresses}}
     {{range .Addresses}}<p class="font-mono text-2xl">{{.}}</p>{{end}}
     {{else}}
