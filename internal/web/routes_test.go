@@ -42,6 +42,10 @@ func TestEveryRouteIsPublicOrPrivateAsIntended(t *testing.T) {
 		"/events/add":         false,
 		"/events/delete":      false,
 		"/events/quiet-hours": false,
+		"/webhooks":           false,
+		"/webhooks/add":       false,
+		"/webhooks/save":      false,
+		"/webhooks/delete":    false,
 		"/sounds":             false,
 		"/sounds/upload":      false,
 		"/sounds/delete":      false,
@@ -88,6 +92,7 @@ func TestEveryRouteIsPublicOrPrivateAsIntended(t *testing.T) {
 		method := http.MethodGet
 		switch path {
 		case "/log/clear", "/play", "/stop", "/events/save", "/events/add", "/events/delete", "/events/quiet-hours", "/sounds/upload", "/sounds/delete",
+			"/webhooks/add", "/webhooks/save", "/webhooks/delete",
 			"/time/timezone", "/time/ntp", "/time/manual", "/time/server":
 			method = http.MethodPost
 		}

@@ -1,0 +1,147 @@
+{{define "title"}}Вебхуки — Сполох{{end}}
+{{define "content"}}
+<div class="grid gap-4">
+  {{if .Error}}
+  <div class="alert" data-variant="destructive" role="alert">
+    <section><p>{{.Error}}</p></section>
+  </div>
+  {{end}}
+  {{if .Message}}
+  <div class="alert" role="status"><section><p>{{.Message}}</p></section></div>
+  {{end}}
+
+  <div class="card p-6 grid gap-2">
+    <h1 class="text-lg font-semibold">Вебхуки</h1>
+    <p class="text-sm text-muted-foreground">
+      Коли пристрій оголошує подію, він може надіслати ваш власний HTTP-запит — наприклад, щоб замкнути реле
+      чи увімкнути підсилювач. Запит надсилається окремо від звуку: сирена ніколи не чекає на нього.
+    </p>
+    <p class="text-sm text-muted-foreground">
+      Результат кожного запиту — успішний чи ні — записується в <a href="/log">журнал</a>.
+    </p>
+  </div>
+
+  {{/*
+  One card per webhook, each its own form. The headers textarea is the only
+  place in this dashboard where a header value is rendered: it is a
+  credential (the operator's own example is an Authorization header), and
+  webhooks_test.go walks every other route to prove it appears nowhere else.
+  */}}
+  {{range .Rows}}
+  {{$id := .ID}}
+  {{$trigger := .Trigger}}
+  {{$method := .Method}}
+  <section class="card p-4 grid gap-3" data-webhook="{{$id}}">
+    <header class="flex items-center justify-between gap-2">
+      <div>
+        <h2 class="font-semibold">{{if .Name}}{{.Name}}{{else}}{{.TriggerLabel}}{{end}}</h2>
+        <p class="text-sm text-muted-foreground">{{.TriggerLabel}} · {{.Method}}</p>
+      </div>
+      <form method="post" action="/webhooks/delete">
+        <input type="hidden" name="id" value="{{$id}}">
+        <button class="btn" data-variant="outline" data-size="sm" type="submit">Видалити</button>
+      </form>
+    </header>
+
+    {{if .Invalid}}
+    <div class="alert" data-variant="destructive" role="alert">
+      <section><p>Цей вебхук не спрацює: {{.Invalid}}</p></section>
+    </div>
+    {{end}}
+
+    <form method="post" action="/webhooks/save" class="grid gap-3">
+      <input type="hidden" name="id" value="{{$id}}">
+
+      <div class="field">
+        <label for="name-{{$id}}">Назва</label>
+        <input class="input" type="text" id="name-{{$id}}" name="name" value="{{.Name}}">
+      </div>
+
+      <div class="field">
+        <label for="trigger-{{$id}}">Подія</label>
+        <select class="select" id="trigger-{{$id}}" name="trigger" required>
+          {{range $.Triggers}}<option value="{{.Value}}"{{if eq .Value $trigger}} selected{{end}}>{{.Label}}</option>{{end}}
+        </select>
+      </div>
+
+      <div class="field">
+        <label for="method-{{$id}}">Метод</label>
+        <select class="select" id="method-{{$id}}" name="method" required>
+          {{range $.Methods}}<option value="{{.}}"{{if eq . $method}} selected{{end}}>{{.}}</option>{{end}}
+        </select>
+      </div>
+
+      <div class="field">
+        <label for="url-{{$id}}">Адреса</label>
+        <input class="input font-mono" type="text" id="url-{{$id}}" name="url" value="{{.URL}}" required>
+      </div>
+
+      <div class="field">
+        <label for="headers-{{$id}}">Заголовки</label>
+        <textarea class="textarea font-mono" id="headers-{{$id}}" name="headers" rows="3">{{.Headers}}</textarea>
+        <p class="text-sm text-muted-foreground">По одному в рядку, у вигляді «Назва: значення».</p>
+      </div>
+
+      <div class="field">
+        <label for="body-{{$id}}">Тіло запиту</label>
+        <textarea class="textarea font-mono" id="body-{{$id}}" name="body" rows="2">{{.Body}}</textarea>
+      </div>
+
+      <label class="flex items-center gap-2 text-sm">
+        <input type="checkbox" name="enabled"{{if .Enabled}} checked{{end}}>
+        Увімкнено
+      </label>
+
+      <button class="btn w-fit" type="submit">Зберегти</button>
+    </form>
+  </section>
+  {{end}}
+
+  <section class="card p-4 grid gap-3">
+    <header><h2 class="font-semibold">Додати вебхук</h2></header>
+    <form method="post" action="/webhooks/add" class="grid gap-3">
+      <div class="field">
+        <label for="add-name">Назва</label>
+        <input class="input" type="text" id="add-name" name="name" value="{{.AddName}}">
+      </div>
+
+      <div class="field">
+        <label for="add-trigger">Подія</label>
+        <select class="select" id="add-trigger" name="trigger" required>
+          {{range .Triggers}}<option value="{{.Value}}"{{if .Selected}} selected{{end}}>{{.Label}}</option>{{end}}
+        </select>
+      </div>
+
+      <div class="field">
+        <label for="add-method">Метод</label>
+        <select class="select" id="add-method" name="method" required>
+          {{range .Methods}}<option value="{{.}}"{{if eq . $.AddMethod}} selected{{end}}>{{.}}</option>{{end}}
+        </select>
+      </div>
+
+      <div class="field">
+        <label for="add-url">Адреса</label>
+        <input class="input font-mono" type="text" id="add-url" name="url" value="{{.AddURL}}" placeholder="http://192.168.1.50/Sendkey?key=8" required>
+      </div>
+
+      <div class="field">
+        <label for="add-headers">Заголовки</label>
+        <textarea class="textarea font-mono" id="add-headers" name="headers" rows="3" placeholder="Authorization: Basic ...">{{.AddHeaders}}</textarea>
+        <p class="text-sm text-muted-foreground">По одному в рядку, у вигляді «Назва: значення».</p>
+      </div>
+
+      <div class="field">
+        <label for="add-body">Тіло запиту</label>
+        <textarea class="textarea font-mono" id="add-body" name="body" rows="2">{{.AddBody}}</textarea>
+      </div>
+
+      <label class="flex items-center gap-2 text-sm">
+        <input type="checkbox" name="enabled" checked>
+        Увімкнено
+      </label>
+
+      <button class="btn w-fit" type="submit">Додати</button>
+    </form>
+  </section>
+</div>
+{{end}}
