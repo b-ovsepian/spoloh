@@ -140,15 +140,6 @@ already widened.
   */}}
   <div class="grid gap-4 sm:grid-cols-2">
     <section class="card p-4">
-      <h2 class="text-sm font-semibold text-muted-foreground">Найближча подія</h2>
-      <p class="text-lg"><span x-text="nextEvent">{{.Status.NextEventName}}</span> — <span class="font-mono" x-text="nextEventAt">{{.NextEventAtText}}</span></p>
-    </section>
-
-    {{/*
-    Where a silent device is noticed. Both lines carry a mark as well as a word,
-    for the same reason the state block does.
-    */}}
-    <section class="card p-4">
       <h2 class="text-sm font-semibold text-muted-foreground">Стан</h2>
       <p>Годинник:
         <span x-text="clockSynced ? '✓ синхронізовано' : '✕ НЕ синхронізовано'">{{if .Status.ClockSynced}}✓ синхронізовано{{else}}✕ НЕ синхронізовано{{end}}</span>
@@ -193,9 +184,22 @@ already widened.
       hostname provisioned otherwise is a problem for whatever sets it, not for
       this page.
       */}}
-      <p>Мережа: {{if .Addresses}}✓ є адреса — наберіть у браузері:{{else}}✕ немає IP-адреси — пристрій не в мережі.{{end}}</p>
+      {{/*
+      The addresses, and nothing else. They are read off a screen from across
+      a room and typed into a phone, so the only thing that helps is the
+      string itself — "✓ є адреса — наберіть у браузері:" was a sentence to
+      read before getting to the part that mattered.
+
+      The no-address case keeps its words, because there is nothing to show
+      and the absence has to be named: an empty space would read as a
+      rendering fault rather than as "this device is not on the network".
+      */}}
+      {{if .Addresses}}
       {{if .MDNS}}<p class="font-mono text-2xl">{{.MDNS}}</p>{{end}}
       {{range .Addresses}}<p class="font-mono text-2xl">{{.}}</p>{{end}}
+      {{else}}
+      <p>Мережа: ✕ немає IP-адреси — пристрій не в мережі.</p>
+      {{end}}
       <p>Джерело: <span x-text="source">{{.Status.SourceName}}</span></p>
       {{/*
       Its own line, because it is the one thing here an operator checks against
@@ -208,6 +212,15 @@ already widened.
       <p class="font-semibold text-destructive" x-show="failing"{{if not .Status.Failing}} style="display:none"{{end}} x-text="lastError ? '✕ ' + lastError : ''">{{if .Status.Failing}}✕ {{.Status.LastError}}{{end}}</p>
     </section>
 
+    <section class="card p-4">
+      <h2 class="text-sm font-semibold text-muted-foreground">Найближча подія</h2>
+      <p class="text-lg"><span x-text="nextEvent">{{.Status.NextEventName}}</span> — <span class="font-mono" x-text="nextEventAt">{{.NextEventAtText}}</span></p>
+    </section>
+
+    {{/*
+    Where a silent device is noticed. Both lines carry a mark as well as a word,
+    for the same reason the state block does.
+    */}}
     <section class="card p-4">
       <h2 class="text-sm font-semibold text-muted-foreground">Ручне відтворення</h2>
       {{if .Sounds}}

@@ -494,10 +494,11 @@ func TestHomeFoldsTheDeviceAddressesIntoTheStateCard(t *testing.T) {
 		t.Error("the separate address card is still on the page, telling the same thing twice")
 	}
 	state := stateCard(t, body)
-	if !strings.Contains(state, "Мережа:") {
-		t.Fatal("the Стан card carries no network line")
-	}
 
+	// No "Мережа:" label is asserted any more: when the device holds an
+	// address, the address is the line. The label survives only in the
+	// no-address case below, where there is nothing to show and the absence
+	// has to be named — a blank space would read as a rendering fault.
 	addrs := web.LocalAddresses()
 	if len(addrs) == 0 {
 		if !strings.Contains(state, "не в мережі") {
@@ -821,5 +822,22 @@ func TestHomeDoesNotWarnWhenQuietHoursSpareAlerts(t *testing.T) {
 
 	if strings.Contains(rec.Body.String(), "НЕ подаватиме сигнал повітряної тривоги") {
 		t.Error("the dashboard warns about silenced alerts when the window does not cover them")
+	}
+}
+
+// Стан before Найближча подія. What the device is doing right now outranks
+// what it will do later, and the card an operator opens the page to read
+// should not be the second one their eye lands on.
+func TestHomePutsStateBeforeTheNextEvent(t *testing.T) {
+	srv, _ := newServerWithStore(t)
+	body := homeBody(t, srv)
+
+	state := strings.Index(body, `>Стан</h2>`)
+	next := strings.Index(body, `>Найближча подія</h2>`)
+	if state < 0 || next < 0 {
+		t.Fatalf("both cards must render; Стан at %d, Найближча подія at %d", state, next)
+	}
+	if state > next {
+		t.Error("Найближча подія comes before Стан; current state outranks the schedule")
 	}
 }
