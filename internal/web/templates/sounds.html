@@ -77,6 +77,23 @@
     with JavaScript off, the same rule the upload form above follows.
     */}}
     {{/*
+    One stop for the whole page rather than one per row: whatever is playing,
+    this silences it, and an operator reaching for it is not thinking about
+    which row started the sound. It is always visible instead of appearing
+    only while something plays — knowing where the stop is before you need it
+    is the point, and a button that materialises mid-siren is one the eye has
+    to find under exactly the wrong conditions. Pressing it with nothing
+    playing is a safe no-op; see handleStop.
+
+    Previewing a sixty-second siren and having to leave for the dashboard to
+    silence it is how this button's absence was noticed.
+    */}}
+    <form method="post" action="/stop" class="mb-3">
+      <input type="hidden" name="return" value="/sounds">
+      <button class="btn w-fit" data-variant="outline" data-size="sm" type="submit">Зупинити відтворення</button>
+    </form>
+
+    {{/*
     The same two-renderings-of-one-list split log.html uses: a stacked card
     per sound below sm, a table above it. A table's columns are what this
     data actually is — name, size, modified, used by — but forcing that

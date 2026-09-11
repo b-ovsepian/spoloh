@@ -831,3 +831,56 @@ func TestSoundsPreviewRejectsCrossOrigin(t *testing.T) {
 		t.Fatalf("status = %d, want 403", rec.Code)
 	}
 }
+
+// Stopping from /sounds must answer on /sounds. Previewing a sixty-second
+// siren and then having to walk to the dashboard to silence it is how the
+// absence of this was noticed; a stop that redirects away is the same
+// defect wearing a button.
+func TestStopReturnsToThePageThatAskedForIt(t *testing.T) {
+	srv, _, _ := newServerWithPlayer(t)
+	setPassword(t, srv, "correct horse battery staple")
+	cookie := login(t, srv, "correct horse battery staple")
+
+	form := url.Values{"return": {"/sounds"}}
+	req := httptest.NewRequest(http.MethodPost, "/stop", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Origin", "http://example.test")
+	req.Host = "example.test"
+	req.AddCookie(cookie)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("status = %d, want 303; body:\n%s", rec.Code, rec.Body.String())
+	}
+	loc := rec.Header().Get("Location")
+	if !strings.HasPrefix(loc, "/sounds?") {
+		t.Errorf("Location = %q, want a return to /sounds", loc)
+	}
+	if !strings.Contains(loc, "stopped=1") {
+		t.Errorf("Location = %q, want it to carry the stopped flash", loc)
+	}
+}
+
+// The same host check /play's return value gets. A stop link is as good a
+// carrier for an open redirect as a preview link.
+func TestStopRefusesAnOffSiteReturn(t *testing.T) {
+	srv, _, _ := newServerWithPlayer(t)
+	setPassword(t, srv, "correct horse battery staple")
+	cookie := login(t, srv, "correct horse battery staple")
+
+	for _, bad := range []string{"http://evil.example/x", "//evil.example/x", `/\evil.example`} {
+		form := url.Values{"return": {bad}}
+		req := httptest.NewRequest(http.MethodPost, "/stop", strings.NewReader(form.Encode()))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		req.Header.Set("Origin", "http://example.test")
+		req.Host = "example.test"
+		req.AddCookie(cookie)
+		rec := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(rec, req)
+
+		if loc := rec.Header().Get("Location"); !strings.HasPrefix(loc, "/?") {
+			t.Errorf("return %q: Location = %q, want the / fallback", bad, loc)
+		}
+	}
+}

@@ -339,5 +339,11 @@ func (s *Server) handleStop(w http.ResponseWriter, r *http.Request) {
 	if s.deps.Engine != nil {
 		s.deps.Engine.StopManual()
 	}
-	http.Redirect(w, r, "/?stopped=1", http.StatusSeeOther)
+	// Same return contract as /play, and for the same reason: an operator
+	// who previewed a sixty-second siren from /sounds needs to silence it
+	// from /sounds. Sending them to the dashboard to do it is how a preview
+	// button turns into a minute of siren nobody asked for. returnPath
+	// refuses anything naming a host — see its doc comment.
+	back := returnPath(r.FormValue("return"))
+	http.Redirect(w, r, back+"?"+url.Values{"stopped": {"1"}}.Encode(), http.StatusSeeOther)
 }
