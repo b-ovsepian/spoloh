@@ -29,6 +29,23 @@ already widened.
   </div>
   {{end}}
   {{/*
+  The second way this device can be configured into silence, and it renders
+  on the same terms as the first: unconditionally, above everything, never
+  behind a click. Both can be true at once and both must show — a disabled
+  alert event and a quiet-hours window covering alerts are different faults
+  with different fixes, and showing only one would send the operator to fix
+  the wrong thing.
+
+  It reads the configuration rather than the clock on purpose. Someone who
+  turned this on at noon must see it at noon, not discover it at 03:00 by
+  not hearing a siren.
+  */}}
+  {{if .AlertsSilencedByQuietHours}}
+  <div class="alert" data-variant="destructive" role="alert">
+    <section><p>Тихі години вимикають сигнал тривоги. З {{.QuietFrom}} до {{.QuietTo}} цей пристрій НЕ подаватиме сигнал повітряної тривоги. Змінити це можна на сторінці «Події».</p></section>
+  </div>
+  {{end}}
+  {{/*
   The one question this screen exists to answer, answered from arm's length.
   Both states are rendered and one is hidden, rather than one block whose
   classes Alpine swaps: Alpine's :class binding only removes the classes it

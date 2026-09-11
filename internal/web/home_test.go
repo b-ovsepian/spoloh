@@ -758,3 +758,68 @@ func TestHomeEmbedsTheAlertMapAsALabelledFluidFrame(t *testing.T) {
 		t.Error("the map has no aspect-ratio box, so it has no height of its own to be fluid within")
 	}
 }
+
+// The dashboard must say, standing and unmissable, when the device is
+// configured to choose silence during a raid. /events is where it is turned
+// on; the home page is where someone who did not turn it on finds out.
+func TestHomeWarnsWhenQuietHoursSilenceAlerts(t *testing.T) {
+	srv, store := newServerWithStore(t)
+	setPassword(t, srv, "correct horse battery staple")
+	cookie := login(t, srv, "correct horse battery staple")
+
+	if err := store.Update(func(c *config.Config) error {
+		c.QuietHours = config.QuietHours{
+			Enabled:   true,
+			From:      "22:00",
+			To:        "07:00",
+			AppliesTo: []string{config.CategoryScheduled, config.CategoryAlerts},
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.AddCookie(cookie)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+
+	body := rec.Body.String()
+	if !strings.Contains(body, "НЕ подаватиме сигнал повітряної тривоги") {
+		t.Errorf("the dashboard does not warn that alerts are silenced; body:\n%s", body)
+	}
+	for _, edge := range []string{"22:00", "07:00"} {
+		if !strings.Contains(body, edge) {
+			t.Errorf("the warning does not name the hour %s; body:\n%s", edge, body)
+		}
+	}
+}
+
+// A window that does not cover alerts silences none of them, and warning
+// about it would teach an operator to skip the one warning that matters.
+func TestHomeDoesNotWarnWhenQuietHoursSpareAlerts(t *testing.T) {
+	srv, store := newServerWithStore(t)
+	setPassword(t, srv, "correct horse battery staple")
+	cookie := login(t, srv, "correct horse battery staple")
+
+	if err := store.Update(func(c *config.Config) error {
+		c.QuietHours = config.QuietHours{
+			Enabled:   true,
+			From:      "22:00",
+			To:        "07:00",
+			AppliesTo: []string{config.CategoryScheduled},
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.AddCookie(cookie)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+
+	if strings.Contains(rec.Body.String(), "НЕ подаватиме сигнал повітряної тривоги") {
+		t.Error("the dashboard warns about silenced alerts when the window does not cover them")
+	}
+}

@@ -47,6 +47,24 @@ type homeView struct {
 	// home.html renders it above everything else, unconditionally, whenever
 	// this is true.
 	AlertsDisabled bool
+	// AlertsSilencedByQuietHours is true when the quiet-hours window is
+	// enabled and its category list covers alerts — the one configuration
+	// that makes this device deliberately choose silence during a raid.
+	//
+	// It reads the configuration, not the clock: the warning is about how
+	// the device is set up, not about whether it happens to be 03:00 right
+	// now, and an operator who set this at noon must see it at noon. Both
+	// this and AlertsDisabled can be true at once and both render — they
+	// are different faults with different fixes.
+	//
+	// Shares config.QuietHours.SilencesAlerts() with the /events form, so
+	// the two screens cannot drift apart on what "silenced" means.
+	AlertsSilencedByQuietHours bool
+	// QuietFrom and QuietTo are the window's edges, carried for the warning
+	// above so the operator is told which hours rather than merely that
+	// some exist.
+	QuietFrom string
+	QuietTo   string
 }
 
 // alertStartDisabled reports whether the configured alert-start event will
@@ -115,10 +133,13 @@ func (s *Server) handleHome(w http.ResponseWriter, r *http.Request) {
 
 	addrs := LocalAddresses()
 	view := homeView{
-		Status:         st,
-		Addresses:      addrs,
-		MDNS:           reachableMDNSName(MDNSName(), addrs),
-		AlertsDisabled: alertStartDisabled(s.deps.Config.Get()),
+		Status:                     st,
+		Addresses:                  addrs,
+		MDNS:                       reachableMDNSName(MDNSName(), addrs),
+		AlertsDisabled:             alertStartDisabled(s.deps.Config.Get()),
+		AlertsSilencedByQuietHours: s.deps.Config.Get().QuietHours.SilencesAlerts(),
+		QuietFrom:                  s.deps.Config.Get().QuietHours.From,
+		QuietTo:                    s.deps.Config.Get().QuietHours.To,
 	}
 	if !st.Since.IsZero() {
 		view.SinceText = st.Since.In(loc).Format("2006-01-02 15:04")
