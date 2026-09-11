@@ -39,22 +39,35 @@
           {{range .SourceSlots}}
           <div class="field">
             <label for="source-{{.Position}}">Джерело {{.Position}}</label>
-            <select class="select" id="source-{{.Position}}" name="source">
-              {{range .Options}}<option value="{{.Key}}"{{if .Selected}} selected{{end}}>{{if .Key}}{{.Key}}{{else}}— не використовується —{{end}}</option>{{end}}
-            </select>
             {{/*
+            The link sits on the same row as the picker rather than on a
+            line of its own: it is a control belonging to this <select>,
+            and a full sentence under every one of them turned the cascade
+            into a wall of near-identical text the operator had to read
+            past to see the actual choices.
+
             Shown only when the chosen key has an established URL (see
             alertsource.SourceInfo) — never for "не використовується", and
             never a guessed link. The cascade tries sources in order and
-            stops at the first that answers, so this is deliberately worded
-            as "documentation", not as anything a later, untried slot would
-            wrongly claim about being contacted right now.
+            stops at the first that answers, so the accessible name is
+            deliberately worded as documentation, not as anything a later,
+            untried slot would wrongly claim about being contacted now.
+
+            The visible text is short, but the accessible name is not: it
+            names the source. Six controls all called "API" tell a screen
+            reader user the page has six links and nothing about where any
+            of them goes — which was worse than the sentences it replaced,
+            and matters more now that the links no longer all lead to the
+            same place.
             */}}
-            {{if .Source.URL}}
-            <p class="text-sm text-muted-foreground">
-              <a href="{{.Source.URL}}" target="_blank" rel="noopener noreferrer">Документація джерела «{{.Source.Name}}»</a>
-            </p>
-            {{end}}
+            <div class="flex items-center gap-2">
+              <select class="select grow" id="source-{{.Position}}" name="source">
+                {{range .Options}}<option value="{{.Key}}"{{if .Selected}} selected{{end}}>{{if .Key}}{{.Key}}{{else}}— не використовується —{{end}}</option>{{end}}
+              </select>
+              {{if .Source.URL}}
+              <a class="flex shrink-0 items-center gap-1 text-sm underline" href="{{.Source.URL}}" target="_blank" rel="noopener noreferrer" aria-label="Документація джерела «{{.Source.Name}}» — відкриється в новій вкладці">API<svg aria-hidden="true" viewBox="0 0 24 24" width="14" height="14" class="shrink-0" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 4h6v6"/><path d="M20 4 10 14"/><path d="M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"/></svg></a>
+              {{end}}
+            </div>
           </div>
           {{end}}
         </div>

@@ -30,11 +30,31 @@ func isKnownRegion(region string) bool {
 	return false
 }
 
-// alertsSlotCount is how many "source N" pickers the page offers — one per
-// key alertsource.Sources() names, so an operator can build a cascade using
-// every one of them if they want to. A shorter cascade is built by leaving
-// the remaining slots on "not used".
-var alertsSlotCount = len(alertsource.Sources())
+// alertsUATokenStored reports whether the operator's alerts.in.ua token is on
+// this device, which is what decides whether that source may be chosen at all
+// (alertsource.SelectableSources).
+//
+// It is false today, and that is not a placeholder for something forgotten:
+// config.Alerts has no field to keep a token in yet. Until it does, the
+// source is not offered — which is the only honest of the two options. Offer
+// it without a credential and an operator can build a cascade whose every
+// slot fails to authenticate: a device that hears about no air raid at all,
+// behind a dashboard showing a complete, ordered, configured-looking list.
+// That is the exact failure this screen's other rules exist to prevent.
+//
+// When the field lands this becomes one field read, and every caller, view
+// and test on this screen goes on working unchanged.
+func alertsUATokenStored(cfg *config.Config) bool {
+	_ = cfg
+	return false
+}
+
+// selectableSources is the one list this screen offers, validates against and
+// sizes its pickers from. Reading it in one place is what keeps a submission
+// from being checked against a different list than the one it was offered.
+func selectableSources(cfg *config.Config) []string {
+	return alertsource.SelectableSources(alertsUATokenStored(cfg))
+}
 
 // sourceSlotOption is one <option> inside a single cascade-position <select>.
 type sourceSlotOption struct {
@@ -60,14 +80,24 @@ type sourceSlotView struct {
 	Source alertsource.SourceInfo
 }
 
-// buildSourceSlots turns a stored (or just-submitted) cascade into the fixed
-// number of position pickers alerts.html renders. current[i] becomes slot
-// i's selection; any position past len(current) starts on "not used". This
+// buildSourceSlots turns a stored (or just-submitted) cascade into the
+// position pickers alerts.html renders. keys are the sources an operator may
+// choose from (alertsource.SelectableSources); current[i] becomes slot i's
+// selection, and any position past len(current) starts on "not used". This
 // is what lets the page show order at all — a set of checkboxes has no way
 // to say which one fires first, only which ones are in.
-func buildSourceSlots(current []string) []sourceSlotView {
-	keys := alertsource.Sources()
-	slots := make([]sourceSlotView, alertsSlotCount)
+//
+// There is one slot per selectable source, so a cascade can use every one of
+// them — and never fewer slots than the stored cascade is long, so a cascade
+// saved while a source was selectable is still shown in full if that source
+// stops being offered. A shorter cascade is built by leaving slots on "not
+// used".
+func buildSourceSlots(current []string, keys []string) []sourceSlotView {
+	count := len(keys)
+	if len(current) > count {
+		count = len(current)
+	}
+	slots := make([]sourceSlotView, count)
 	for i := range slots {
 		var picked string
 		if i < len(current) {
@@ -89,19 +119,22 @@ func buildSourceSlots(current []string) []sourceSlotView {
 }
 
 // parseSources reads the submitted "source" values — one per position, in
-// the order the positions were rendered — into a cascade. A blank slot
-// ("not used") and anything that is not one of alertsource.Sources()'s six
-// keys are dropped: a crafted form must not be able to fill every slot with
-// a key that matches no real upstream, which would silence the device's
-// alerts every bit as permanently as an unmatchable region does. A key
+// the order the positions were rendered — into a cascade. keys are the
+// sources an operator may choose from, the same list the page offered. A
+// blank slot ("not used") and anything that is not one of those keys are
+// dropped: a crafted form must not be able to fill every slot with a key
+// that matches no usable upstream, which would silence the device's alerts
+// every bit as permanently as an unmatchable region does. That includes a
+// real registry key whose credential is not stored — it is a source this
+// device cannot authenticate to, and a slot holding one does nothing. A key
 // repeated across slots is kept only at the first position it appears in —
 // trying the same source twice in one cascade does nothing a single try
 // does not. What survives keeps the order it was submitted in: that order
 // is the cascade order, the entire reason this is asked for slot by slot
 // rather than as an unordered set of checkboxes.
-func parseSources(values []string) []string {
-	known := make(map[string]bool, len(alertsource.Sources()))
-	for _, k := range alertsource.Sources() {
+func parseSources(values []string, keys []string) []string {
+	known := make(map[string]bool, len(keys))
+	for _, k := range keys {
 		known[k] = true
 	}
 	seen := make(map[string]bool, len(values))
@@ -193,7 +226,7 @@ func (s *Server) alertsBaseView(cfg *config.Config) alertsView {
 	return alertsView{
 		Regions:             alertsource.Regions(),
 		CurrentRegion:       cfg.Alerts.Region,
-		SourceSlots:         buildSourceSlots(cfg.Alerts.Sources),
+		SourceSlots:         buildSourceSlots(cfg.Alerts.Sources, selectableSources(cfg)),
 		PollIntervalSeconds: pollIntervalSeconds(cfg.Alerts.PollInterval),
 	}
 }
@@ -234,7 +267,7 @@ func (s *Server) handleAlertsSave(w http.ResponseWriter, r *http.Request) {
 
 	cfg := s.deps.Config.Get()
 	region := r.FormValue("region")
-	sources := parseSources(r.Form["source"])
+	sources := parseSources(r.Form["source"], selectableSources(cfg))
 	interval, intervalErr := parsePollInterval(r.FormValue("poll_interval"))
 
 	reject := func(status int, message string) {
@@ -263,7 +296,7 @@ func (s *Server) handleAlertsSave(w http.ResponseWriter, r *http.Request) {
 		s.renderAlertsPage(w, status, func(v *alertsView) {
 			v.Error = message
 			v.CurrentRegion = selectedRegion
-			v.SourceSlots = buildSourceSlots(sources)
+			v.SourceSlots = buildSourceSlots(sources, selectableSources(cfg))
 			v.PollIntervalSeconds = pollIntervalSeconds(selectedInterval)
 		})
 	}

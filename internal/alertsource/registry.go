@@ -10,30 +10,48 @@ package alertsource
 // URL is a claim about where alert data comes from, not decoration, so it
 // points at what can actually be established.
 //
-// All six keys reach the same endpoint. "?source=" selects which upstream
-// aggregator Ubilling asks on this device's behalf (spec §3); it does not
-// name six separate APIs with six addresses, and giving each key a different
-// URL would assert exactly that falsehood. The names below are the keys
-// themselves in title case — placeholders, not provenance. What each source
-// actually calls itself arrives in the API's own response at runtime and is
-// what the dashboard shows as the live source name; "default", for
-// instance, currently answers as "Vadym Klymenko API".
+// The first six keys reach one endpoint between them. "?source=" selects
+// which upstream aggregator Ubilling asks on this device's behalf (spec §3);
+// it does not name six separate APIs with six addresses, and giving each key
+// a different URL would assert exactly that falsehood. Their names below are
+// the keys themselves in title case — placeholders, not provenance. What each
+// one actually calls itself arrives in the API's own response at runtime and
+// is what the dashboard shows as the live source name; "default", for
+// instance, currently answers as "Vadym Klymenko API". So all six carry the
+// documentation for the one API they speak: that wiki page is what an
+// operator choosing between them, or debugging one that is failing, actually
+// needs, because it is where each "?source=" value is explained.
 //
-// So every entry carries the documentation for the one API all of them
-// speak. That is the page an operator choosing between these keys, or
-// debugging one that is failing, actually needs — the wiki documents what
-// each "?source=" value is.
+// AlertsUAKey is the entry that ends that arrangement, and the reason this
+// comment is worth reading twice. It is a genuinely different provider — a
+// different company, a different address, its own credential, and the only
+// one here that reports a severity level or a location below oblast. Its URL
+// is its own, and the per-slot link on /alerts therefore stopped being six
+// copies of one address the moment it was added. Do not "tidy" the URLs back
+// into a single constant.
 type SourceInfo struct {
 	Key  string
 	Name string
 	URL  string
+
+	// RequiresToken marks a source an operator cannot simply pick: it
+	// needs a credential they have to go and obtain first. A cascade slot
+	// holding a source that cannot authenticate is a slot that does
+	// nothing, so such a source is offered only once a token is stored —
+	// see SelectableSources. Every Ubilling key needs nothing, which is
+	// what lets a device work with no account behind it at all.
+	RequiresToken bool
 }
 
-// sources is the fixed registry of the six upstream cascade keys spec §3
-// names for "?source=", in the order the dashboard's cascade picker offers
-// them. It is the one place that names them, so the /alerts screen's cascade
-// picker, its validation, and its provenance links all read Sources() and
-// Lookup() rather than keeping a second copy that could drift.
+// AlertsUAKey is the cascade key for the alerts.in.ua source (AlertsUA).
+const AlertsUAKey = "alertsua"
+
+// sources is the fixed registry of upstream cascade keys — the six spec §3
+// names for Ubilling's "?source=", then alerts.in.ua — in the order the
+// dashboard's cascade picker offers them. It is the one place that names
+// them, so the /alerts screen's cascade picker, its validation, and its
+// provenance links all read Sources() and Lookup() rather than keeping a
+// second copy that could drift.
 var sources = []SourceInfo{
 	{Key: "default", Name: "Ubilling", URL: DocsURL},
 	{Key: "skog", Name: "Skog", URL: DocsURL},
@@ -41,9 +59,15 @@ var sources = []SourceInfo{
 	{Key: "jaam", Name: "JAAM", URL: DocsURL},
 	{Key: "aiu", Name: "AIU", URL: DocsURL},
 	{Key: "ual", Name: "UAL", URL: DocsURL},
+	{Key: AlertsUAKey, Name: "alerts.in.ua", URL: AlertsUADocsURL, RequiresToken: true},
 }
 
-// Sources returns a copy of the six keys "?source=" accepts.
+// Sources returns a copy of every cascade key the registry knows.
+//
+// This is the whole registry, including sources an operator cannot choose
+// yet. Ask SelectableSources for what a picker may offer and what a
+// submission may be validated against; the difference between the two is
+// exactly the credential.
 func Sources() []string {
 	out := make([]string, len(sources))
 	for i, s := range sources {
@@ -52,9 +76,29 @@ func Sources() []string {
 	return out
 }
 
+// SelectableSources returns the cascade keys an operator may choose from
+// right now, in registry order.
+//
+// hasToken says whether the operator's alerts.in.ua token is stored. It is
+// the only question worth asking, because every other source needs no
+// credential at all — and the answer matters more than it looks: a cascade
+// built entirely out of sources that cannot authenticate is a device that
+// hears about no air raid, while its dashboard shows a full, ordered,
+// perfectly configured-looking list.
+func SelectableSources(hasToken bool) []string {
+	out := make([]string, 0, len(sources))
+	for _, s := range sources {
+		if s.RequiresToken && !hasToken {
+			continue
+		}
+		out = append(out, s.Key)
+	}
+	return out
+}
+
 // Lookup returns the registry entry for key, and whether one exists. A key
-// that is not one of Sources()'s six — including "", the "not used" slot
-// value — reports false and the zero SourceInfo, which has no URL.
+// that is not one of Sources() — including "", the "not used" slot value —
+// reports false and the zero SourceInfo, which has no URL.
 func Lookup(key string) (SourceInfo, bool) {
 	for _, s := range sources {
 		if s.Key == key {

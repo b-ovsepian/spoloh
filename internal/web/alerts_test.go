@@ -477,10 +477,15 @@ func TestAlertsPageOffersEveryKnownRegionAndSource(t *testing.T) {
 		}
 	}
 	slot := sourceSlotHTML(t, body, 1)
-	for _, source := range alertsource.Sources() {
+	// The selectable set, not the whole registry: a source whose credential
+	// this device does not hold must not appear in the picker at all.
+	for _, source := range alertsource.SelectableSources(false) {
 		if !strings.Contains(slot, fmt.Sprintf(`<option value="%s"`, source)) {
 			t.Errorf("source %q is not offered in the cascade picker", source)
 		}
+	}
+	if strings.Contains(slot, fmt.Sprintf(`<option value="%s"`, alertsource.AlertsUAKey)) {
+		t.Errorf("%q is offered with no token stored; the cascade slot would authenticate against nothing", alertsource.AlertsUAKey)
 	}
 }
 
@@ -610,6 +615,15 @@ func TestAlertsPageShowsDocumentationLinkForAKnownSource(t *testing.T) {
 	if !strings.Contains(field, `rel="noopener noreferrer"`) {
 		t.Errorf("the source link does not carry rel=\"noopener noreferrer\"; field markup: %s", field)
 	}
+	// The operator asked for a compact control beside the <select> rather
+	// than a sentence on its own line. "API" is the whole of the visible
+	// text; the sentence moved into the accessible name.
+	if !strings.Contains(field, ">API<") {
+		t.Errorf("the source link is not the compact \"API\" control; field markup: %s", field)
+	}
+	if strings.Contains(field, "Документація джерела «Ubilling»<") {
+		t.Errorf("the source link still renders the old full sentence as its visible text; field markup: %s", field)
+	}
 }
 
 // "не використовується" must never grow a link: there is nothing chosen for
@@ -645,7 +659,7 @@ func TestAlertsPageLinksEveryChosenSource(t *testing.T) {
 	setPassword(t, srv, "correct horse battery staple")
 	cookie := login(t, srv, "correct horse battery staple")
 
-	for _, key := range alertsource.Sources() {
+	for _, key := range alertsource.SelectableSources(false) {
 		info, ok := alertsource.Lookup(key)
 		if !ok || info.URL == "" {
 			t.Fatalf("setup: source %q carries no URL: %+v", key, info)
@@ -665,6 +679,18 @@ func TestAlertsPageLinksEveryChosenSource(t *testing.T) {
 		field := sourceSlotFieldHTML(t, rec.Body.String(), 1)
 		if !strings.Contains(field, info.URL) {
 			t.Errorf("%s: no link to %s; field markup: %s", key, info.URL, field)
+		}
+		// Compact, and named. The visible word is the same on every slot,
+		// so the accessible name is the only thing telling a screen reader
+		// user which source this one documents — and now that the links no
+		// longer all lead to the same page, that is a real difference.
+		if !strings.Contains(field, fmt.Sprintf(`aria-label="Документація джерела «%s» — відкриється в новій вкладці"`, info.Name)) {
+			t.Errorf("%s: the link has no accessible name saying which source it documents; field markup: %s", key, field)
+		}
+		// "<p class=" rather than "<p": the arrow is an inline <svg> and
+		// its <path> elements would match the looser prefix.
+		if strings.Contains(field, "<p class=") {
+			t.Errorf("%s: the link is still a paragraph of its own rather than a control beside the picker; field markup: %s", key, field)
 		}
 	}
 }

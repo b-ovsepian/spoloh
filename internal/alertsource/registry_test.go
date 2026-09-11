@@ -23,6 +23,65 @@ func TestEverySourceWithAURLHasAName(t *testing.T) {
 	}
 }
 
+// A source needing a credential is offered only once one is stored. Offering
+// it anyway would let an operator build a cascade of slots that authenticate
+// against nothing — a device that hears about no air raid while its dashboard
+// shows a fully configured list.
+func TestSelectableSourcesHidesACredentialledSourceUntilThereIsAToken(t *testing.T) {
+	without := alertsource.SelectableSources(false)
+	with := alertsource.SelectableSources(true)
+
+	if len(with) <= len(without) {
+		t.Fatalf("setup: no source requires a token, so this test proves nothing (with=%v, without=%v)", with, without)
+	}
+	if contains(without, alertsource.AlertsUAKey) {
+		t.Errorf("%q is selectable with no token stored: %v", alertsource.AlertsUAKey, without)
+	}
+	if !contains(with, alertsource.AlertsUAKey) {
+		t.Errorf("%q is not selectable even with a token stored: %v", alertsource.AlertsUAKey, with)
+	}
+
+	// Everything else needs no credential and must be offered either way —
+	// a device with no account behind it stays fully configurable.
+	for _, key := range alertsource.Sources() {
+		if key == alertsource.AlertsUAKey {
+			continue
+		}
+		if !contains(without, key) {
+			t.Errorf("%q needs no credential but is not offered without a token", key)
+		}
+	}
+}
+
+// alerts.in.ua is a different provider, not a seventh value of the Ubilling
+// endpoint, so its per-slot link has to go somewhere of its own. Collapsing
+// every URL back into one constant would tell an operator the two are the
+// same thing.
+func TestTheAlertsUAEntryDoesNotShareTheUbillingDocumentationURL(t *testing.T) {
+	info, ok := alertsource.Lookup(alertsource.AlertsUAKey)
+	if !ok {
+		t.Fatalf("%q is not in the registry", alertsource.AlertsUAKey)
+	}
+	if info.URL == alertsource.DocsURL {
+		t.Errorf("%q links to the Ubilling wiki (%s); it is a different provider", alertsource.AlertsUAKey, info.URL)
+	}
+	if info.URL == "" {
+		t.Error("the one source an operator has to register for links nowhere")
+	}
+	if !info.RequiresToken {
+		t.Error("the alerts.in.ua entry does not declare that it needs a token")
+	}
+}
+
+func contains(keys []string, want string) bool {
+	for _, k := range keys {
+		if k == want {
+			return true
+		}
+	}
+	return false
+}
+
 // Lookup("") is what an unused cascade slot resolves to — it must report
 // false and carry no URL, or an unused slot would render a documentation
 // link with nothing chosen for it to document.
