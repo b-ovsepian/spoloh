@@ -40,7 +40,9 @@ func LocalAddresses() []string {
 // avahiSocket is where avahi-daemon listens. Its presence is the cheapest
 // honest answer to "is anything publishing this device's name" — a file
 // check rather than an exec of systemctl, on a device that does this on
-// every page load.
+// every page load. It is a proxy, not a guarantee: a daemon that crashed
+// leaves the socket file behind until the next start unlinks it, so a stale
+// socket can briefly outlive the process that was listening on it.
 const avahiSocket = "/run/avahi-daemon/socket"
 
 // MDNSName returns the name an operator can type instead of an IP address, or
@@ -70,4 +72,18 @@ func MDNSNameFrom(socket string, hostname func() (string, error)) string {
 		return ""
 	}
 	return label + ".local"
+}
+
+// reachableMDNSName returns name only when the device also holds an address
+// to answer on. Avahi's socket exists whenever the daemon runs, so its
+// presence says the name is being published, not that anything can reach it:
+// with no interface up there is nothing for mDNS to travel over, which is the
+// same condition that leaves Addresses empty. Printing the name anyway puts a
+// memorable, unreachable address directly above the line that says the device
+// is not on the network.
+func reachableMDNSName(name string, addrs []string) string {
+	if len(addrs) == 0 {
+		return ""
+	}
+	return name
 }

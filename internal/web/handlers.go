@@ -27,8 +27,9 @@ type homeView struct {
 	// the network" looks like from inside the daemon.
 	Addresses []string
 	// MDNS is the name an operator can type instead of an address, empty
-	// when nothing publishes one. It sits beside Addresses because it
-	// answers the same question and fails the same way — see MDNSName.
+	// when nothing publishes one or the device holds no address for it to
+	// resolve to — see MDNSName and reachableMDNSName. It sits beside
+	// Addresses because it answers the same question and fails the same way.
 	MDNS            string
 	SinceText       string
 	LastSuccessText string
@@ -82,10 +83,11 @@ func (s *Server) handleHome(w http.ResponseWriter, r *http.Request) {
 	loc := s.location()
 	st := s.status(loc)
 
+	addrs := LocalAddresses()
 	view := homeView{
 		Status:    st,
-		Addresses: LocalAddresses(),
-		MDNS:      MDNSName(),
+		Addresses: addrs,
+		MDNS:      reachableMDNSName(MDNSName(), addrs),
 	}
 	if !st.Since.IsZero() {
 		view.SinceText = st.Since.In(loc).Format("2006-01-02 15:04")

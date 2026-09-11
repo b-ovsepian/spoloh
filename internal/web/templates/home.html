@@ -78,10 +78,13 @@
   {{/*
   Only addresses that actually resolve. The .local line only appears once
   something on the device actually publishes it — avahi-daemon, installed by
-  a later task — because it was the most memorable line on the page and
-  therefore the first thing an operator tried; a printed name that does not
-  resolve is worse than none. See MDNSName for why it is always ASCII: it
-  comes from the system hostname, never the Cyrillic device name from config.
+  a later task — and only once the device also holds an address for that name
+  to resolve to (see reachableMDNSName): a memorable name that does not
+  resolve is worse than none, since it's the first thing an operator tries,
+  read aloud over a phone. The name comes from the system hostname, never the
+  Cyrillic device name from config; it is printed as-is, on the assumption
+  that Linux hostnames stay ASCII — nothing here enforces that, so a hostname
+  provisioned otherwise is a problem for whatever sets it, not for this page.
 
   With no address at all there is nothing to read out, which is worth saying
   rather than leaving an empty card.
