@@ -250,6 +250,137 @@ already widened.
     </section>
 
     {{/*
+    Whether this device can be heard at all, said on the screen where that is
+    wondered about. It sits beside Ручне відтворення because the two answer
+    one question between them — there is a sound to play, and there is an
+    output to play it on.
+
+    Nothing /audio knows is restated here. homeAudio calls /audio's own
+    currentAudio, so the output's label, the "default resolves to card 0"
+    heuristic, the wording for an output that will not open and the mixer
+    lookup are all decided in one place; two screens on one device
+    disagreeing about which output it uses would be worse than either of them
+    being wrong.
+
+    The probe is bounded far tighter than /audio's ten seconds per call.
+    Whoever opened /audio did so because the sound is broken and is prepared
+    to wait; this page is glanced at, and it is what the stream's recovery
+    probe fetches when the daemon comes back. homeAudioBudget gives the whole
+    card two seconds, and «невідомо» in two seconds is worth more than the
+    same card thirty seconds later — so the unprobed case is a real state
+    here, not an omission.
+
+    Render-time, not live. The output's state is not in the SSE frame (see
+    sse.go's statusFrame) and it should not be: a binding here would mean
+    opening the sound card once a second for the life of the page.
+    */}}
+    <section class="card p-4">
+      <h2 class="text-sm font-semibold text-muted-foreground">Звук</h2>
+      <p class="mt-2"><span class="font-mono text-sm">{{.Audio.Device}}</span>{{if .Audio.Description}} — {{.Audio.Description}}{{end}}</p>
+      {{/*
+      Listed and openable are different facts, and the third state — not
+      asked — is as real as either. It is what a device shows while a siren
+      is playing, because the card must not put a second opener on the sound
+      card during the one minute this device exists for, and what it shows
+      when the two-second budget ran out. Claiming either answer there would
+      be a claim about the siren, not about the output.
+      */}}
+      {{if .Audio.Probed}}
+      {{if .Audio.Unusable}}
+      <p class="text-sm font-semibold text-destructive">✕ Вихід не відкривається — звуку не буде.</p>
+      {{else}}
+      <p class="text-sm">✓ Перевірено щойно: вихід відкривається.</p>
+      {{end}}
+      {{else}}
+      <p class="text-sm text-muted-foreground">Стан виходу зараз невідомий.</p>
+      {{end}}
+      {{if .Audio.Missing}}<p class="text-sm text-destructive">Цей вихід зараз не повідомляється системою — можливо, карту від'єднано.</p>{{end}}
+      <p>Гучність: {{.Audio.Volume}} %{{if .Audio.VolumeFixed}} — регулювання гучності недоступне для цього виходу{{else if .Audio.MixerControl}} — регулятор «{{.Audio.MixerControl}}»{{end}}</p>
+      {{if .AudioNotice}}<p class="text-sm text-muted-foreground">{{.AudioNotice}}</p>{{end}}
+      {{/*
+      A preview, and marked as one. playPreviewField is what puts it below
+      everything real in the player's queue: somebody finding out whether the
+      speaker works must never be able to hold the single voice while an air
+      raid alert waits behind them. The field is explicit rather than
+      inferred from the return path — see handlePlay, where tying "may delay
+      a siren" to "names a page to come back to" is refused for exactly this
+      reason.
+
+      A plain form with hidden inputs, so it works with scripts off like
+      every other control here. It names this page as its return, so the
+      operator lands back on the dashboard with the flash rather than on
+      /audio.
+
+      With an empty library there is no sound to send, and the card says so
+      instead of rendering a button whose only possible outcome is a failure
+      message.
+      */}}
+      {{if .TestSound}}
+      <form method="post" action="/play" class="mt-4">
+        <input type="hidden" name="sound" value="{{.TestSound}}">
+        <input type="hidden" name="preview" value="1">
+        <input type="hidden" name="return" value="/">
+        <button class="btn w-fit" data-variant="outline" type="submit">Перевірити звук</button>
+      </form>
+      {{else}}
+      <p class="mt-4 text-sm text-muted-foreground">У бібліотеці немає жодного звуку, щоб перевірити вихід.</p>
+      {{end}}
+      <p class="mt-4 text-sm"><a class="underline" href="/audio">Налаштування звуку</a></p>
+    </section>
+
+    {{/*
+    The card that answers the question no other one on this page does: did
+    this device actually make a sound the last time it mattered. Everything
+    else here says how the device is configured or what it intends to do
+    next, and a device that reads healthy in all of them and has played
+    nothing successfully in a month is the failure this product most needs
+    an operator to notice. Until now, finding that out meant navigating away.
+
+    Full width, and /log's stacked rendering rather than /log's table. That
+    page reaches for a table because scanning two hundred rows for the odd
+    failure is what a table is for; five rows is not two hundred, and a
+    six-column table inside a dashboard card is heavier than the glance this
+    card exists to be. The vocabulary is /log's own regardless — the Kind
+    text is built by its kindLabel, in Go, see recentActivity — because an
+    operator comparing this card against /log is doing so on purpose, and two
+    names for one fact would turn that comparison into a puzzle.
+
+    A failure is told apart without reading anything: a thick bar down the
+    leading edge and a tinted row, then the ✕ and the word. Never colour
+    alone, the same rule the state banner and /log both keep.
+
+    /log's «перевірте вихідний пристрій» pointer is deliberately not carried
+    over. On that page it is the only way to get from a playback error to the
+    screen that fixes it; here the Звук card is directly above, saying what
+    the output is doing right now and linking to the same place.
+
+    Render-time, not live: there is no log in the SSE frame, so this shows
+    what was true when the page was served — which is also when somebody is
+    looking at it.
+    */}}
+    <section class="card p-4 sm:col-span-2">
+      <h2 class="text-sm font-semibold text-muted-foreground">Останні дії</h2>
+      {{if .RecentNotice}}
+      <p class="mt-2 text-muted-foreground">{{.RecentNotice}}</p>
+      {{else}}
+      <ul class="mt-2 grid gap-2">
+        {{range .Recent}}
+        <li class="rounded-md border border-border border-l-4 p-3 {{if .OK}}border-l-border{{else}}border-l-destructive bg-destructive/10{{end}}">
+          <div class="flex items-baseline justify-between gap-2">
+            <span class="font-mono text-sm">{{.AtText}}</span>
+            <span class="text-sm font-semibold{{if not .OK}} text-destructive{{end}}">{{if .OK}}✓ ОК{{else}}✕ Помилка{{end}}</span>
+          </div>
+          <p class="font-medium">{{.Kind}}{{if .EventID}} · {{.EventID}}{{end}}</p>
+          {{if .Sound}}<p class="text-sm text-muted-foreground">{{.Sound}}</p>{{end}}
+          {{if .Err}}<p class="text-sm wrap-break-word">{{.Err}}</p>{{end}}
+        </li>
+        {{end}}
+      </ul>
+      {{end}}
+      <p class="mt-4 text-sm"><a class="underline" href="/log">Увесь журнал подій</a></p>
+    </section>
+
+    {{/*
     The one thing on this page that is not the device talking. It is a
     third-party embed — the exception the operator asked for by name — and it
     therefore fails in a way nothing else here does: it needs internet in the

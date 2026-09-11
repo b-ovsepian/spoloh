@@ -14,6 +14,7 @@ import (
 	"github.com/b-ovsepian/spoloh/internal/config"
 	"github.com/b-ovsepian/spoloh/internal/configstore"
 	"github.com/b-ovsepian/spoloh/internal/engine"
+	"github.com/b-ovsepian/spoloh/internal/eventlog"
 	"github.com/b-ovsepian/spoloh/internal/player"
 	"github.com/b-ovsepian/spoloh/internal/web"
 )
@@ -852,5 +853,313 @@ func TestHomePutsStateBeforeTheNextEvent(t *testing.T) {
 	}
 	if state > next {
 		t.Error("Найближча подія comes before Стан; current state outranks the schedule")
+	}
+}
+
+// cardNamed returns the markup of one reference card, found by its heading.
+//
+// Every assertion about a card has to be anchored inside it. The dashboard
+// now carries six, several of which talk about the same things — a sound
+// name appears in Ручне відтворення, in Останні дії and in the Звук card's
+// test button — so a whole-page check is satisfied from anywhere and proves
+// nothing about where an operator will actually read it.
+func cardNamed(t *testing.T, body, heading string) string {
+	t.Helper()
+	start := strings.Index(body, ">"+heading+"</h2>")
+	if start < 0 {
+		t.Fatalf("the page has no %s card", heading)
+	}
+	end := strings.Index(body[start:], "</section>")
+	if end < 0 {
+		t.Fatalf("the %s card is never closed", heading)
+	}
+	return body[start : start+end]
+}
+
+// The Останні дії card is what answers the question no other card on this
+// page does: did this device actually make a sound the last time it
+// mattered. A dashboard where every other card reads healthy over a device
+// that has played nothing successfully in a month is the failure this
+// product most needs noticed, and until now finding that out meant
+// navigating away to /log.
+//
+// Newest first, and bounded — the card is a summary, and the rest of the
+// history is one link away.
+func TestHomeShowsTheLastFewActionsAndLinksToTheRest(t *testing.T) {
+	srv, _, lg := newServerWithLog(t)
+
+	// Seven, so the bound itself is exercised: the two oldest must not be
+	// on the card. Appended oldest first, which is the order the daemon
+	// writes them in.
+	for _, name := range []string{
+		"oldest-one.wav", "oldest-two.wav", "third.wav",
+		"fourth.wav", "fifth.wav", "sixth.wav", "newest.wav",
+	} {
+		appendAlert(t, lg, name)
+	}
+
+	card := cardNamed(t, homeBody(t, srv), "Останні дії")
+
+	if !strings.Contains(card, "newest.wav") {
+		t.Error("the newest entry is not on the card; the card is not showing recent activity at all")
+	}
+	for _, old := range []string{"oldest-one.wav", "oldest-two.wav"} {
+		if strings.Contains(card, old) {
+			t.Errorf("%s is on the card: it has stopped being a summary and become a list to scroll past", old)
+		}
+	}
+	// /log's own vocabulary for the same rows, built by its kindLabel — an
+	// operator comparing this card against /log is doing it on purpose, and
+	// two names for one fact would make that a puzzle.
+	if !strings.Contains(card, "Тривога") {
+		t.Error("the card does not label the entry's kind the way /log does")
+	}
+	if !strings.Contains(card, `href="/log"`) {
+		t.Error("the card does not link to the rest of the history, so the five rows read as everything that happened")
+	}
+}
+
+// A failed entry has to be told from a successful one at a glance, without
+// reading either. Colour alone will not do it — the same rule the state
+// banner keeps — so the failed row carries a thick bar down its leading edge
+// and a tinted background as well as the ✕ and the word.
+//
+// The assertion is on the markup that differs between the two rows. Checking
+// only for the word «Помилка» would pass against a card that renders both
+// rows identically apart from that word, which is exactly the regression
+// this is here to catch.
+func TestHomeMarksAFailedActionApartFromASuccessfulOne(t *testing.T) {
+	srv, _, lg := newServerWithLog(t)
+
+	appendAlert(t, lg, "worked.wav")
+	if err := lg.Append(eventlog.Entry{
+		Kind:  eventlog.KindPlaybackError,
+		Sound: "broke.wav",
+		OK:    false,
+		Err:   "audio open error: Unknown error 524",
+	}); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+
+	card := cardNamed(t, homeBody(t, srv), "Останні дії")
+
+	if got := strings.Count(card, "border-l-destructive"); got != 1 {
+		t.Errorf("%d rows carry the failure bar, want exactly 1: the failed entry is not marked apart from the one that worked", got)
+	}
+	if got := strings.Count(card, "bg-destructive/10"); got != 1 {
+		t.Errorf("%d rows are tinted as failures, want exactly 1", got)
+	}
+	if !strings.Contains(card, "✕ Помилка") {
+		t.Error("the failed row is marked by colour and shape alone; it must carry the word too")
+	}
+	if !strings.Contains(card, "✓ ОК") {
+		t.Error("the successful row carries no outcome at all, so there is nothing for the failure to stand against")
+	}
+	// The raw error is what an operator takes to /audio or reads over the
+	// phone; a row that says only "Помилка" sends them to /log for it.
+	if !strings.Contains(card, "Unknown error 524") {
+		t.Error("the failed row does not carry the error itself")
+	}
+}
+
+// Three ways there is nothing to show, and they mean very different things:
+// no log on this device at all (a corrupt database, a read-only card), and a
+// log that is simply empty. Both must read as themselves rather than as a
+// blank card — the same three-way separation /log already makes.
+func TestHomeSaysWhyThereIsNoRecentActivity(t *testing.T) {
+	t.Run("no log on the device", func(t *testing.T) {
+		srv, _ := newServerWithStore(t) // Deps.Log is nil
+		card := cardNamed(t, homeBody(t, srv), "Останні дії")
+		if !strings.Contains(card, "Журнал подій недоступний на цьому пристрої.") {
+			t.Errorf("a device with no event log does not say so; card:\n%s", card)
+		}
+	})
+
+	t.Run("nothing logged yet", func(t *testing.T) {
+		srv, _, _ := newServerWithLog(t)
+		card := cardNamed(t, homeBody(t, srv), "Останні дії")
+		if !strings.Contains(card, "Записів поки немає.") {
+			t.Errorf("an empty log reads the same as a missing one; card:\n%s", card)
+		}
+		if strings.Contains(card, "недоступний") {
+			t.Error("an empty log is reported as an unavailable one; they need different fixes")
+		}
+	})
+}
+
+// The Звук card states what the device will play through, in the words
+// /audio already chose for it — the stored PCM verbatim, because that is the
+// string that has to be recognised in a log line or an aplay command typed
+// over SSH, plus the volume and the mixer control that sets it.
+func TestHomeShowsTheConfiguredOutputAndItsVolume(t *testing.T) {
+	srv, _, _ := newServerWithTestSound(t)
+	card := cardNamed(t, homeBody(t, srv), "Звук")
+
+	if !strings.Contains(card, "default") {
+		t.Errorf("the card does not name the stored output; card:\n%s", card)
+	}
+	if !strings.Contains(card, "80 %") {
+		t.Errorf("the card does not carry the master volume; card:\n%s", card)
+	}
+	if !strings.Contains(card, `href="/audio"`) {
+		t.Error("the card does not link to the screen that changes any of this")
+	}
+}
+
+// The test button is a preview, and it has to say so. /play serves both the
+// home page's manual fire — deliberately PriorityAlert, so a scheduled chime
+// cannot cut it short — and this button; without the marker, somebody
+// finding out whether the speaker works would hold the single voice at alert
+// priority with a real air raid alert queued behind them.
+//
+// Pinned on the markup, the same way TestSoundsPreviewFormsDeclareThemselves
+// Previews is, because the priority itself is chosen inside the engine and
+// this field is the only signal that reaches it. The submission below then
+// proves the form is wired to something rather than merely well-spelled.
+func TestHomeTestSoundPlaysAtPreviewPriority(t *testing.T) {
+	srv, _, backend := newServerWithTestSound(t)
+	setPassword(t, srv, "correct horse battery staple")
+	cookie := login(t, srv, "correct horse battery staple")
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.AddCookie(cookie)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+	card := cardNamed(t, rec.Body.String(), "Звук")
+
+	if !strings.Contains(card, `action="/play"`) {
+		t.Fatalf("the test button does not post to /play; card:\n%s", card)
+	}
+	if !strings.Contains(card, `<input type="hidden" name="preview" value="1">`) {
+		t.Error("the test button is not marked a preview: it plays at alert priority and can hold the speaker while a siren waits")
+	}
+	if !strings.Contains(card, `<input type="hidden" name="return" value="/">`) {
+		t.Error("the test button does not name this page as its return, so pressing it walks the operator off the dashboard")
+	}
+
+	// And it reaches the player. testSound prefers all-clear.wav, and
+	// deliberately not the siren: whoever presses this is standing next to
+	// a PA system.
+	form := url.Values{"sound": {"all-clear.wav"}, "preview": {"1"}, "return": {"/"}}
+	play := httptest.NewRequest(http.MethodPost, "/play", strings.NewReader(form.Encode()))
+	play.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	play.Header.Set("Origin", "http://"+play.Host)
+	play.AddCookie(cookie)
+	playRec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(playRec, play)
+
+	if playRec.Code != http.StatusSeeOther {
+		t.Fatalf("POST /play = %d, want 303", playRec.Code)
+	}
+	if got := waitPlayed(t, backend); !strings.HasSuffix(got, "all-clear.wav") {
+		t.Errorf("the player was handed %q, want the test sound", got)
+	}
+}
+
+// Three states, not two: the output opened, the output would not open, and
+// nobody asked. The third is as real as either — it is what this card shows
+// while a siren is playing, because it must not put a second opener on the
+// sound card during the one minute this device exists for, and what it shows
+// when the two-second budget runs out.
+//
+// Claiming the output works when nothing opened it would be the dashboard
+// telling an operator their speakers are fine on the strength of no evidence
+// at all, which is the one thing a card about audibility must never do.
+func TestHomeClaimsNothingAboutAnOutputItDidNotProbe(t *testing.T) {
+	// deviceListerFunc lists outputs but cannot open one — it does not
+	// satisfy the prober assertion — so this is the "nobody could be
+	// asked" case exactly.
+	srv, _, _ := newServerWithTestSound(t)
+	card := cardNamed(t, homeBody(t, srv), "Звук")
+
+	if !strings.Contains(card, "невідомий") {
+		t.Errorf("the card does not say the output's state is unknown; card:\n%s", card)
+	}
+	if strings.Contains(card, "Перевірено щойно") {
+		t.Error("the card says the output was checked when nothing opened it")
+	}
+	if strings.Contains(card, "не відкривається") {
+		t.Error("the card calls an output broken on the strength of a probe that never ran")
+	}
+}
+
+// The operator's own board: the stored output is "default", "default"
+// resolves to the HDMI card, and with nothing plugged into HDMI it will not
+// open at all. That is the state a fresh install ships in, and the dashboard
+// is where it has to be visible.
+func TestHomeSaysWhenTheConfiguredOutputWillNotOpen(t *testing.T) {
+	srv, _ := newServerWithProber(t, realBoardProber())
+	card := cardNamed(t, homeBody(t, srv), "Звук")
+
+	if !strings.Contains(card, "звуку не буде") {
+		t.Errorf("the card does not say that an output which will not open means no sound; card:\n%s", card)
+	}
+	if strings.Contains(card, "Перевірено щойно") {
+		t.Error("the card reports a refused output as a working one")
+	}
+}
+
+// Every dependency this page reads is allowed to be nil — a daemon whose
+// sound directory would not open, a board whose ALSA is broken — and the
+// dashboard has to render regardless. A dashboard that 500s because aplay is
+// missing is a dashboard nobody can use to find out why.
+func TestHomeRendersWithNoAudioDependenciesAtAll(t *testing.T) {
+	srv, _ := newServerWithStore(t) // no Devices, no Library, no Engine
+	card := cardNamed(t, homeBody(t, srv), "Звук")
+
+	if !strings.Contains(card, "Список аудіопристроїв недоступний на цьому пристрої.") {
+		t.Errorf("the card does not say why it knows nothing about the outputs; card:\n%s", card)
+	}
+	// A button whose only possible outcome is a failure message teaches an
+	// operator to distrust the page.
+	if strings.Contains(card, `action="/play"`) {
+		t.Error("the card renders a test button with an empty library behind it")
+	}
+	if !strings.Contains(card, "немає жодного звуку") {
+		t.Error("the card does not say why there is no test button")
+	}
+}
+
+// Six cards in a two-column grid leaves a hole unless two of them are told
+// to span it. Останні дії is one — it is a list of rows and reads better
+// across the full measure, the same argument /log makes for its own table —
+// and the map is the other, which it already was.
+//
+// The order is the claim: what the device is doing now, then what it will do
+// next, then the two controls, then the evidence that any of it works, then
+// the third party's map last. The banner and both standing warnings stay
+// outside the grid entirely, which TestHomeKeepsTheBannerAndItsWarningOutOf
+// TheCardGrid pins.
+func TestHomeLaysTheSixCardsOutWithoutARaggedHole(t *testing.T) {
+	srv, _ := newServerWithStore(t)
+	body := homeBody(t, srv)
+
+	order := []string{"Стан", "Найближча подія", "Ручне відтворення", "Звук", "Останні дії", "Мапа тривог (alerts.in.ua)"}
+	at := make([]int, len(order))
+	for i, heading := range order {
+		at[i] = strings.Index(body, ">"+heading+"</h2>")
+		if at[i] < 0 {
+			t.Fatalf("the %s card is not on the page", heading)
+		}
+		if i > 0 && at[i-1] > at[i] {
+			t.Errorf("%s comes before %s", order[i], order[i-1])
+		}
+	}
+
+	// Two full-width cards among six is what makes the rows come out even.
+	// Counted as a literal class name because Tailwind compiles only the
+	// names it can see in the template.
+	if got := strings.Count(body, "sm:col-span-2"); got != 2 {
+		t.Errorf("%d cards span both columns, want 2: six cards in a two-column grid leave a ragged hole otherwise", got)
+	}
+	// The span lives on the <section> tag, which opens before the heading
+	// cardNamed anchors on — so this reads the tag itself.
+	heading := strings.Index(body, ">Останні дії</h2>")
+	open := strings.LastIndex(body[:heading], "<section")
+	if open < 0 {
+		t.Fatal("the Останні дії heading is not inside a section")
+	}
+	if !strings.Contains(body[open:heading], "sm:col-span-2") {
+		t.Error("Останні дії does not span the grid, so the row it shares ends short")
 	}
 }
