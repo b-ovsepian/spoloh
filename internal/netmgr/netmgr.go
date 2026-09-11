@@ -22,7 +22,7 @@ type Network struct {
 type Status struct {
 	// Connected means joined to an upstream network — not merely that the
 	// wifi device is active, and not only over Wi-Fi: a board on a wall port
-	// in a PA closet is joined to one just as much as a board on the school
+	// in a PA closet is joined to one just as much as a board on the site
 	// Wi-Fi is. It is specifically false while the device is only serving
 	// its own hotspot, because that is the distinction a caller deciding
 	// whether to keep the hotspot up actually needs.

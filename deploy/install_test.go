@@ -566,7 +566,7 @@ func TestATruncatedScriptInstallsNothing(t *testing.T) {
 // Renaming one of them in the Makefile and in deploy/ but not in install.sh
 // leaves `go vet`, `gofmt`, `go test` and `make dist` all clean, and every
 // install in the field 404s against the published release — discovered by a
-// volunteer at a school, which is the one place a bad install cannot be
+// volunteer at a site, which is the one place a bad install cannot be
 // recovered from remotely.
 //
 // This lives beside the installer rather than in cmd/spoloh because

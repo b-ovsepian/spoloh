@@ -20,7 +20,7 @@ const networkScanTimeout = 15 * time.Second
 
 // networkConnectTimeout bounds a join. It is far longer than the scan's: the
 // operator has already committed by pressing the button, and association plus
-// a DHCP lease on a school network genuinely takes tens of seconds. It exists
+// a DHCP lease on the site's network genuinely takes tens of seconds. It exists
 // to stop a wedged NetworkManager holding the goroutine forever, not to keep
 // anyone waiting — see handleNetworkConnect for why the request's own
 // cancellation cannot be used for that.
@@ -245,7 +245,7 @@ func (s *Server) handleNetworkConnect(w http.ResponseWriter, r *http.Request) {
 	// requests promptly. This handler opts out of that too, not only out of
 	// the client going away.
 	//
-	// Both cancellations are removed for the same reason: joining the school
+	// Both cancellations are removed for the same reason: joining the site's
 	// network is what drops the access point the operator submitted this
 	// form over, so their browser losing the connection is the expected
 	// outcome of a successful join, not a failure, and a daemon restart
@@ -254,7 +254,7 @@ func (s *Server) handleNetworkConnect(w http.ResponseWriter, r *http.Request) {
 	// would kill the join at the exact moment it started working and could
 	// leave the device on neither network. The deadline below replaces both
 	// removed cancellations: association plus a DHCP lease can take most of
-	// a minute on a school network, and a wedged NetworkManager must not
+	// a minute on the site's network, and a wedged NetworkManager must not
 	// leak this goroutine.
 	//
 	// This does let a detached nmcli outlive ListenAndServe's return inside

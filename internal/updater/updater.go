@@ -1,7 +1,7 @@
 // Package updater replaces this device's binary with a published release.
 //
 // It is the most dangerous code in the product: it overwrites the executable
-// of a device a school relies on to hear an air raid warning. Every step is
+// of a device a site relies on to hear an air raid warning. Every step is
 // ordered so that a failure at any point leaves a working binary in place —
 // the download is verified before anything is moved, the replacement is
 // proven to execute before it is installed, the previous binary is kept, and
@@ -24,7 +24,7 @@ import (
 	"time"
 )
 
-// downloadTimeout bounds one fetch. A school's connection is often slow and
+// downloadTimeout bounds one fetch. A site's connection is often slow and
 // sometimes a captive portal, so this is generous; it exists to stop a hung
 // TCP connection holding the command forever, not to hurry anyone.
 const downloadTimeout = 5 * time.Minute
@@ -205,7 +205,7 @@ func (u Updater) Apply(ctx context.Context, rel Release) error {
 	// the wrong commit passes every other check here: the checksum is of
 	// whatever was published, and the binary runs. The update would then
 	// "succeed", leave the old version reported, and be re-downloaded and
-	// re-applied on the next run - silently, forever, over a school's
+	// re-applied on the next run - silently, forever, over the site's
 	// connection.
 	reported := strings.TrimSpace(string(out))
 	if reported != rel.Version {

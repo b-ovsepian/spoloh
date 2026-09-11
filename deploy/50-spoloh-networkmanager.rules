@@ -23,7 +23,7 @@
 // Deliberately not granted: enable-disable-network, enable-disable-wifi,
 // sleep-wake, and anything touching the firewall or checkpoints. The daemon
 // never asks for them, and a service that can announce air raid alerts should
-// not also be able to switch the school's networking off.
+// not also be able to switch the site's networking off.
 //
 // UNVERIFIED ON HARDWARE. This has not been run against a real board — no
 // board was available while it was written, and nothing on a development

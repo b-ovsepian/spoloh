@@ -67,7 +67,7 @@ func calls(f *netmgr.Fake, method string) int {
 var boot = time.Date(2026, 9, 7, 8, 0, 0, 0, time.UTC)
 
 func TestConnectedAtBootNeverRaisesTheHotspot(t *testing.T) {
-	f := &netmgr.Fake{CurrentStatus: netmgr.Status{Connected: true, SSID: "ShkolaWiFi"}}
+	f := &netmgr.Fake{CurrentStatus: netmgr.Status{Connected: true, SSID: "SiteWiFi"}}
 	s, clk := supervisor(t, f, boot)
 
 	for i := 0; i < 300; i++ {
@@ -122,7 +122,7 @@ func TestHotspotComesDownWhenTheDeviceJoinsANetwork(t *testing.T) {
 	// still serving the access point reports both at once. On a
 	// single-radio board wlan0 cannot do both jobs, which is exactly why
 	// this transitional state is unreachable there and this rule exists.
-	f.CurrentStatus = netmgr.Status{Connected: true, SSID: "ShkolaWiFi", HotspotUp: true}
+	f.CurrentStatus = netmgr.Status{Connected: true, SSID: "SiteWiFi", HotspotUp: true}
 	clk.Advance(time.Second)
 	s.Tick(context.Background())
 
@@ -134,7 +134,7 @@ func TestHotspotComesDownWhenTheDeviceJoinsANetwork(t *testing.T) {
 // Someone changes the router's password. Without this the device is a brick
 // that needs a monitor and a site visit.
 func TestHotspotReturnsAfterProlongedLoss(t *testing.T) {
-	f := &netmgr.Fake{CurrentStatus: netmgr.Status{Connected: true, SSID: "ShkolaWiFi"}}
+	f := &netmgr.Fake{CurrentStatus: netmgr.Status{Connected: true, SSID: "SiteWiFi"}}
 	s, clk := supervisor(t, f, boot)
 
 	for i := 0; i < 600; i++ { // ten happy minutes
@@ -159,7 +159,7 @@ func TestHotspotReturnsAfterProlongedLoss(t *testing.T) {
 // A network that drops for a moment and comes back must not summon an access
 // point and knock the operator off the dashboard they are looking at.
 func TestABriefFlapRaisesNothing(t *testing.T) {
-	f := &netmgr.Fake{CurrentStatus: netmgr.Status{Connected: true, SSID: "ShkolaWiFi"}}
+	f := &netmgr.Fake{CurrentStatus: netmgr.Status{Connected: true, SSID: "SiteWiFi"}}
 	s, clk := supervisor(t, f, boot)
 
 	s.Tick(context.Background())
@@ -168,7 +168,7 @@ func TestABriefFlapRaisesNothing(t *testing.T) {
 		clk.Advance(time.Second)
 		s.Tick(context.Background())
 	}
-	f.CurrentStatus = netmgr.Status{Connected: true, SSID: "ShkolaWiFi"}
+	f.CurrentStatus = netmgr.Status{Connected: true, SSID: "SiteWiFi"}
 	for i := 0; i < 120; i++ {
 		clk.Advance(time.Second)
 		s.Tick(context.Background())
@@ -258,7 +258,7 @@ func TestFailedStartHotspotLoggingIsThrottled(t *testing.T) {
 // stops it from logging every time.
 func TestFailedStopHotspotLoggingIsThrottled(t *testing.T) {
 	f := &netmgr.Fake{
-		CurrentStatus:  netmgr.Status{Connected: true, SSID: "ShkolaWiFi", HotspotUp: true},
+		CurrentStatus:  netmgr.Status{Connected: true, SSID: "SiteWiFi", HotspotUp: true},
 		StopHotspotErr: errors.New("device busy"),
 	}
 	s, clk, buf := supervisorWithLog(t, f, boot)
@@ -316,7 +316,7 @@ func TestFailureLoggingResumesAfterASuccess(t *testing.T) {
 // it must return promptly when asked to stop and not before, exactly as
 // internal/engine.Engine.Run does.
 func TestRunReturnsOnContextCancellation(t *testing.T) {
-	f := &netmgr.Fake{CurrentStatus: netmgr.Status{Connected: true, SSID: "ShkolaWiFi"}}
+	f := &netmgr.Fake{CurrentStatus: netmgr.Status{Connected: true, SSID: "SiteWiFi"}}
 	s, _ := supervisor(t, f, boot)
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -436,7 +436,7 @@ func TestStatusFailureLoggingResumesAfterASuccess(t *testing.T) {
 
 // midJoin is what the radio reports while a join started from the dashboard
 // is in flight: it has left the access point and has not yet associated with
-// the school network, so it is neither joined to anything nor serving
+// the site's network, so it is neither joined to anything nor serving
 // anything. It is built here rather than produced by Fake.Connect on purpose
 // — Fake.Connect models a board that ends up connected, which is correct for
 // what it models, and a board with an Ethernet upstream legitimately reports

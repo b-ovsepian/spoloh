@@ -13,7 +13,7 @@ import (
 )
 
 // defaultReleases is where published builds live. Overridable so a fork, or a
-// school with a local mirror, needs no rebuild.
+// site with a local mirror, needs no rebuild.
 const defaultReleases = "https://github.com/b-ovsepian/spoloh/releases"
 
 // geteuid is os.Geteuid, replaced in tests. A test may not require root, and
@@ -65,7 +65,7 @@ func runUpdate(args []string, out io.Writer, client *http.Client) int {
 	}
 
 	// Checked before anything is downloaded. A forgotten sudo used to fail
-	// only after the whole ~28 MB binary had come down a school's
+	// only after the whole ~28 MB binary had come down the site's
 	// connection, with "permission denied" and neither the word "root" nor
 	// the word "sudo" anywhere in the message. --check is deliberately
 	// exempt: it writes nothing, and the dashboard's update button will
@@ -81,7 +81,7 @@ func runUpdate(args []string, out io.Writer, client *http.Client) int {
 		return 1
 	}
 
-	// Generous, and separate from the per-download timeout: a school's
+	// Generous, and separate from the per-download timeout: the site's
 	// connection is often slow, and an update that gives up early is an
 	// update nobody can apply.
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)

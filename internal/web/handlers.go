@@ -47,7 +47,7 @@ type homeView struct {
 	// silenced the other way an operator (or a hand-edited config.json) can
 	// reach: volume 0. Either leaves the device unable to announce an air
 	// raid, and it is the one warning on this whole dashboard that must be
-	// impossible not to notice: a school that disables it for a ten-minute
+	// impossible not to notice: an operator who disables it for a ten-minute
 	// PA test and forgets is the worst outcome this product has, and
 	// home.html renders it above everything else, unconditionally, whenever
 	// this is true.

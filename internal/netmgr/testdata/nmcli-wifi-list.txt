@@ -1,5 +1,5 @@
 Kyivstar_Home:82:WPA2
 :64:WPA2
-ShkolaWiFi:57:WPA1 WPA2
+SiteWiFi:57:WPA1 WPA2
 FreeWiFi:41:
 Kyivstar_Home:37:WPA2

@@ -200,7 +200,7 @@ func TestApplyInstallsAndKeepsThePreviousBinary(t *testing.T) {
 func TestApplyRefusesAChecksumMismatchAndChangesNothing(t *testing.T) {
 	// The binary served does not match the checksum published for it. This is
 	// the case that must never install: a truncated download would otherwise
-	// leave a school with a device that cannot start.
+	// leave a site with a device that cannot start.
 	pages := releasePages(binaryBody)
 	pages[base+"/download/v9.9.9/spoloh-linux-armv7"] = stubPage{status: 200, body: "#!/bin/sh\necho tampered\n"}
 	u, binPath, ran := newUpdater(t, pages)
@@ -343,7 +343,7 @@ func TestApplyRefusesABinaryThatReportsADifferentVersion(t *testing.T) {
 	// check here: the checksum is of whatever was published, and the binary
 	// runs. Installing it leaves the device reporting the old version, so
 	// the next run downloads and applies the same release again — silently,
-	// forever, over a school's connection.
+	// forever, over the site's connection.
 	mistagged := "#!/bin/sh\necho v1.0.0\n"
 	u, binPath, ran := newUpdater(t, releasePages(mistagged))
 	rel, _ := u.Latest(context.Background())

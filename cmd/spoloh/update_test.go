@@ -173,7 +173,7 @@ func asRoot(t *testing.T) {
 
 func TestUpdateRefusesToRunWithoutRootAndDownloadsNothing(t *testing.T) {
 	// A forgotten sudo used to fail only after the whole ~28 MB binary had
-	// come down a school's connection, with "permission denied" and neither
+	// come down the site's connection, with "permission denied" and neither
 	// the word "root" nor the word "sudo" anywhere in it.
 	dir := t.TempDir()
 	bin := dir + "/spoloh"

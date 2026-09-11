@@ -180,7 +180,7 @@ func TestSoundsUploadStoresFileAndItAppearsInList(t *testing.T) {
 // case (anything that is not one of the two named sentinels), that text can
 // be developer English or, on a failed conversion, a full ffmpeg stderr
 // transcript — meaningless to someone who just tried to upload a recording
-// of a school bell. Nothing must be added either way.
+// of a doorbell. Nothing must be added either way.
 func TestSoundsUploadWithBadAudioGivesAGenericUkrainianMessage(t *testing.T) {
 	srv, _ := newServerWithLibrary(t, "siren.wav")
 	setPassword(t, srv, "correct horse battery staple")

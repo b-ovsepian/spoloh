@@ -254,7 +254,7 @@ func run(configPath, dataDir, listen string) error {
 	// callers already handle as an ordinary error.
 	netManager := netmgr.NMCLI{}
 	// One gate, two holders: the /network page takes it while it joins the
-	// device to a school network, and the supervisor stands down while it is
+	// device to the site's network, and the supervisor stands down while it is
 	// held. Without it the supervisor raises an access point on top of the
 	// join — mid-join the radio reports neither connected nor hotspot-up,
 	// which past the grace period is precisely the state it acts on. See

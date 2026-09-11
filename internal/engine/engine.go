@@ -273,7 +273,7 @@ func (e *Engine) PollOnce(ctx context.Context) error {
 	// different oblast, so without this the new oblast's first reading is
 	// compared against the old oblast's last one — switch a device from an
 	// oblast under alert to a calm one and it announces an all-clear over
-	// the school's speakers for an alert nobody in that building ever heard;
+	// the site's speakers for an alert nobody in that building ever heard;
 	// switch it the other way and it plays the full siren. Re-baselining
 	// makes the new oblast's first reading silent, exactly as a cold start
 	// is, which is what spec §5.2 requires: never announce a transition the
@@ -357,7 +357,7 @@ func (e *Engine) PlayManual(sound string, volume int) error {
 // and records that it happened.
 //
 // /play goes through PlayManual and leaves a KindManual entry behind; /stop
-// used to call Player.Stop directly and leave nothing, so a school's log
+// used to call Player.Stop directly and leave nothing, so the site's log
 // showed that someone started the siren and never that they stopped it —
 // and stopping is the one dashboard action that can make this device go
 // quiet. Player.Stop cancels the in-flight request as well as the queue,

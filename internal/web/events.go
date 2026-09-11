@@ -398,7 +398,7 @@ func (s *Server) handleEventsAdd(w http.ResponseWriter, r *http.Request) {
 
 // handleEventsDelete removes a scheduled event. alert-start and alert-end
 // are refused: they are why this device exists, and a dashboard that can
-// delete them is one that can quietly turn a school's announcer into an
+// delete them is one that can quietly turn the site's announcer into an
 // ornament. They can still be disabled — see handleEventsSave — which is
 // the reversible way to get the same effect.
 func (s *Server) handleEventsDelete(w http.ResponseWriter, r *http.Request) {

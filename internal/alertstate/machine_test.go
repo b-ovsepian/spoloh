@@ -219,7 +219,7 @@ func TestRestoreWindowTransitions(t *testing.T) {
 // /network can change the configured oblast between two runs of the daemon,
 // and a power cut on these boards is routine. A state file recorded for the
 // old oblast must not be used as evidence about the new one: comparing them
-// is what makes the missed-transition rule announce a siren, over a school's
+// is what makes the missed-transition rule announce a siren, over the site's
 // public address system, for an alert that happened somewhere nobody in that
 // building is.
 func TestRestoreIgnoresStateFromAnotherOblast(t *testing.T) {

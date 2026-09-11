@@ -146,7 +146,7 @@ func (m *Machine) Persisted() Persisted {
 //
 // region is the oblast the caller is configured for. A stored state recorded
 // for any other one is discarded outright, and the machine starts as cold as
-// a first boot. The alternative is announcing over a school's public address
+// a first boot. The alternative is announcing over the site's public address
 // system for something that happened in an oblast nobody in that building is
 // in: /network can change the configured oblast between two runs, and the
 // missed-transition rule below would then compare the new oblast's first

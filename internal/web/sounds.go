@@ -226,7 +226,7 @@ func (s *Server) handleSoundsUpload(w http.ResponseWriter, r *http.Request) {
 	// uploadRejectionMessage) and, on a failed conversion, a full ffmpeg
 	// stderr transcript at worst (see Add's "ffmpeg: %w: %s" wrapping) —
 	// meaningless to someone who just tried to upload a recording of a
-	// school bell. The real error is still logged at Warn, for whoever
+	// site bell. The real error is still logged at Warn, for whoever
 	// reads the device's log.
 	if _, err := s.deps.Library.Add(ctx, header.Filename, file); err != nil {
 		s.deps.Logger.Warn("sounds: upload rejected", "filename", header.Filename, "err", err)

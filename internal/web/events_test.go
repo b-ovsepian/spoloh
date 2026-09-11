@@ -336,7 +336,7 @@ func TestEventsDeleteRemovesAScheduledEvent(t *testing.T) {
 
 // alert-start and alert-end are why this device exists. They are editable and
 // they may be disabled, but a dashboard that can delete them is a dashboard
-// that can quietly turn a school's announcer into an ornament.
+// that can quietly turn the site's announcer into an ornament.
 func TestEventsRefusesToDeleteAnAlertEvent(t *testing.T) {
 	for _, id := range []string{"alert-start", "alert-end"} {
 		srv, store := newServerWithStore(t)

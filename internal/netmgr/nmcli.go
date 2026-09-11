@@ -134,7 +134,7 @@ func execRun(ctx context.Context, name string, args ...string) ([]byte, error) {
 // errEmptyAPPassword is returned rather than raising an open access point.
 // nmcli takes "password" as an optional argument, so omitting it produces an
 // AP anyone within range can join — and joining this one reaches a dashboard
-// that drives a school's public address system. An unreachable device costs a
+// that drives the site's public address system. An unreachable device costs a
 // site visit; an open one lets a stranger sound an air raid alert or silence a
 // real one. config.Validate deliberately still accepts an empty password as
 // the "not generated yet" state, and netmgr.EnsureAPPassword fills it in at
@@ -245,7 +245,7 @@ var nonUpstreamTypes = map[string]bool{
 // access point, not joined to anything upstream; that yields HotspotUp true
 // and Connected false. Telling those two apart by connection name is exactly
 // why StartHotspot pins that name rather than accepting nmcli's default —
-// without it this could not tell "the operator joined the school network"
+// without it this could not tell "the operator joined the site's network"
 // from "the hotspot is still up", which is the one distinction the
 // supervisor built on top of this package needs. The comparison runs against
 // the unescaped connection name, same as the name compared everywhere else
@@ -255,7 +255,7 @@ var nonUpstreamTypes = map[string]bool{
 // wifi or not. A board on a wall port in a PA closet is an ordinary install,
 // and reading it as disconnected is what made it raise Spoloh-Setup after 45
 // seconds and never lower it — a WPA2 access point broadcasting forever whose
-// password reaches a dashboard that drives the school's speakers. SSID is
+// password reaches a dashboard that drives the site's speakers. SSID is
 // still only ever a wifi device's network name: a wired profile is called
 // something like "Wired connection 1", and putting that in front of an
 // operator as an SSID would be a plain lie.

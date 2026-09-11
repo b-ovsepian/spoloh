@@ -825,7 +825,7 @@ const otherRegion = "Львівська область"
 
 // Switching the oblast from one under alert to a calm one must announce
 // nothing. The machine tracks a bare boolean and, without a re-baseline, sees
-// only true becoming false — so it plays a recorded all-clear over a school's
+// only true becoming false — so it plays a recorded all-clear over the site's
 // public address system for an alert nobody in that building ever heard.
 // Spec §5.2 exists precisely so a device never announces a transition it did
 // not witness.

@@ -11,7 +11,7 @@ import (
 // operation this whole package exists to perform. The /network handler gives
 // a join up to networkConnectTimeout; the supervisor ticks every
 // tickInterval. In between leaving the hotspot and associating with the
-// school network the device reports neither Connected nor HotspotUp, and
+// site network the device reports neither Connected nor HotspotUp, and
 // downSince has been set since boot — so past the fallback grace period that
 // mid-join moment is exactly the state that makes the supervisor raise an
 // access point on top of the join it should be waiting for. Association plus

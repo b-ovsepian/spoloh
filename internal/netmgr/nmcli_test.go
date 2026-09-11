@@ -67,8 +67,8 @@ func TestScanParsesRealOutput(t *testing.T) {
 	for _, n := range got {
 		byName[n.SSID] = n
 	}
-	if !byName["ShkolaWiFi"].Secured {
-		t.Error("ShkolaWiFi has WPA1 WPA2 and must be reported as secured")
+	if !byName["SiteWiFi"].Secured {
+		t.Error("SiteWiFi has WPA1 WPA2 and must be reported as secured")
 	}
 	if byName["FreeWiFi"].Secured {
 		t.Error("FreeWiFi has an empty security field and is open")
@@ -129,7 +129,7 @@ func TestStatusParsesRealOutput(t *testing.T) {
 
 // While the device is only serving its own access point, that is not an
 // upstream connection: the supervisor's decision to call StopHotspot once an
-// operator joins the school network depends on Connected being false here.
+// operator joins the site's network depends on Connected being false here.
 func TestStatusReportsHotspotUp(t *testing.T) {
 	rec := &recorder{out: fixture(t, "nmcli-status-hotspot.txt")}
 	m := netmgr.NMCLI{Run: rec.run}
@@ -150,7 +150,7 @@ func TestStatusReportsHotspotUp(t *testing.T) {
 // means "joined to an upstream network", and a board on a wall port is joined
 // to one — reading it as disconnected raised Spoloh-Setup after 45 seconds and
 // never lowered it, broadcasting a WPA2 access point indefinitely whose
-// password reaches a dashboard that drives the school's speakers.
+// password reaches a dashboard that drives the site's speakers.
 func TestStatusReportsAnEthernetUpstreamAsConnected(t *testing.T) {
 	rec := &recorder{out: fixture(t, "nmcli-status-ethernet.txt")}
 	m := netmgr.NMCLI{Run: rec.run}
@@ -212,13 +212,13 @@ func TestConnectPassesArgumentsWithoutAShell(t *testing.T) {
 	rec := &recorder{}
 	m := netmgr.NMCLI{Run: rec.run}
 
-	if err := m.Connect(context.Background(), "Shkola; rm -rf /", "p4ss w0rd"); err != nil {
+	if err := m.Connect(context.Background(), "Site; rm -rf /", "p4ss w0rd"); err != nil {
 		t.Fatalf("Connect: %v", err)
 	}
 	argv := rec.argv[0]
 	var sawSSID, sawPSK bool
 	for _, a := range argv {
-		if a == "Shkola; rm -rf /" {
+		if a == "Site; rm -rf /" {
 			sawSSID = true
 		}
 		if a == "p4ss w0rd" {
@@ -247,7 +247,7 @@ func TestScanToleratesMalformedAndEmptyOutput(t *testing.T) {
 		{"line missing the security field", []byte("Kyivstar_Home:82")},
 		{"line with only a colon", []byte(":")},
 		{"trailing newline after a good line", []byte("FreeWiFi:41:\n")},
-		{"blank line between good lines", []byte("FreeWiFi:41:\n\nShkolaWiFi:57:WPA2\n")},
+		{"blank line between good lines", []byte("FreeWiFi:41:\n\nSiteWiFi:57:WPA2\n")},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -305,7 +305,7 @@ func TestConnectFailureRedactsPassword(t *testing.T) {
 	}
 	m := netmgr.NMCLI{Run: rec.run}
 
-	err := m.Connect(context.Background(), "SchoolWiFi", psk)
+	err := m.Connect(context.Background(), "SiteWiFi", psk)
 	if err == nil {
 		t.Fatal("a failed Connect must return an error")
 	}
@@ -446,7 +446,7 @@ func TestStatusDoesNotTreatAMalformedEscapeAsTheHotspot(t *testing.T) {
 func TestStartHotspotRefusesAnEmptyPassword(t *testing.T) {
 	// nmcli treats "password" as optional, so an empty one raises an access
 	// point anyone in range can join — reaching a dashboard that drives a
-	// school's public address system. Refusing is the safer failure: an
+	// site's public address system. Refusing is the safer failure: an
 	// unreachable device costs a site visit, an open one costs control of the
 	// alerts themselves.
 	rec := &recorder{}

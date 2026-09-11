@@ -134,7 +134,7 @@ func TestNetworkConnectWithNilNetworkManagerDoesNotPanic(t *testing.T) {
 	before := store.Get().Alerts.Region
 
 	req := postForm("/network", url.Values{
-		"ssid": {"ShkolaWiFi"}, "password": {"schoolpass1"}, "region": {"м. Київ"},
+		"ssid": {"SiteWiFi"}, "password": {"sitepass1"}, "region": {"м. Київ"},
 	})
 	req.AddCookie(cookie)
 	rec := httptest.NewRecorder()
@@ -157,7 +157,7 @@ func TestNetworkConnectRejectsCrossOrigin(t *testing.T) {
 	cookie := login(t, srv, "correct horse battery staple")
 
 	req := postForm("/network", url.Values{
-		"ssid": {"ShkolaWiFi"}, "password": {"schoolpass1"}, "region": {"м. Київ"},
+		"ssid": {"SiteWiFi"}, "password": {"sitepass1"}, "region": {"м. Київ"},
 	})
 	req.AddCookie(cookie)
 	req.Header.Set("Sec-Fetch-Site", "cross-site")
@@ -181,7 +181,7 @@ func TestNetworkConnectSucceedsAndStoresRegion(t *testing.T) {
 	cookie := login(t, srv, "correct horse battery staple")
 
 	req := postForm("/network", url.Values{
-		"ssid": {"ShkolaWiFi"}, "password": {"schoolpass1"}, "region": {"Львівська область"},
+		"ssid": {"SiteWiFi"}, "password": {"sitepass1"}, "region": {"Львівська область"},
 	})
 	req.AddCookie(cookie)
 	rec := httptest.NewRecorder()
@@ -195,7 +195,7 @@ func TestNetworkConnectSucceedsAndStoresRegion(t *testing.T) {
 	if len(calls) != 1 || calls[0].Method != "Connect" {
 		t.Fatalf("calls = %+v, want exactly one Connect call", calls)
 	}
-	if calls[0].SSID != "ShkolaWiFi" || calls[0].PSK != "schoolpass1" {
+	if calls[0].SSID != "SiteWiFi" || calls[0].PSK != "sitepass1" {
 		t.Fatalf("Connect called with SSID=%q PSK=%q, want the exact submitted values", calls[0].SSID, calls[0].PSK)
 	}
 	if got := store.Get().Alerts.Region; got != "Львівська область" {
@@ -215,7 +215,7 @@ func TestNetworkConnectFailureLeavesRegionUnchanged(t *testing.T) {
 	fake.ConnectErr = errors.New("Secrets flag is not valid")
 
 	req := postForm("/network", url.Values{
-		"ssid": {"ShkolaWiFi"}, "password": {"wrongpass"}, "region": {"Одеська область"},
+		"ssid": {"SiteWiFi"}, "password": {"wrongpass"}, "region": {"Одеська область"},
 	})
 	req.AddCookie(cookie)
 	rec := httptest.NewRecorder()
@@ -243,7 +243,7 @@ func TestNetworkConnectRejectsAnUnknownRegion(t *testing.T) {
 	before := store.Get().Alerts.Region
 
 	req := postForm("/network", url.Values{
-		"ssid": {"ShkolaWiFi"}, "password": {"schoolpass1"}, "region": {"Марсіанська область"},
+		"ssid": {"SiteWiFi"}, "password": {"sitepass1"}, "region": {"Марсіанська область"},
 	})
 	req.AddCookie(cookie)
 	rec := httptest.NewRecorder()
@@ -274,7 +274,7 @@ func TestNetworkConnectSuccessShowsAddresses(t *testing.T) {
 	cookie := login(t, srv, "correct horse battery staple")
 
 	req := postForm("/network", url.Values{
-		"ssid": {"ShkolaWiFi"}, "password": {"schoolpass1"}, "region": {"Харківська область"},
+		"ssid": {"SiteWiFi"}, "password": {"sitepass1"}, "region": {"Харківська область"},
 	})
 	req.AddCookie(cookie)
 	rec := httptest.NewRecorder()
@@ -288,7 +288,7 @@ func TestNetworkConnectSuccessShowsAddresses(t *testing.T) {
 	}
 }
 
-// The school Wi-Fi password the operator types must never come back out of
+// The site Wi-Fi password the operator types must never come back out of
 // the server, in any form — this project has already had one finding about a
 // query parameter echoed onto a page.
 func TestNetworkConnectNeverEchoesThePassword(t *testing.T) {
@@ -297,9 +297,9 @@ func TestNetworkConnectNeverEchoesThePassword(t *testing.T) {
 	setPassword(t, srv, "correct horse battery staple")
 	cookie := login(t, srv, "correct horse battery staple")
 
-	const secret = "SuperSecretSchoolPassword1"
+	const secret = "SuperSecretSitePassword1"
 	req := postForm("/network", url.Values{
-		"ssid": {"ShkolaWiFi"}, "password": {secret}, "region": {"Сумська область"},
+		"ssid": {"SiteWiFi"}, "password": {secret}, "region": {"Сумська область"},
 	})
 	req.AddCookie(cookie)
 	rec := httptest.NewRecorder()
@@ -329,7 +329,7 @@ func (p *connectProbe) Connect(ctx context.Context, ssid, psk string) error {
 	return nil
 }
 
-// Joining the school network is what drops the access point the operator
+// Joining the site's network is what drops the access point the operator
 // submitted this form over, so their browser losing the connection is the
 // expected outcome of a successful join. Go cancels a request's context the
 // moment the client goes away and nmcli runs under exec.CommandContext, so a
@@ -348,7 +348,7 @@ func TestNetworkConnectSurvivesTheClientDisconnecting(t *testing.T) {
 	setPassword(t, srv, "correct horse battery staple")
 	cookie := login(t, srv, "correct horse battery staple")
 
-	form := url.Values{"ssid": {"ShkolaWiFi"}, "password": {"sp0lohTest42"}, "region": {alertsource.Regions()[0]}}
+	form := url.Values{"ssid": {"SiteWiFi"}, "password": {"sp0lohTest42"}, "region": {alertsource.Regions()[0]}}
 	req := httptest.NewRequest(http.MethodPost, "/network", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Origin", "http://"+req.Host)
@@ -405,7 +405,7 @@ func TestNetworkConnectSuccessWarnsWhenTheRegionCouldNotBeSaved(t *testing.T) {
 	t.Cleanup(func() { os.Chmod(dir, 0o700) })
 
 	req := postForm("/network", url.Values{
-		"ssid": {"ShkolaWiFi"}, "password": {"schoolpass1"}, "region": {"Чернігівська область"},
+		"ssid": {"SiteWiFi"}, "password": {"sitepass1"}, "region": {"Чернігівська область"},
 	})
 	req.AddCookie(cookie)
 	rec := httptest.NewRecorder()
@@ -435,7 +435,7 @@ func TestNetworkConnectPlainSuccessCarriesNoRegionWarning(t *testing.T) {
 	cookie := login(t, srv, "correct horse battery staple")
 
 	req := postForm("/network", url.Values{
-		"ssid": {"ShkolaWiFi"}, "password": {"schoolpass1"}, "region": {"Чернігівська область"},
+		"ssid": {"SiteWiFi"}, "password": {"sitepass1"}, "region": {"Чернігівська область"},
 	})
 	req.AddCookie(cookie)
 	rec := httptest.NewRecorder()
@@ -478,7 +478,7 @@ func newServerWithManager(t *testing.T, mgr netmgr.Manager, gate *netmgr.JoinGat
 	return srv, store
 }
 
-// The join is what takes the radio off the access point and onto the school
+// The join is what takes the radio off the access point and onto the site's
 // network, and for the tens of seconds that takes the device looks to the
 // supervisor like a device with no network at all. Unless this handler holds
 // the gate for the length of the join, the supervisor raises an access point
@@ -495,7 +495,7 @@ func TestNetworkConnectHoldsTheJoinGateForTheJoin(t *testing.T) {
 	}
 
 	req := postForm("/network", url.Values{
-		"ssid": {"ShkolaWiFi"}, "password": {"schoolpass1"}, "region": {"Львівська область"},
+		"ssid": {"SiteWiFi"}, "password": {"sitepass1"}, "region": {"Львівська область"},
 	})
 	req.AddCookie(cookie)
 	rec := httptest.NewRecorder()
@@ -523,7 +523,7 @@ func TestNetworkConnectReleasesTheJoinGateOnFailure(t *testing.T) {
 	cookie := login(t, srv, "correct horse battery staple")
 
 	req := postForm("/network", url.Values{
-		"ssid": {"ShkolaWiFi"}, "password": {"wrong"}, "region": {"Львівська область"},
+		"ssid": {"SiteWiFi"}, "password": {"wrong"}, "region": {"Львівська область"},
 	})
 	req.AddCookie(cookie)
 	rec := httptest.NewRecorder()
