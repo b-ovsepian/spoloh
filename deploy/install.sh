@@ -118,19 +118,37 @@ main() {
     # spoloh.local that does not resolve. try-restart does nothing at all if
     # avahi is not installed, so it costs nothing to always run it.
     systemctl try-restart avahi-daemon
-    # Raspberry Pi OS ships `127.0.1.1 raspberrypi`, and a rename that leaves
-    # it there makes every later sudo print "unable to resolve host spoloh".
-    # Harmless to the daemon, alarming to a volunteer who has just set the
-    # device up and has no way to tell a cosmetic warning from a real one.
-    #
-    # Written by copying over the existing file rather than renaming a new
-    # one into place, so /etc/hosts keeps the mode and owner it already has
-    # instead of whatever this shell's umask would have given it.
-    HOSTS="$PREFIX/etc/hosts"
-    if [ -f "$HOSTS" ]; then
-      { grep -v '^127\.0\.1\.1[[:space:]]' "$HOSTS" || true; printf '127.0.1.1\tspoloh\n'; } > "$TMP/hosts"
-      cat "$TMP/hosts" > "$HOSTS"
-    fi
+  fi
+
+  # Raspberry Pi OS ships `127.0.1.1 raspberrypi`, and a hostname that line
+  # does not name makes every later sudo print "unable to resolve host".
+  # Harmless to the daemon, alarming to a volunteer who has just set the
+  # device up and has no way to tell a cosmetic warning from a real one.
+  #
+  # Deliberately outside the rename above rather than part of it. A device
+  # installed by an earlier version of this script is already called spoloh
+  # and still has raspberrypi in its hosts file, because that version never
+  # touched it; a repair that only ran on the renaming pass would skip
+  # exactly the devices that have been in the field longest. So this asks
+  # what the hostname is now - whoever set it - and makes the line agree.
+  #
+  # Three things it must not do: change anything when the line already names
+  # the host (the grep below is what makes a re-run a true no-op, not just a
+  # rewrite with the same bytes), touch a hosts file that has no 127.0.1.1
+  # line at all (that is somebody's deliberate configuration and not ours to
+  # rewrite), or move the line - hence sed in place of a filter and an
+  # append; the replacement carries a literal tab, because "\t" in a sed
+  # replacement is a GNU extension that other seds render as the letter t.
+  # It is copied over the existing file rather than renamed into
+  # place, so /etc/hosts keeps the mode and owner it already has instead of
+  # whatever this shell's umask would have given it.
+  HOSTS="$PREFIX/etc/hosts"
+  NAME="$(hostname)"
+  if [ -f "$HOSTS" ] && grep -q '^127\.0\.1\.1[[:space:]]' "$HOSTS" &&
+     ! grep -q "^127\.0\.1\.1[[:space:]]\{1,\}$NAME\([[:space:]]\|$\)" "$HOSTS"; then
+    say "pointing the 127.0.1.1 entry in /etc/hosts at $NAME"
+    sed "s|^127\.0\.1\.1[[:space:]].*|127.0.1.1	$NAME|" "$HOSTS" > "$TMP/hosts"
+    cat "$TMP/hosts" > "$HOSTS"
   fi
 
   # 8. Start it. `enable --now` is not enough on a re-run: on an already-active

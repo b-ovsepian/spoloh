@@ -44,11 +44,16 @@ func newInstallerCmd(t *testing.T, downloads, uname string, extraEnv ...string) 
 		"systemd-sysusers": "#!/bin/sh\necho \"systemd-sysusers $*\" >> \"$SPOLOH_TEST_LOG\"\n",
 		"systemd-tmpfiles": "#!/bin/sh\necho \"systemd-tmpfiles $*\" >> \"$SPOLOH_TEST_LOG\"\n",
 		"systemctl":        "#!/bin/sh\necho \"systemctl $*\" >> \"$SPOLOH_TEST_LOG\"\n",
-		"hostnamectl":      "#!/bin/sh\necho \"hostnamectl $*\" >> \"$SPOLOH_TEST_LOG\"\n",
+		// set-hostname is recorded, and the hostname fake below reads it
+		// back, because the script asks for the hostname again after the
+		// rename to repair /etc/hosts. A fake that kept answering with the
+		// old name would make that repair untestable and, worse, make a
+		// wrong answer look right.
+		"hostnamectl": "#!/bin/sh\necho \"hostnamectl $*\" >> \"$SPOLOH_TEST_LOG\"\nif [ \"$1\" = set-hostname ]; then echo \"$2\" > \"$SPOLOH_TEST_HOSTNAME_FILE\"; fi\n",
 		// The non-`-I` branch defaults to a hostname that is not "spoloh",
 		// so the every-test-but-one path exercises the rename; overridden via
 		// SPOLOH_TEST_HOSTNAME by the idempotence test below.
-		"hostname": "#!/bin/sh\nif [ \"$1\" = -I ]; then echo 192.168.1.50; else echo \"${SPOLOH_TEST_HOSTNAME:-raspberrypi}\"; fi\n",
+		"hostname": "#!/bin/sh\nif [ \"$1\" = -I ]; then echo 192.168.1.50; elif [ -f \"$SPOLOH_TEST_HOSTNAME_FILE\" ]; then cat \"$SPOLOH_TEST_HOSTNAME_FILE\"; else echo \"${SPOLOH_TEST_HOSTNAME:-raspberrypi}\"; fi\n",
 		"curl":     "#!/bin/sh\nwhile [ $# -gt 0 ]; do case $1 in -o) out=$2; shift 2;; -*) shift;; *) url=$1; shift;; esac; done\ncp \"$SPOLOH_TEST_DOWNLOADS/$(basename \"$url\")\" \"$out\"\n",
 		// install -D and sha256sum are GNU coreutils; a developer's macOS has
 		// neither. These shims are faithful to the two behaviours the script
@@ -80,6 +85,7 @@ func newInstallerCmd(t *testing.T, downloads, uname string, extraEnv ...string) 
 		"SPOLOH_BASE_URL=https://example.invalid/releases",
 		"SPOLOH_TEST_LOG="+logPath,
 		"SPOLOH_TEST_DOWNLOADS="+downloads,
+		"SPOLOH_TEST_HOSTNAME_FILE="+filepath.Join(root, "hostname"),
 		// No config.json will ever appear in these runs, and a test may not
 		// sleep on a real clock. The password test overrides this; the SIGTERM
 		// test raises it just enough to still be inside the wait loop when the
@@ -265,47 +271,93 @@ func TestInstallerPrintsTheAccessPointPassword(t *testing.T) {
 	}
 }
 
-func TestInstallerPointsTheLoopbackHostEntryAtTheNewHostname(t *testing.T) {
-	// Raspberry Pi OS ships `127.0.1.1 raspberrypi`. Renaming the host and
-	// leaving that line makes every later sudo print "unable to resolve host
-	// spoloh" — harmless to the daemon, alarming to a volunteer who has just
-	// set the device up and cannot tell a cosmetic warning from a real one.
-	dir := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(dir, "etc"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	hosts := filepath.Join(dir, "etc", "hosts")
-	if err := os.WriteFile(hosts, []byte("127.0.0.1\tlocalhost\n127.0.1.1\traspberrypi\n::1\tip6-localhost\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+// The 127.0.1.1 line is what stops sudo printing "unable to resolve host"
+// after the rename. Harmless to the daemon, alarming to a volunteer who has
+// just set the device up and cannot tell a cosmetic warning from a real one.
+//
+// The repair runs on every install, not only on the one that does the
+// renaming: a device installed by an earlier version of this script is
+// already called spoloh and still has raspberrypi in its hosts file, because
+// that version never touched it. A repair that only ran on the renaming pass
+// would skip exactly the devices that have been in the field longest.
+func TestInstallerKeepsTheLoopbackHostEntryOnTheHostname(t *testing.T) {
+	const (
+		renamed  = "127.0.0.1\tlocalhost\n127.0.1.1\traspberrypi\n::1\tip6-localhost\n"
+		repaired = "127.0.0.1\tlocalhost\n127.0.1.1\tspoloh\n::1\tip6-localhost\n"
+	)
+	for name, tc := range map[string]struct {
+		hosts    string
+		hostname string // SPOLOH_TEST_HOSTNAME, "" for the default raspberrypi
+		want     string
+		changed  bool
+	}{
+		// The ordinary first install: this run renames the board, and the
+		// hosts entry has to follow it.
+		"a device being renamed now": {hosts: renamed, want: repaired, changed: true},
+		// The case the earlier, rename-only version of this left behind
+		// forever.
+		"a device already named spoloh whose hosts file still says otherwise": {
+			hosts: renamed, hostname: "spoloh", want: repaired, changed: true,
+		},
+		// Rewriting the line to the value it already holds must not be a
+		// rewrite at all.
+		"a device whose hosts file is already right": {
+			hosts: repaired, hostname: "spoloh", want: repaired,
+		},
+		// Aliases after the hostname are somebody's addition and the line
+		// already names the host, so there is nothing to repair.
+		"a hosts entry that names the host and then an alias": {
+			hosts:    "127.0.1.1\tspoloh\tpa-system\n",
+			hostname: "spoloh",
+			want:     "127.0.1.1\tspoloh\tpa-system\n",
+		},
+		// No 127.0.1.1 line at all is a deliberate configuration, and not
+		// ours to invent one in.
+		"a hosts file with no loopback host entry": {
+			hosts: "127.0.0.1\tlocalhost\n::1\tip6-localhost\n",
+			want:  "127.0.0.1\tlocalhost\n::1\tip6-localhost\n",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			if err := os.MkdirAll(filepath.Join(dir, "etc"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			hosts := filepath.Join(dir, "etc", "hosts")
+			if err := os.WriteFile(hosts, []byte(tc.hosts), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			env := []string{"SPOLOH_PREFIX=" + dir}
+			if tc.hostname != "" {
+				env = append(env, "SPOLOH_TEST_HOSTNAME="+tc.hostname)
+			}
 
-	report, err := runInstaller(t, downloadDir(t, ""), "armv7l", "SPOLOH_PREFIX="+dir)
-	if err != nil {
-		t.Fatalf("installer failed: %v\n%s", err, report)
-	}
+			report, err := runInstaller(t, downloadDir(t, ""), "armv7l", env...)
+			if err != nil {
+				t.Fatalf("installer failed: %v\n%s", err, report)
+			}
 
-	got := readFile(hosts)
-	if !strings.Contains(got, "127.0.1.1\tspoloh") {
-		t.Errorf("/etc/hosts has no loopback entry for the new hostname:\n%s", got)
-	}
-	if strings.Contains(got, "raspberrypi") {
-		t.Errorf("the old hostname is still in /etc/hosts:\n%s", got)
-	}
-	// Everything else in the file is somebody's else's business and must
-	// survive untouched.
-	for _, keep := range []string{"127.0.0.1\tlocalhost", "::1\tip6-localhost"} {
-		if !strings.Contains(got, keep) {
-			t.Errorf("the installer dropped %q from /etc/hosts:\n%s", keep, got)
-		}
-	}
-	// Written by copying over the file in place, so its mode is the one it
-	// already had rather than whatever this shell's umask allows.
-	info, err := os.Stat(hosts)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if mode := info.Mode().Perm(); mode != 0o644 {
-		t.Errorf("/etc/hosts is %v, want -rw-r--r--", mode)
+			if got := readFile(hosts); got != tc.want {
+				t.Errorf("/etc/hosts is\n%q\nwant\n%q\n%s", got, tc.want, report)
+			}
+			// A run that changes nothing must also say nothing: the line
+			// is what tells a reader of the transcript that the file was
+			// rewritten, so a silent rewrite and a noisy no-op are both
+			// wrong.
+			if said := strings.Contains(report, "pointing the 127.0.1.1 entry"); said != tc.changed {
+				t.Errorf("installer reported rewriting the entry = %v, want %v\n%s", said, tc.changed, report)
+			}
+			// Copied over the existing file rather than renamed into
+			// place, so its mode is the one it already had rather than
+			// whatever this shell's umask allows.
+			info, err := os.Stat(hosts)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if mode := info.Mode().Perm(); mode != 0o644 {
+				t.Errorf("/etc/hosts is %v, want -rw-r--r--", mode)
+			}
+		})
 	}
 }
 
