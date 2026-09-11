@@ -336,5 +336,14 @@ func copyFile(from, to string) error {
 		os.Remove(to + ".tmp")
 		return err
 	}
-	return os.Rename(to+".tmp", to)
+	if err := os.Rename(to+".tmp", to); err != nil {
+		return err
+	}
+	// Set, not requested. The 0o755 above is masked by the umask of whoever
+	// ran the command, and sudo does not reset a user's umask: at umask 077
+	// this produced a -rwx------ rollback snapshot, and a Rollback that
+	// restored /usr/local/bin/spoloh itself at -rwx------, which the unit's
+	// User=spoloh cannot execute. The mechanism that exists to rescue a
+	// device must not be the one that bricks it.
+	return os.Chmod(to, 0o755)
 }

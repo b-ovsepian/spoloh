@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/b-ovsepian/spoloh/internal/updater"
@@ -293,5 +294,46 @@ func TestApplyRefusesWhenTheBinaryWasNeverPublished(t *testing.T) {
 	_, err := u.Latest(context.Background())
 	if err == nil || !strings.Contains(err.Error(), "dev") {
 		t.Fatalf("err = %v, want a refusal naming the unpublished build", err)
+	}
+}
+
+// TestApplyAndRollbackIgnoreTheInvokingUmask covers the one path that can
+// brick a device: Rollback is the mechanism that exists to rescue one.
+//
+// Apply chmods the downloaded binary explicitly, but the rollback snapshot
+// and the restore both go through copyFile, which passed 0o755 to OpenFile —
+// a request, not a setting, since the umask masks it. sudo does not reset a
+// user's umask, so a volunteer with umask 077 in their shell got a .previous
+// at -rwx------ and, after a rollback, a /usr/local/bin/spoloh at -rwx------,
+// which User=spoloh in the unit cannot execute. The device would then be
+// down with no binary anyone can run and no way in but the SD card.
+func TestApplyAndRollbackIgnoreTheInvokingUmask(t *testing.T) {
+	old := syscall.Umask(0o077)
+	t.Cleanup(func() { syscall.Umask(old) })
+
+	u, binPath, _ := newUpdater(t, releasePages(binaryBody))
+	rel, err := u.Latest(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := u.Apply(context.Background(), rel); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	mustBeExecutable(t, binPath+".previous", "the rollback snapshot")
+
+	if err := u.Rollback(context.Background()); err != nil {
+		t.Fatalf("Rollback: %v", err)
+	}
+	mustBeExecutable(t, binPath, "the restored binary")
+}
+
+func mustBeExecutable(t *testing.T, path, what string) {
+	t.Helper()
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("%s: %v", what, err)
+	}
+	if mode := info.Mode().Perm(); mode != 0o755 {
+		t.Errorf("%s is %v, want -rwxr-xr-x: the unit runs as User=spoloh and cannot execute it", what, mode)
 	}
 }
