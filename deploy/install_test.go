@@ -53,8 +53,18 @@ func newInstallerCmd(t *testing.T, downloads, uname string, extraEnv ...string) 
 		// The non-`-I` branch defaults to a hostname that is not "spoloh",
 		// so the every-test-but-one path exercises the rename; overridden via
 		// SPOLOH_TEST_HOSTNAME by the idempotence test below.
-		"hostname": "#!/bin/sh\nif [ \"$1\" = -I ]; then echo 192.168.1.50; elif [ -f \"$SPOLOH_TEST_HOSTNAME_FILE\" ]; then cat \"$SPOLOH_TEST_HOSTNAME_FILE\"; else echo \"${SPOLOH_TEST_HOSTNAME:-raspberrypi}\"; fi\n",
-		"curl":     "#!/bin/sh\nwhile [ $# -gt 0 ]; do case $1 in -o) out=$2; shift 2;; -*) shift;; *) url=$1; shift;; esac; done\ncp \"$SPOLOH_TEST_DOWNLOADS/$(basename \"$url\")\" \"$out\"\n",
+		// SPOLOH_TEST_HOSTNAME_FAILS and _EMPTY are checked before the
+		// recorded name, so they survive the rename: a board where
+		// `hostname` is missing or answers nothing is a board where it
+		// does so for the whole run.
+		"hostname": "#!/bin/sh\n" +
+			"if [ \"$1\" = -I ]; then echo 192.168.1.50\n" +
+			"elif [ -n \"${SPOLOH_TEST_HOSTNAME_FAILS:-}\" ]; then exit 127\n" +
+			"elif [ -n \"${SPOLOH_TEST_HOSTNAME_EMPTY:-}\" ]; then echo \"\"\n" +
+			"elif [ -f \"$SPOLOH_TEST_HOSTNAME_FILE\" ]; then cat \"$SPOLOH_TEST_HOSTNAME_FILE\"\n" +
+			"else echo \"${SPOLOH_TEST_HOSTNAME:-raspberrypi}\"\n" +
+			"fi\n",
+		"curl": "#!/bin/sh\nwhile [ $# -gt 0 ]; do case $1 in -o) out=$2; shift 2;; -*) shift;; *) url=$1; shift;; esac; done\ncp \"$SPOLOH_TEST_DOWNLOADS/$(basename \"$url\")\" \"$out\"\n",
 		// install -D and sha256sum are GNU coreutils; a developer's macOS has
 		// neither. These shims are faithful to the two behaviours the script
 		// depends on, so the checksum gate is still genuinely exercised rather
@@ -288,6 +298,7 @@ func TestInstallerKeepsTheLoopbackHostEntryOnTheHostname(t *testing.T) {
 	for name, tc := range map[string]struct {
 		hosts    string
 		hostname string // SPOLOH_TEST_HOSTNAME, "" for the default raspberrypi
+		env      string // an extra fake-hostname knob, "" for none
 		want     string
 		changed  bool
 	}{
@@ -317,6 +328,33 @@ func TestInstallerKeepsTheLoopbackHostEntryOnTheHostname(t *testing.T) {
 			hosts: "127.0.0.1\tlocalhost\n::1\tip6-localhost\n",
 			want:  "127.0.0.1\tlocalhost\n::1\tip6-localhost\n",
 		},
+		// Everything after the first name on the line is somebody's
+		// addition and has to survive the repair. Only the name is
+		// replaced.
+		"aliases on the entry being repaired": {
+			hosts:   "127.0.0.1\tlocalhost\n127.0.1.1\traspberrypi\tpa-system\tbell\n",
+			want:    "127.0.0.1\tlocalhost\n127.0.1.1\tspoloh\tpa-system\tbell\n",
+			changed: true,
+		},
+		// Two of them is an unusual file somebody built on purpose.
+		// Which one is "the" host entry is not ours to decide.
+		"two loopback host entries": {
+			hosts: "127.0.1.1\traspberrypi\n127.0.1.1\told-name\n",
+			want:  "127.0.1.1\traspberrypi\n127.0.1.1\told-name\n",
+		},
+		// A hostname of "" would write `127.0.1.1` with no name at all,
+		// destroying the working entry it was repairing.
+		"a hostname that answers nothing": {
+			hosts: renamed, env: "SPOLOH_TEST_HOSTNAME_EMPTY=1", want: renamed,
+		},
+		// The blocker this table's last two cases exist for: `hostname`
+		// is called in a bare assignment now, so a board without it used
+		// to kill the script under `set -eu` after every file was placed
+		// and before the unit was ever enabled — a half-installed device
+		// with no banner saying so.
+		"a hostname that fails": {
+			hosts: renamed, env: "SPOLOH_TEST_HOSTNAME_FAILS=1", want: renamed,
+		},
 	} {
 		t.Run(name, func(t *testing.T) {
 			dir := t.TempDir()
@@ -331,6 +369,9 @@ func TestInstallerKeepsTheLoopbackHostEntryOnTheHostname(t *testing.T) {
 			if tc.hostname != "" {
 				env = append(env, "SPOLOH_TEST_HOSTNAME="+tc.hostname)
 			}
+			if tc.env != "" {
+				env = append(env, tc.env)
+			}
 
 			report, err := runInstaller(t, downloadDir(t, ""), "armv7l", env...)
 			if err != nil {
@@ -339,6 +380,18 @@ func TestInstallerKeepsTheLoopbackHostEntryOnTheHostname(t *testing.T) {
 
 			if got := readFile(hosts); got != tc.want {
 				t.Errorf("/etc/hosts is\n%q\nwant\n%q\n%s", got, tc.want, report)
+			}
+			// Asserted in every case, because this repair sits between
+			// placing the files and starting the unit: anything here
+			// that stops the script leaves a device with the binary on
+			// disk, no unit enabled, and no banner saying so. That is
+			// the half-installed device the whole script is arranged to
+			// prevent, and `hostname` failing on an unusual board must
+			// not be able to cause it.
+			for _, want := range []string{"systemctl restart spoloh", "Spoloh is installed."} {
+				if !strings.Contains(report, want) {
+					t.Errorf("the install did not finish: no %q\n%s", want, report)
+				}
 			}
 			// A run that changes nothing must also say nothing: the line
 			// is what tells a reader of the transcript that the file was

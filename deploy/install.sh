@@ -132,22 +132,37 @@ main() {
   # exactly the devices that have been in the field longest. So this asks
   # what the hostname is now - whoever set it - and makes the line agree.
   #
-  # Three things it must not do: change anything when the line already names
-  # the host (the grep below is what makes a re-run a true no-op, not just a
-  # rewrite with the same bytes), touch a hosts file that has no 127.0.1.1
-  # line at all (that is somebody's deliberate configuration and not ours to
-  # rewrite), or move the line - hence sed in place of a filter and an
-  # append; the replacement carries a literal tab, because "\t" in a sed
-  # replacement is a GNU extension that other seds render as the letter t.
-  # It is copied over the existing file rather than renamed into
-  # place, so /etc/hosts keeps the mode and owner it already has instead of
-  # whatever this shell's umask would have given it.
+  # What it will not do: change anything when the line already names the
+  # host (the second grep is what makes a re-run a true no-op, not a rewrite
+  # with the same bytes), touch a hosts file that does not have exactly one
+  # 127.0.1.1 line (none means somebody removed it on purpose; more than one
+  # means an arrangement where picking "the" host entry is a guess, and this
+  # is a file an operator may have configured deliberately), drop whatever
+  # follows the name on that line (aliases are somebody's addition and only
+  # the name is replaced), move the line (hence sed in place rather than a
+  # filter and an append), or write an entry with no name on it at all.
+  #
+  # The replacement carries a literal tab rather than \t: POSIX does not say
+  # what a backslash escape means in a sed replacement, so implementations
+  # are free to differ and a literal tab is the spelling that cannot be read
+  # two ways.
+  #
+  # It is copied over the existing file rather than renamed into place, so
+  # /etc/hosts keeps the mode and owner it has instead of whatever this
+  # shell's umask would have given it.
+  #
+  # `hostname` is read with its failure absorbed. This is a bare assignment,
+  # not an `if` condition, so under `set -eu` a board where hostname is
+  # missing or fails would otherwise kill the script here - after every file
+  # is placed and the host renamed, and before the unit is ever enabled. A
+  # cosmetic repair must not be able to produce a half-installed device.
   HOSTS="$PREFIX/etc/hosts"
-  NAME="$(hostname)"
-  if [ -f "$HOSTS" ] && grep -q '^127\.0\.1\.1[[:space:]]' "$HOSTS" &&
-     ! grep -q "^127\.0\.1\.1[[:space:]]\{1,\}$NAME\([[:space:]]\|$\)" "$HOSTS"; then
+  NAME="$(hostname 2>/dev/null || true)"
+  if [ -n "$NAME" ] && [ -f "$HOSTS" ] &&
+     [ "$(grep -c '^127\.0\.1\.1[[:space:]]' "$HOSTS")" = 1 ] &&
+     ! grep -q "^127\.0\.1\.1[[:space:]][[:space:]]*$NAME\([[:space:]]\|$\)" "$HOSTS"; then
     say "pointing the 127.0.1.1 entry in /etc/hosts at $NAME"
-    sed "s|^127\.0\.1\.1[[:space:]].*|127.0.1.1	$NAME|" "$HOSTS" > "$TMP/hosts"
+    sed "s|^\(127\.0\.1\.1\)[[:space:]][[:space:]]*[^[:space:]]*|\1	$NAME|" "$HOSTS" > "$TMP/hosts"
     cat "$TMP/hosts" > "$HOSTS"
   fi
 
