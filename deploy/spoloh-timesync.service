@@ -1,0 +1,38 @@
+[Unit]
+Description=Apply Spoloh's configured NTP server to systemd-timesyncd
+Documentation=https://github.com/b-ovsepian/spoloh
+# The daemon starts this unit itself, through polkit
+# (deploy/50-spoloh-timedate.rules pins manage-units to this one unit name),
+# right after it has written /etc/spoloh/ntp-server. It is not enabled and
+# has no [Install] section: nothing starts it at boot, because the drop-in
+# it writes is already on disk from the last time it ran.
+
+[Service]
+Type=oneshot
+# This exists because the NTP server is the one time setting timedatectl
+# cannot change. It lives in /etc/systemd/timesyncd.conf.d/, which is
+# root-owned, and spoloh runs as an unprivileged user that cannot write
+# there.
+#
+# The split of work is deliberate. The unprivileged daemon contributes one
+# token — a hostname or an IP, already refused by config.Validate's
+# allow-list if it carries a newline, a quote, a space or an "=" — and root,
+# here, decides what file that token goes into and what shape the file
+# takes. The daemon never writes a line of timesyncd configuration itself,
+# so a value that somehow got past validation still cannot become a
+# directive of its own choosing: it can only ever be the right-hand side of
+# this one NTP= line.
+#
+# An empty or missing /etc/spoloh/ntp-server means "use whatever the
+# distribution configures", and the drop-in is removed rather than left
+# holding a server nobody asked for any more.
+#
+# Written as one `sh -c` with no backslash escapes and no % characters, so
+# that neither systemd's own unescaping nor its specifier expansion can
+# change what the shell receives.
+ExecStart=/bin/sh -c 'set -eu; d=/etc/systemd/timesyncd.conf.d; f=$d/spoloh.conf; s=$(cat /etc/spoloh/ntp-server 2>/dev/null || true); mkdir -p $d; if [ -n "$s" ]; then echo "[Time]" > $f; echo "NTP=$s" >> $f; chmod 0644 $f; else rm -f $f; fi'
+# Restarted rather than reloaded: timesyncd re-reads its configuration only
+# at start, and a `try-restart` would do nothing at all on a board where the
+# service is stopped — which is exactly the board whose operator has just
+# gone looking for the time settings.
+ExecStart=/bin/systemctl restart systemd-timesyncd

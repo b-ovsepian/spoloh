@@ -142,6 +142,8 @@ func downloadDir(t *testing.T, corrupt string) string {
 		"spoloh.sysusers":                "u spoloh\n",
 		"spoloh.tmpfiles":                "d /etc/spoloh\n",
 		"50-spoloh-networkmanager.rules": "polkit.addRule(function(){});\n",
+		"spoloh-timesync.service":        "[Unit]\n",
+		"50-spoloh-timedate.rules":       "polkit.addRule(function(){});\n",
 	}
 	var sums strings.Builder
 	for name, body := range files {
@@ -171,6 +173,12 @@ func TestInstallerPlacesEveryFileAndStartsTheUnit(t *testing.T) {
 		"usr/lib/sysusers.d/spoloh.conf",
 		"usr/lib/tmpfiles.d/spoloh.conf",
 		"etc/polkit-1/rules.d/50-spoloh-networkmanager.rules",
+		// The /time page cannot work without either of these: the polkit
+		// rule is what lets an unprivileged daemon call timedatectl at all,
+		// and the oneshot is the only thing that can write the NTP server
+		// into root-owned /etc/systemd/timesyncd.conf.d/.
+		"etc/systemd/system/spoloh-timesync.service",
+		"etc/polkit-1/rules.d/50-spoloh-timedate.rules",
 	} {
 		if !strings.Contains(report, want) {
 			t.Errorf("%s was not installed\n%s", want, report)
@@ -645,5 +653,172 @@ func TestTheMakefileAndTheInstallerAgreeOnTheDeploymentFilenames(t *testing.T) {
 	}
 	if !slices.Equal(copied, fetched) {
 		t.Errorf("the Makefile ships %v but install.sh downloads %v; every install in the field would 404 on the difference", copied, fetched)
+	}
+}
+
+// The polkit rule is the most security-sensitive file in this directory.
+// org.freedesktop.systemd1.manage-units, granted unconditionally, would let
+// anything that reaches the dashboard over HTTP start, stop or restart any
+// unit on the board — sshd, the firewall, this daemon's own supervision —
+// from a device whose whole job is to be reachable by whoever is standing in
+// front of it. The grant is therefore pinned to one unit name and one verb,
+// and this test is what keeps it pinned: an edit that widens it passes
+// gofmt, go vet and every other test in this repository, and would be
+// discovered only by somebody reading the file.
+//
+// Nothing here can prove the rule works — polkit cannot be exercised from a
+// development machine, and neither this rule nor the NetworkManager one
+// beside it has been confirmed on hardware. What it proves is the narrower
+// and more checkable claim: that the file grants exactly the four actions it
+// is supposed to, and that the dangerous one is qualified.
+func TestTheTimedatePolkitRuleGrantsOnlyItsFourActions(t *testing.T) {
+	rule, err := os.ReadFile("50-spoloh-timedate.rules")
+	if err != nil {
+		t.Fatalf("read the rule: %v", err)
+	}
+
+	// Comments name every action in prose; only the code may be read for
+	// what is actually granted.
+	var code strings.Builder
+	for _, line := range strings.Split(string(rule), "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), "//") {
+			continue
+		}
+		code.WriteString(line)
+		code.WriteString("\n")
+	}
+	body := code.String()
+
+	granted := regexp.MustCompile(`action\.id === "([^"]+)"`).FindAllStringSubmatch(body, -1)
+	var ids []string
+	for _, m := range granted {
+		ids = append(ids, m[1])
+	}
+	sort.Strings(ids)
+	want := []string{
+		"org.freedesktop.systemd1.manage-units",
+		"org.freedesktop.timedate1.set-ntp",
+		"org.freedesktop.timedate1.set-time",
+		"org.freedesktop.timedate1.set-timezone",
+	}
+	if !slices.Equal(ids, want) {
+		t.Errorf("the rule names %v, want exactly %v; every extra action is one more thing an HTTP request can do as root", ids, want)
+	}
+
+	// The manage-units grant has to be qualified before it can return YES.
+	// Read from the action id to the decision that follows it: everything
+	// the grant depends on is in between.
+	idx := strings.Index(body, `"org.freedesktop.systemd1.manage-units"`)
+	if idx < 0 {
+		t.Fatal("the rule no longer grants manage-units; the NTP server cannot be applied without it")
+	}
+	rest := body[idx:]
+	end := strings.Index(rest, "polkit.Result.YES")
+	if end < 0 {
+		t.Fatal("manage-units is named but nothing grants it; the NTP server cannot be applied")
+	}
+	condition := rest[:end]
+	for _, qualifier := range []string{
+		`action.lookup("unit") === "spoloh-timesync.service"`,
+		`action.lookup("verb") === "start"`,
+	} {
+		if !strings.Contains(condition, qualifier) {
+			t.Errorf("manage-units is granted without %s; that grant lets an HTTP request act on any unit on the board", qualifier)
+		}
+	}
+
+	// An unlisted action must fall through to the system's own decision
+	// rather than to a grant.
+	if !strings.Contains(body, "polkit.Result.NOT_HANDLED") {
+		t.Error("the rule has no NOT_HANDLED default; an action it does not name must not be decided here")
+	}
+	if !strings.Contains(body, `subject.user !== "spoloh"`) {
+		t.Error("the rule does not check the subject is the spoloh service account")
+	}
+}
+
+// The unit name is written down in three places in two languages — the
+// polkit rule that pins the grant to it, the Go constant the daemon starts,
+// and the unit file itself. Two of them agreeing and the third not is a
+// daemon whose every NTP-server save is denied by polkit, with nothing in
+// the Go build or this shell script to say why.
+func TestThePolkitRuleAndTheDaemonAgreeOnTheTimesyncUnitName(t *testing.T) {
+	const unit = "spoloh-timesync.service"
+
+	if _, err := os.Stat(unit); err != nil {
+		t.Fatalf("the unit file itself is missing: %v", err)
+	}
+	rule, err := os.ReadFile("50-spoloh-timedate.rules")
+	if err != nil {
+		t.Fatalf("read the rule: %v", err)
+	}
+	if !bytes.Contains(rule, []byte(`action.lookup("unit") === "`+unit+`"`)) {
+		t.Errorf("the polkit rule does not pin its manage-units grant to %s", unit)
+	}
+	source, err := os.ReadFile("../internal/timedate/timedatectl.go")
+	if err != nil {
+		t.Fatalf("read the daemon's side: %v", err)
+	}
+	if !bytes.Contains(source, []byte(`timesyncUnit = "`+unit+`"`)) {
+		t.Errorf("internal/timedate no longer starts %s; polkit grants that name and no other", unit)
+	}
+	script, err := os.ReadFile("install.sh")
+	if err != nil {
+		t.Fatalf("read install.sh: %v", err)
+	}
+	if !bytes.Contains(script, []byte("/etc/systemd/system/"+unit)) {
+		t.Errorf("install.sh does not place %s where systemd will find it", unit)
+	}
+}
+
+// The oneshot runs as root and writes a file root parses. What keeps that
+// safe is that the shape of the file is decided here, by root, and the
+// unprivileged daemon contributes only the value on the right-hand side of
+// NTP=. A unit that took the whole stanza from /etc/spoloh would hand that
+// decision to the side of the boundary that must not have it.
+func TestTheTimesyncUnitWritesTheStanzaItselfAndClearsItWhenEmpty(t *testing.T) {
+	unit, err := os.ReadFile("spoloh-timesync.service")
+	if err != nil {
+		t.Fatalf("read the unit: %v", err)
+	}
+	body := string(unit)
+	var exec []string
+	for _, line := range strings.Split(body, "\n") {
+		if strings.HasPrefix(line, "ExecStart=") {
+			exec = append(exec, line)
+		}
+	}
+	if len(exec) == 0 {
+		t.Fatal("the unit runs nothing")
+	}
+	joined := strings.Join(exec, "\n")
+
+	for _, want := range []string{
+		`echo "[Time]"`,                       // the stanza is written here, by root
+		`echo "NTP=$s"`,                       // the daemon supplies only this value
+		"/etc/spoloh/ntp-server",              // ... and only through this file
+		"/etc/systemd/timesyncd.conf.d",       // the directory the daemon cannot write
+		"rm -f $f",                            // an empty server removes the drop-in
+		"systemctl restart systemd-timesyncd", // timesyncd re-reads only at start
+	} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("the unit's ExecStart does not carry %q:\n%s", want, joined)
+		}
+	}
+	// A % in a unit file is a systemd specifier, not a printf verb, and
+	// backslash escapes are resolved before the shell ever sees the line.
+	// Either one silently changes what root runs.
+	if strings.Contains(joined, "%") {
+		t.Errorf("the unit's ExecStart contains a %% specifier, which systemd expands before sh sees it:\n%s", joined)
+	}
+	if strings.Contains(joined, `\`) {
+		t.Errorf("the unit's ExecStart contains a backslash escape, which systemd resolves before sh sees it:\n%s", joined)
+	}
+	// A section header, not the word in a comment: the unit's own comments
+	// explain why it has no [Install] section.
+	for _, line := range strings.Split(body, "\n") {
+		if strings.TrimSpace(line) == "[Install]" {
+			t.Error("the oneshot has an [Install] section; nothing should start it at boot but the daemon itself")
+		}
 	}
 }

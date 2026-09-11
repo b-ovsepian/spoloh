@@ -60,7 +60,7 @@ main() {
   trap 'exit 143' TERM
   cd "$TMP"
 
-  FILES="spoloh-$ARCH spoloh.service spoloh.sysusers spoloh.tmpfiles 50-spoloh-networkmanager.rules"
+  FILES="spoloh-$ARCH spoloh.service spoloh.sysusers spoloh.tmpfiles 50-spoloh-networkmanager.rules spoloh-timesync.service 50-spoloh-timedate.rules"
 
   for f in $FILES SHA256SUMS; do
     say "downloading $f"
@@ -85,13 +85,17 @@ main() {
   say "checksums verified"
 
   # 4. Dependencies. avahi-daemon is what makes spoloh.local resolve;
-  #    network-manager is what lets the device raise its own access point.
+  #    network-manager is what lets the device raise its own access point;
+  #    systemd-timesyncd is what the /time page switches on and points at an
+  #    NTP server, and it is a separate package on Debian rather than part of
+  #    systemd itself - a board without it shows the time settings and has
+  #    nothing behind the synchronisation switch.
   if command -v apt-get >/dev/null 2>&1; then
     say "installing packages"
     DEBIAN_FRONTEND=noninteractive apt-get update -qq
-    DEBIAN_FRONTEND=noninteractive apt-get install -y -qq alsa-utils ffmpeg avahi-daemon network-manager
+    DEBIAN_FRONTEND=noninteractive apt-get install -y -qq alsa-utils ffmpeg avahi-daemon network-manager systemd-timesyncd
   else
-    say "warning: no apt-get; install alsa-utils, ffmpeg, avahi-daemon and network-manager yourself"
+    say "warning: no apt-get; install alsa-utils, ffmpeg, avahi-daemon, network-manager and systemd-timesyncd yourself"
   fi
 
   # 5. Files.
@@ -100,6 +104,12 @@ main() {
   install -D -m 0644 spoloh.sysusers               "$PREFIX/usr/lib/sysusers.d/spoloh.conf"
   install -D -m 0644 spoloh.tmpfiles               "$PREFIX/usr/lib/tmpfiles.d/spoloh.conf"
   install -D -m 0644 50-spoloh-networkmanager.rules "$PREFIX/etc/polkit-1/rules.d/50-spoloh-networkmanager.rules"
+  # The oneshot that carries the configured NTP server into
+  # /etc/systemd/timesyncd.conf.d/, and the polkit rule that lets the daemon
+  # set the clock and start that one unit by name. Neither is enabled: the
+  # daemon starts the unit itself when the operator saves a time server.
+  install -D -m 0644 spoloh-timesync.service       "$PREFIX/etc/systemd/system/spoloh-timesync.service"
+  install -D -m 0644 50-spoloh-timedate.rules      "$PREFIX/etc/polkit-1/rules.d/50-spoloh-timedate.rules"
 
   # 6. The user and the directories. Without systemd-tmpfiles --create the
   #    unit's ReadWritePaths=-/etc/spoloh silently skips its write exception and

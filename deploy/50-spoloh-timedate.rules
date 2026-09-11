@@ -1,0 +1,78 @@
+// Polkit rule letting the spoloh service account set the clock, the time
+// zone and the NTP switch, and start one named unit.
+//
+// Install to /etc/polkit-1/rules.d/50-spoloh-timedate.rules.
+//
+// Why this is needed: spoloh runs as User=spoloh (see spoloh.service), and
+// systemd-timedated's D-Bus API is polkit-gated. A system service has no
+// active login session, so its requests fall to polkit's inactive/any
+// defaults rather than the allow_active ones a desktop user gets. Without a
+// rule, every timedatectl call the /time page makes is denied and the
+// operator is back to an SSH session for a device that is meant to need
+// none.
+//
+// The three timedate1 actions granted are the ones the daemon actually
+// performs, and no others:
+//
+//   set-timezone  the zone picker, which also writes config.Device.Timezone
+//   set-ntp       the synchronisation switch
+//   set-time      setting the clock by hand, which systemd itself refuses
+//                 while set-ntp is on
+//
+// Deliberately not granted: set-local-rtc. The dashboard reports LocalRTC
+// and never changes it, and a service that can announce air raid alerts
+// should not also be able to reinterpret the hardware clock.
+//
+// The fourth grant is the one to read carefully.
+// org.freedesktop.systemd1.manage-units is how the daemon starts
+// spoloh-timesync.service, the root oneshot that carries the configured NTP
+// server into /etc/systemd/timesyncd.conf.d/ — a directory this daemon
+// cannot write. Granted unconditionally, that action would let anything
+// reaching the dashboard over HTTP start, stop or restart any unit on the
+// board: sshd, the firewall, this daemon's own watchdog. So it is pinned to
+// one unit name and one verb, through the details systemd puts on the
+// action:
+//
+//   action.lookup("unit") === "spoloh-timesync.service"
+//   action.lookup("verb") === "start"
+//
+// Both checks, not either. A rule that matched the unit but not the verb
+// would also permit stop and restart of it, which is harmless for a oneshot
+// but is not the thing that was asked for; a rule that matched neither is
+// the hole described above. The unit name here and the timesyncUnit
+// constant in internal/timedate/timedatectl.go have to agree — change one
+// and polkit denies the other.
+//
+// UNVERIFIED ON HARDWARE. Neither this file nor the NetworkManager rule
+// beside it has been run against a real board; nothing on a development
+// machine can exercise polkit against systemd-timedated. The actions are
+// read off the operations in internal/timedate/timedatectl.go and the
+// shape is copied from 50-spoloh-networkmanager.rules, but treat it as a
+// hypothesis until an install has confirmed it. If the /time page reports
+// "Не вдалося прочитати налаштування часу" or refuses every change on a
+// board that does have timedatectl, this file is the first place to look:
+// check `journalctl -u polkit` for a denial naming one of the actions
+// above.
+//
+// polkit >= 0.106 reads this JavaScript format. Distributions still
+// shipping polkit 0.105 (Debian bullseye and older) ignore rules.d entirely
+// and need the equivalent as a .pkla file under
+// /etc/polkit-1/localauthority/50-local.d/ instead. The target board is
+// Debian 13 with polkit 126, so this format is the right one for it.
+
+polkit.addRule(function (action, subject) {
+    if (subject.user !== "spoloh") {
+        return polkit.Result.NOT_HANDLED;
+    }
+    if (action.id === "org.freedesktop.timedate1.set-timezone" ||
+        action.id === "org.freedesktop.timedate1.set-ntp" ||
+        action.id === "org.freedesktop.timedate1.set-time") {
+        return polkit.Result.YES;
+    }
+    if (action.id === "org.freedesktop.systemd1.manage-units" &&
+        action.lookup("unit") === "spoloh-timesync.service" &&
+        action.lookup("verb") === "start") {
+        return polkit.Result.YES;
+    }
+    return polkit.Result.NOT_HANDLED;
+});

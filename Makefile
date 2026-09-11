@@ -33,8 +33,8 @@ dist:
 	# that does not carry it leaves the README fetching the script from main
 	# while the script installs a tagged release, so the two can drift for
 	# the whole window between a merge and the next tag.
-	cp deploy/install.sh deploy/spoloh.service deploy/spoloh.sysusers deploy/spoloh.tmpfiles deploy/50-spoloh-networkmanager.rules dist/
-	cd dist && sha256sum spoloh-linux-* install.sh spoloh.service spoloh.sysusers spoloh.tmpfiles 50-spoloh-networkmanager.rules > SHA256SUMS
+	cp deploy/install.sh deploy/spoloh.service deploy/spoloh.sysusers deploy/spoloh.tmpfiles deploy/50-spoloh-networkmanager.rules deploy/spoloh-timesync.service deploy/50-spoloh-timedate.rules dist/
+	cd dist && sha256sum spoloh-linux-* install.sh spoloh.service spoloh.sysusers spoloh.tmpfiles 50-spoloh-networkmanager.rules spoloh-timesync.service 50-spoloh-timedate.rules > SHA256SUMS
 
 clean:
 	rm -rf dist spoloh
