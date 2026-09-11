@@ -1,0 +1,16 @@
+null
+    Discard all samples (playback) or generate zero samples (capture)
+default
+    Playback/recording through the PLUG plugin
+sysdefault:CARD=Headphones
+    bcm2835 Headphones, bcm2835 Headphones
+    Default Audio Device
+dmix:CARD=Headphones,DEV=0
+    bcm2835 Headphones, bcm2835 Headphones
+    Direct sample mixing device
+hdmi:CARD=vc4hdmi0,DEV=0
+    vc4-hdmi-0, MAI PCM i2s-hifi-0
+    HDMI Audio Output
+sysdefault:CARD=Device
+    USB Audio Device, USB Audio
+    Default Audio Device
