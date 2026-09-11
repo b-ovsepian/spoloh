@@ -106,20 +106,66 @@ func TestLatestReadsTheTagFromTheRedirect(t *testing.T) {
 }
 
 func TestLatestRefusesARedirectThatDoesNotLandOnATagPage(t *testing.T) {
-	// A redirect to anything else that still answers 200 — a login page is
-	// the realistic case — must not be read as a version. Accepting it would
-	// not install anything unsafe (the bogus URL still 404s or fails its
-	// checksum, and Apply refuses either way), but it would report "download
-	// failed: 404" instead of naming the real cause, and on a headless board
-	// the error message is the entire diagnostic surface.
-	pages := releasePages(binaryBody)
-	pages[base+"/latest"] = stubPage{status: 302, location: base + "/login"}
-	pages[base+"/login"] = stubPage{status: 200, body: "login page"}
+	// Neither case installs anything unsafe by itself (the bogus URL still
+	// 404s or fails its checksum, and Apply refuses either way), but both
+	// would report "download failed: 404" instead of naming the real cause,
+	// and on a headless board the error message is the entire diagnostic
+	// surface.
+	cases := map[string]struct {
+		location string
+		extra    map[string]stubPage
+	}{
+		// A login page is the realistic case a redirect could land on
+		// instead of a release.
+		"redirect lands on an unrelated page": {
+			location: base + "/login",
+			extra:    map[string]stubPage{base + "/login": {status: 200, body: "login page"}},
+		},
+		// A trailing slash with no version after it: path.Base alone would
+		// read this as tag "tag" (Base drops the empty final path element),
+		// which is exactly the bug this test exists to catch — the segment
+		// before the version must be checked after the trailing slash is
+		// accounted for, not before.
+		"redirect lands on the tag index with no version": {
+			location: base + "/tag/",
+			extra:    map[string]stubPage{base + "/tag/": {status: 200, body: "release index"}},
+		},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			pages := releasePages(binaryBody)
+			pages[base+"/latest"] = stubPage{status: 302, location: tc.location}
+			for url, page := range tc.extra {
+				pages[url] = page
+			}
+			u, _, _ := newUpdater(t, pages)
+
+			_, err := u.Latest(context.Background())
+			if err == nil {
+				t.Fatal("Latest accepted a redirect that did not land on a tag page")
+			}
+		})
+	}
+}
+
+func TestLatestAcceptsAVersionWithoutALeadingV(t *testing.T) {
+	// The redirect-shape check must not also guess at the version string's
+	// own format: a project may tag "1.2.3" as readily as "v1.2.3", and
+	// rejecting one would be a guess about someone else's conventions.
+	pages := map[string]stubPage{
+		base + "/latest":                            {status: 302, location: base + "/tag/1.2.3"},
+		base + "/tag/1.2.3":                         {status: 200, body: "release page"},
+		base + "/download/1.2.3/spoloh-linux-armv7": {status: 200, body: binaryBody},
+		base + "/download/1.2.3/SHA256SUMS":         {status: 200, body: sum(binaryBody) + "  spoloh-linux-armv7\n"},
+	}
 	u, _, _ := newUpdater(t, pages)
 
-	_, err := u.Latest(context.Background())
-	if err == nil {
-		t.Fatal("Latest accepted a redirect that did not land on a tag page")
+	rel, err := u.Latest(context.Background())
+	if err != nil {
+		t.Fatalf("Latest: %v", err)
+	}
+	if rel.Version != "1.2.3" {
+		t.Errorf("Version = %q, want 1.2.3", rel.Version)
 	}
 }
 

@@ -116,25 +116,34 @@ func (u Updater) Latest(ctx context.Context) (Release, error) {
 	}
 	// resp.Request is the last request the client made, so this is where the
 	// redirect landed. GitHub always redirects /latest to .../tag/<version>,
-	// so the check is that the segment right before the last one is
-	// literally "tag" — not a blocklist of strings a landing page happens
-	// not to be. A login page, or a redirect that collapses back onto the
-	// releases root, both answer 200 and would otherwise read as a version
-	// to download; nothing they produce is unsafe (the bogus URL still 404s
-	// or fails its checksum, and Apply refuses either way), but it costs the
+	// so the check is that the path's last two segments are literally "tag"
+	// and then a non-empty version — not a blocklist of strings a landing
+	// page happens not to be. A login page, a redirect that collapses back
+	// onto the releases root, or one that lands on .../tag/ with no version
+	// after it, all answer 200 and would otherwise read as a version to
+	// download; nothing they produce is unsafe (the bogus URL still 404s or
+	// fails its checksum, and Apply refuses either way), but it costs the
 	// diagnosis — the operator sees "download failed: 404" instead of the
 	// real cause, and on a headless board the error message is the entire
-	// diagnostic surface. This deliberately does not also constrain the
-	// version string's own shape: a project may tag "1.2.3" as readily as
-	// "v1.2.3", and rejecting that would be a guess about someone else's
-	// conventions.
-	tag := path.Base(resp.Request.URL.Path)
-	if tag == "" || tag == "." || tag == "/" {
-		return Release{}, fmt.Errorf("could not read a version from %q", resp.Request.URL)
-	}
-	if seg := path.Base(path.Dir(resp.Request.URL.Path)); seg != "tag" {
+	// diagnostic surface.
+	//
+	// Splitting the cleaned path into segments and checking the last two of
+	// them, rather than checking path.Base and path.Dir separately, is what
+	// catches the trailing-slash case: path.Base("/releases/tag/") is "tag"
+	// (Base drops the empty final element), so a check built from Base and
+	// Dir alone would compare "tag" against "tag" and let it through. Here,
+	// trimming the trailing slash before splitting turns ".../tag/" into
+	// [..., "releases", "tag"], so "tag" ends up as the version and
+	// "releases" as the segment before it — rejected, and rejected for
+	// having no version rather than for the version being a reserved word.
+	// This also does not constrain the version string's own shape beyond
+	// being non-empty: a project may tag "1.2.3" as readily as "v1.2.3", and
+	// rejecting one would be a guess about someone else's conventions.
+	parts := strings.Split(strings.Trim(path.Clean(resp.Request.URL.Path), "/"), "/")
+	if len(parts) < 2 || parts[len(parts)-2] != "tag" || parts[len(parts)-1] == "" {
 		return Release{}, fmt.Errorf("expected the redirect from /latest to land on a .../tag/<version> page, got %q", resp.Request.URL)
 	}
+	tag := parts[len(parts)-1]
 	return Release{
 		Version:     tag,
 		BinaryURL:   fmt.Sprintf("%s/download/%s/spoloh-%s", u.BaseURL, tag, u.Arch),
