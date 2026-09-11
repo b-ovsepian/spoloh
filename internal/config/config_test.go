@@ -204,3 +204,81 @@ func TestEventCategory(t *testing.T) {
 		t.Fatalf("got %q, want %q", got, config.CategoryScheduled)
 	}
 }
+
+// Every applies_to a stored config.json can hold must keep loading, whatever
+// it says — the empty list, both categories, a category this build has never
+// heard of. A device that refuses to start over this field trades a
+// suppressed alert for a dead announcer, which is the worse of the two, and
+// that has been true since before alerts were selectable at all.
+func TestValidateAcceptsEveryQuietHoursCategoryList(t *testing.T) {
+	lists := [][]string{
+		nil,
+		{},
+		{config.CategoryScheduled},
+		{config.CategoryAlerts},
+		{config.CategoryAlerts, config.CategoryScheduled},
+		{"alarms"},                 // an older or newer spelling
+		{"scheduled", "scheduled"}, // a duplicated checkbox submission
+		{"", "alerts", "🙂"},        // junk a hand edit can leave behind
+	}
+	for _, list := range lists {
+		c := config.Default()
+		c.QuietHours.Enabled = true
+		c.QuietHours.AppliesTo = list
+		if err := c.Validate(); err != nil {
+			t.Errorf("Validate with applies_to %q = %v, want nil — this field must never stop a device starting", list, err)
+		}
+	}
+}
+
+func TestQuietHoursCoversAndSilencesAlerts(t *testing.T) {
+	tests := []struct {
+		name         string
+		qh           config.QuietHours
+		covers       string
+		wantCovers   bool
+		wantSilences bool
+	}{
+		{
+			name:         "the shipped default covers scheduled only",
+			qh:           config.Default().QuietHours,
+			covers:       config.CategoryScheduled,
+			wantCovers:   true,
+			wantSilences: false,
+		},
+		{
+			name:         "alerts listed on an enabled window silences them",
+			qh:           config.QuietHours{Enabled: true, AppliesTo: []string{config.CategoryAlerts}},
+			covers:       config.CategoryAlerts,
+			wantCovers:   true,
+			wantSilences: true,
+		},
+		{
+			// The whole point of SilencesAlerts folding in Enabled: a list
+			// naming alerts on a window nobody switched on silences nothing,
+			// and a warning shown for it would be a warning about nothing.
+			name:         "alerts listed on a disabled window silences nothing",
+			qh:           config.QuietHours{Enabled: false, AppliesTo: []string{config.CategoryAlerts}},
+			covers:       config.CategoryAlerts,
+			wantCovers:   true,
+			wantSilences: false,
+		},
+		{
+			name:         "a category nobody knows matches nothing",
+			qh:           config.QuietHours{Enabled: true, AppliesTo: []string{"alarms"}},
+			covers:       config.CategoryAlerts,
+			wantCovers:   false,
+			wantSilences: false,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.qh.Covers(tc.covers); got != tc.wantCovers {
+				t.Errorf("Covers(%q) = %v, want %v", tc.covers, got, tc.wantCovers)
+			}
+			if got := tc.qh.SilencesAlerts(); got != tc.wantSilences {
+				t.Errorf("SilencesAlerts() = %v, want %v", got, tc.wantSilences)
+			}
+		})
+	}
+}

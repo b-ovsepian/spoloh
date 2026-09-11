@@ -4,6 +4,7 @@ package config
 import (
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 )
@@ -20,6 +21,8 @@ const (
 
 // Quiet-hour categories. Quiet hours default to suppressing CategoryScheduled
 // only: an announcer that goes silent at night is silent when it matters most.
+// CategoryAlerts is a choice the operator has to make deliberately — see
+// QuietHours.AppliesTo and internal/web's /events form.
 const (
 	CategoryAlerts    = "alerts"
 	CategoryScheduled = "scheduled"
@@ -105,10 +108,51 @@ type Audio struct {
 }
 
 type QuietHours struct {
-	Enabled   bool     `json:"enabled"`
-	From      string   `json:"from"`
-	To        string   `json:"to"`
+	Enabled bool   `json:"enabled"`
+	From    string `json:"from"`
+	To      string `json:"to"`
+
+	// AppliesTo lists the categories the window actually silences, and it
+	// is the whole of the rule: rules.ForEvent suppresses an event when the
+	// clock is inside the window and the event's category is in here, with
+	// nothing else behind it.
+	//
+	// It used to have something else behind it. CategoryAlerts was accepted
+	// into this list and then ignored, so that no configuration could keep
+	// an air raid alert silent. The operator asked for that gate to come
+	// off after running the device on a wall, knowing what it means, and
+	// this list is now taken at its word. What replaces the old guarantee
+	// is not another guarantee but three obligations, each of them real
+	// code: the dashboard refuses to add CategoryAlerts here without a
+	// typed confirmation, the state is stated plainly on the screens while
+	// it is on, and every alert it silences leaves an
+	// eventlog.KindAlertSuppressed row behind.
+	//
+	// Validate does not check this field at all, and must not start. Every
+	// value a stored config.json can hold has to keep loading: a device
+	// that refuses to start over this field trades a suppressed alert for a
+	// dead announcer, which is the worse of the two.
 	AppliesTo []string `json:"applies_to"`
+}
+
+// Covers reports whether category is one this window silences. An
+// unrecognised category matches nothing, which is why Validate can afford to
+// accept whatever a hand-edited file put here: a value this build does not
+// know cannot silence anything.
+func (q QuietHours) Covers(category string) bool {
+	return slices.Contains(q.AppliesTo, category)
+}
+
+// SilencesAlerts reports whether this device is configured to keep an air
+// raid alert silent inside its quiet-hours window. It is the condition the
+// dashboard's standing warning and the /events form's warning both test, so
+// the two can never disagree about whether the state is on.
+//
+// Unlike Covers it folds in Enabled, because that is the question an
+// operator is really asking: a category list naming alerts on a window that
+// is switched off silences nothing.
+func (q QuietHours) SilencesAlerts() bool {
+	return q.Enabled && q.Covers(CategoryAlerts)
 }
 
 // Event covers both alert announcements and scheduled announcements. Time and
@@ -294,6 +338,10 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("quiet_hours.to: %w", err)
 		}
 	}
+	// quiet_hours.applies_to is deliberately not checked, for any value,
+	// including one this build does not recognise — see the field's comment.
+	// A category nobody knows silences nothing, and refusing to start over a
+	// list is how a device ends up not announcing anything at all.
 	seen := make(map[string]bool, len(c.Events))
 	for _, e := range c.Events {
 		if err := e.validate(); err != nil {
