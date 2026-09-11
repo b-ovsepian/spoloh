@@ -301,6 +301,11 @@ func run(configPath, dataDir, listen, socket string) error {
 		Devices:  alsa,
 		Timedate: timeManager,
 		Logger:   logger,
+		// Without this the footer on every page reads "збірка для
+		// розробки" on a device running a stamped release — a visible
+		// untruth, and the one place an operator looks to answer "what is
+		// this box actually running" before reporting a fault.
+		Version: version,
 	})
 	if err != nil {
 		return err

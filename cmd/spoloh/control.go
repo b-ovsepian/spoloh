@@ -70,6 +70,15 @@ func (d controlDevice) Sounds() ([]string, error) {
 // /play handler reads, so a sound previewed from a shell is as loud as the
 // same sound previewed from the browser.
 func (d controlDevice) Play(sound string) error {
+	// PlayManual, not PlayPreview: a person typing `spoloh play siren.wav`
+	// into a shell is doing what the dashboard's manual-fire button does,
+	// not what /sounds' listen button does. It dispatches at PriorityAlert
+	// and so cannot be cut short by a scheduled chime.
+	//
+	// That it also cannot be preempted by an incoming air raid alert is
+	// correct rather than a gap: a manual fire is already an announcement,
+	// and a siren that is sounding does not need the automatic one to cut
+	// in front of it.
 	return d.engine.PlayManual(sound, d.cfg().Audio.MasterVolume)
 }
 

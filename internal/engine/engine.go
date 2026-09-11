@@ -343,11 +343,35 @@ func (e *Engine) PlayManual(sound string, volume int) error {
 	if path == "" || !e.d.Library.Has(sound) {
 		return fmt.Errorf("sound %q is not in the library", sound)
 	}
+	return e.playManual(sound, path, volume, player.PriorityAlert)
+}
+
+// PlayPreview plays a library sound to find out what it is or whether the
+// speaker works — the /sounds preview, the /audio test, `spoloh play`.
+//
+// Identical to PlayManual except that it cannot delay anything real. Both
+// used to be PlayManual, which dispatches at PriorityAlert so that a manual
+// fire is not cut short by a scheduled chime; a preview inheriting that
+// could hold the single voice for up to five minutes while an actual air
+// raid alert queued behind it.
+//
+// Still the same engine, the same queue and the same output — a preview
+// that played through a different path would not be previewing the thing it
+// claims to.
+func (e *Engine) PlayPreview(sound string, volume int) error {
+	path := e.d.Library.Path(sound)
+	if path == "" || !e.d.Library.Has(sound) {
+		return fmt.Errorf("sound %q is not in the library", sound)
+	}
+	return e.playManual(sound, path, volume, player.PriorityPreview)
+}
+
+func (e *Engine) playManual(sound, path string, volume int, priority player.Priority) error {
 	e.d.Player.Play(player.Request{
 		EventID:  "manual",
 		Path:     path,
 		Volume:   volume,
-		Priority: player.PriorityAlert,
+		Priority: priority,
 	})
 	e.record(eventlog.Entry{At: e.d.Clock.Now(), Kind: eventlog.KindManual, Sound: sound, OK: true})
 	return nil

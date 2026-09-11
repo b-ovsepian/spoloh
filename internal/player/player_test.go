@@ -389,3 +389,57 @@ func TestPreemptionIsNotReportedAsATimeout(t *testing.T) {
 		t.Fatalf("a preemption reported %v, want nothing", stages)
 	}
 }
+
+// The defect this pins: a preview started from a settings page used to share
+// PriorityAlert with a real announcement, and Play preempts only on strictly
+// higher priority — so an air raid alert arriving mid-preview queued behind
+// it for up to MaxPlayback, five minutes.
+func TestAnAlertPreemptsAPreview(t *testing.T) {
+	f := newFake()
+	p := player.New(f, "default")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go p.Run(ctx)
+
+	p.Play(player.Request{EventID: "manual", Path: "/s/metronome.wav", Volume: 80, Priority: player.PriorityPreview})
+	if got := waitStart(t, f); got != "/s/metronome.wav" {
+		t.Fatalf("first play = %q, want the preview", got)
+	}
+
+	p.Play(player.Request{EventID: "alert-start", Path: "/s/siren.wav", Volume: 100, Priority: player.PriorityAlert})
+	if got := waitStart(t, f); got != "/s/siren.wav" {
+		t.Fatalf("second play = %q, want the alert to have preempted the preview", got)
+	}
+
+	var sawCancel bool
+	for _, c := range f.Calls() {
+		if c == "cancelled=/s/metronome.wav" {
+			sawCancel = true
+		}
+	}
+	if !sawCancel {
+		t.Fatalf("the preview was not cancelled by the alert: %v", f.Calls())
+	}
+}
+
+// A scheduled chime must also outrank a preview: anything the device decided
+// to do on its own beats someone finding out what a file sounds like.
+func TestAScheduledEventPreemptsAPreview(t *testing.T) {
+	f := newFake()
+	p := player.New(f, "default")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go p.Run(ctx)
+
+	p.Play(player.Request{EventID: "manual", Path: "/s/metronome.wav", Volume: 80, Priority: player.PriorityPreview})
+	if got := waitStart(t, f); got != "/s/metronome.wav" {
+		t.Fatalf("first play = %q, want the preview", got)
+	}
+
+	p.Play(player.Request{EventID: "silence", Path: "/s/chime.wav", Volume: 85, Priority: player.PriorityScheduled})
+	if got := waitStart(t, f); got != "/s/chime.wav" {
+		t.Fatalf("second play = %q, want the scheduled event to have preempted the preview", got)
+	}
+}

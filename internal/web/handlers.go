@@ -186,6 +186,11 @@ func (s *Server) flashMessage(r *http.Request) string {
 // behaviour it has always had.
 const playReturnField = "return"
 
+// playPreviewField marks a /play submission as a preview rather than a
+// manual fire. Present and non-empty means preview; absent means the home
+// page's own form, which keeps the behaviour it has always had.
+const playPreviewField = "preview"
+
 // Play-failure reason codes. The redirect carries a code, never a sentence:
 // whatever comes back in the query string is attacker-supplied by
 // construction — see flashMessage — so the only text that may reach a page
@@ -309,7 +314,29 @@ func (s *Server) handlePlay(w http.ResponseWriter, r *http.Request) {
 
 	sound := r.FormValue("sound")
 	volume := s.deps.Config.Get().Audio.MasterVolume
-	if err := s.deps.Engine.PlayManual(sound, volume); err != nil {
+
+	// Two different intentions arrive on this one route, and they must not
+	// hold the speaker with the same authority.
+	//
+	// The home page's form is a manual fire: the path that still works when
+	// upstream is down and the threat is real, dispatched at PriorityAlert
+	// so a scheduled chime cannot cut it short. /sounds' listen button is a
+	// preview — someone finding out which file is the siren — and it
+	// dispatches below everything real, because Player preempts only on
+	// strictly higher priority and a preview sharing PriorityAlert could
+	// hold the single voice for up to five minutes with an actual air raid
+	// alert queued behind it.
+	//
+	// The field is explicit rather than inferred from playReturnField, even
+	// though only /sounds sets that today. Tying "may delay a siren" to
+	// "names a page to return to" would make the next page that wants a
+	// return path silently safe or silently dangerous depending on which
+	// button it copied.
+	play := s.deps.Engine.PlayManual
+	if r.FormValue(playPreviewField) != "" {
+		play = s.deps.Engine.PlayPreview
+	}
+	if err := play(sound, volume); err != nil {
 		s.deps.Logger.Warn("manual playback rejected", "sound", sound, "err", err)
 		playFailed(w, r, back, named, http.StatusBadRequest, playFailedMissing)
 		return

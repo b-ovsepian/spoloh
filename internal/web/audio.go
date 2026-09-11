@@ -944,7 +944,7 @@ func (s *Server) handleAudioTest(w http.ResponseWriter, r *http.Request) {
 		s.redirectAudio(w, r, "test_error", "empty")
 		return
 	}
-	if err := s.deps.Engine.PlayManual(sound, s.deps.Config.Get().Audio.MasterVolume); err != nil {
+	if err := s.deps.Engine.PlayPreview(sound, s.deps.Config.Get().Audio.MasterVolume); err != nil {
 		s.deps.Logger.Error("audio: test sound rejected", "sound", sound, "err", err)
 		s.redirectAudio(w, r, "test_error", "failed")
 		return

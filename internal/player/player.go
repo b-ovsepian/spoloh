@@ -23,7 +23,22 @@ const defaultMaxPlayback = 5 * time.Minute
 type Priority int
 
 const (
-	PriorityScheduled Priority = iota
+	// PriorityPreview is a sound played to find out what it sounds like or
+	// whether the speaker works — the /sounds preview button, the /audio
+	// test, `spoloh play`. It sits below everything real on purpose.
+	//
+	// It used to share PriorityAlert, because it shares a code path with
+	// manual firing. Play preempts only on strictly higher priority, so a
+	// preview started from a settings page could hold the single voice for
+	// up to MaxPlayback — five minutes — with a real air raid alert waiting
+	// behind it in the queue. Nobody who clicks "listen" is asking for
+	// that.
+	PriorityPreview Priority = iota
+	PriorityScheduled
+	// PriorityAlert is both an air raid alert and the dashboard's manual
+	// fire, which is deliberately the same thing: manual playback exists
+	// as the path that still works when upstream is down and the threat is
+	// real, so it must not be preempted by a scheduled chime.
 	PriorityAlert
 )
 

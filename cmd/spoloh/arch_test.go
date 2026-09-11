@@ -66,3 +66,39 @@ func TestMakefileBuildsTheExpectedArtifactNames(t *testing.T) {
 		t.Errorf("Makefile stamps -X main.%s via ldflags_for, but main.go declares no package-level var %s", symbol, symbol)
 	}
 }
+
+// Every Deps field the dashboard needs has to be filled here, and the
+// compiler will not say so: web.Deps is a struct literal with named fields,
+// so a missing one is the zero value, not a build error.
+//
+// Version is the field that proves the point. It shipped unwired: the footer
+// on a real board read «збірка для розробки» while running a stamped
+// release, which is the one line an operator reads to answer "what is this
+// box actually running" before reporting a fault. Nothing failed. Nothing
+// could — internal/web's own tests construct their own Deps.
+//
+// So this reads main.go's own source, the same technique the Makefile test
+// above uses for -X symbols, and fails if the literal stops carrying the
+// fields whose absence is silent rather than loud.
+func TestWebDepsLiteralCarriesTheSilentlyOptionalFields(t *testing.T) {
+	src, err := os.ReadFile("main.go")
+	if err != nil {
+		t.Fatalf("read main.go: %v", err)
+	}
+
+	literal := regexp.MustCompile(`(?s)web\.New\(web\.Deps\{(.*?)\n\t\}\)`).FindSubmatch(src)
+	if literal == nil {
+		t.Fatal("could not find the web.New(web.Deps{...}) literal in main.go")
+	}
+	body := string(literal[1])
+
+	// Only fields whose absence produces a wrong page rather than a crash.
+	// A nil Library or Player is guarded for and degrades visibly; a zero
+	// Version renders as a confident lie.
+	for _, field := range []string{"Version:"} {
+		if !regexp.MustCompile(`\b` + field).MatchString(body) {
+			t.Errorf("web.Deps literal in main.go does not set %s; "+
+				"its zero value renders as if it were true", field)
+		}
+	}
+}
