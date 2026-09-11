@@ -8,6 +8,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
+	"slices"
+	"sort"
 	"strings"
 	"syscall"
 	"testing"
@@ -388,5 +391,80 @@ func TestATruncatedScriptInstallsNothing(t *testing.T) {
 	}
 	if strings.Contains(report, "apt-get") {
 		t.Errorf("a truncated script ran apt-get, so it changed the system before stopping\n%s", report)
+	}
+}
+
+// The deployment files cross a seam nothing else checks. The Makefile names
+// them twice — once to copy them into dist/, once to hash them into
+// SHA256SUMS — and install.sh names them a third time, in another language,
+// to download and verify them. cmd/spoloh/arch_test.go pins the three binary
+// names across the same seam; these four had nothing.
+//
+// Renaming one of them in the Makefile and in deploy/ but not in install.sh
+// leaves `go vet`, `gofmt`, `go test` and `make dist` all clean, and every
+// install in the field 404s against the published release — discovered by a
+// volunteer at a school, which is the one place a bad install cannot be
+// recovered from remotely.
+//
+// This lives beside the installer rather than in cmd/spoloh because
+// install.sh is the file with the least machine-checkable claim in it: the
+// Makefile at least fails loudly when it cannot copy a file that does not
+// exist, while install.sh's FILES list is a string nothing validates until a
+// device runs it.
+func TestTheMakefileAndTheInstallerAgreeOnTheDeploymentFilenames(t *testing.T) {
+	makefile, err := os.ReadFile("../Makefile")
+	if err != nil {
+		t.Fatalf("read Makefile: %v", err)
+	}
+	script, err := os.ReadFile("install.sh")
+	if err != nil {
+		t.Fatalf("read install.sh: %v", err)
+	}
+
+	// dist/ is populated by `cp deploy/<file> ... dist/`.
+	cp := regexp.MustCompile(`(?m)^\s*cp ((?:deploy/\S+ )+)dist/\s*$`).FindSubmatch(makefile)
+	if cp == nil {
+		t.Fatal("the Makefile no longer has a `cp deploy/... dist/` line; nothing copies the deployment files into the release")
+	}
+	// SHA256SUMS covers everything the release publishes a checksum for.
+	sum := regexp.MustCompile(`(?m)^\s*cd dist && sha256sum (.+) > SHA256SUMS\s*$`).FindSubmatch(makefile)
+	if sum == nil {
+		t.Fatal("the Makefile no longer has a `sha256sum ... > SHA256SUMS` line; the release publishes no checksums")
+	}
+	// install.sh downloads and verifies exactly the names in FILES.
+	files := regexp.MustCompile(`(?m)^\s*FILES="([^"]*)"`).FindSubmatch(script)
+	if files == nil {
+		t.Fatal("install.sh no longer has a FILES= list; nothing says what it downloads")
+	}
+
+	// The per-board binary is named three different ways on purpose — a
+	// glob in the Makefile, a shell variable in install.sh — and which
+	// names it may take is already pinned by
+	// cmd/spoloh/arch_test.go. Drop it here so this test is about the four
+	// deployment files only.
+	binary := func(name string) bool {
+		return strings.HasPrefix(name, "spoloh-linux-") || name == "spoloh-linux-*" || name == "spoloh-$ARCH"
+	}
+	names := func(field []byte, trimPrefix string) []string {
+		var out []string
+		for _, f := range strings.Fields(string(field)) {
+			f = strings.TrimPrefix(f, trimPrefix)
+			if !binary(f) {
+				out = append(out, f)
+			}
+		}
+		sort.Strings(out)
+		return out
+	}
+
+	copied := names(cp[1], "deploy/")
+	hashed := names(sum[1], "")
+	fetched := names(files[1], "")
+
+	if !slices.Equal(copied, hashed) {
+		t.Errorf("the Makefile copies %v into dist/ but publishes checksums for %v; a file in one list and not the other either ships unverifiable or is a checksum for something that is not there", copied, hashed)
+	}
+	if !slices.Equal(copied, fetched) {
+		t.Errorf("the Makefile ships %v but install.sh downloads %v; every install in the field would 404 on the difference", copied, fetched)
 	}
 }
