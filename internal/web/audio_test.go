@@ -3,6 +3,7 @@ package web_test
 import (
 	"context"
 	"errors"
+	"html"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -814,5 +815,334 @@ func TestAudioSaveRetargetsTheRunningPlayer(t *testing.T) {
 	}
 	if got[len(got)-1] != "plughw:CARD=Headphones,DEV=0" {
 		t.Errorf("played to %q, want the output just saved; all devices: %v", got[len(got)-1], got)
+	}
+}
+
+// audioText is the rendered page with HTML escaping undone.
+//
+// The Ukrainian on this screen is full of apostrophes — «роз'єм»,
+// «під'єднано» — and html/template turns every one of them into &#39; on the
+// way out, correctly. A test asserting on a sentence that reached the page
+// through a template variable therefore has to compare against the words, not
+// against the entity soup, or it pins the escaping rather than the wording.
+func audioText(body string) string { return html.UnescapeString(body) }
+
+// probingLister answers both questions a real board answers about an
+// output: what outputs there are (player.ALSA.Devices) and whether one of
+// them can actually be opened (player.ALSA.ProbeDevice). /audio reaches the
+// second by type assertion, so a lister that does not implement it — the
+// plain deviceListerFunc the other tests here use — is also how "nobody
+// could be asked" gets exercised.
+type probingLister struct {
+	devices []player.Device
+	// refuse maps a PCM name to what opening it says. A name absent from
+	// it opens fine, which is the shape a real board has: most outputs
+	// work and one does not.
+	refuse map[string]player.ProbeResult
+	// err makes the probe itself impossible to carry out — no temp space
+	// to write the silence to — which says nothing about any device.
+	err error
+	// probed records every output this lister was asked to open, in order,
+	// so a test can state which ones the page probed and, more to the
+	// point, which ones it did not.
+	probed []string
+}
+
+func (p *probingLister) Devices(context.Context) ([]player.Device, error) { return p.devices, nil }
+
+func (p *probingLister) ProbeDevice(_ context.Context, device string) (player.ProbeResult, error) {
+	p.probed = append(p.probed, device)
+	if p.err != nil {
+		return player.ProbeResult{}, p.err
+	}
+	if res, ok := p.refuse[device]; ok {
+		return res, nil
+	}
+	return player.ProbeResult{Playable: true}, nil
+}
+
+// realBoardProber is the operator's Raspberry Pi 4 as it actually behaved:
+// the HDMI card, and the "default" that resolves to it, refuse to open with
+// nothing plugged into HDMI, while the headphone jack plays immediately.
+func realBoardProber() *probingLister {
+	refused := player.ProbeResult{Detail: "aplay -D default: exit status 1: aplay: main:850: audio open error: Unknown error 524"}
+	return &probingLister{
+		devices: realBoardDevices,
+		refuse: map[string]player.ProbeResult{
+			"default":                   refused,
+			"plughw:CARD=vc4hdmi,DEV=0": refused,
+		},
+	}
+}
+
+func newServerWithProber(t *testing.T, lister web.DeviceLister) (*web.Server, *configstore.Store) {
+	t.Helper()
+	store, err := configstore.Open(filepath.Join(t.TempDir(), "config.json"))
+	if err != nil {
+		t.Fatalf("configstore.Open: %v", err)
+	}
+	srv, err := web.New(web.Deps{Config: store, Devices: lister})
+	if err != nil {
+		t.Fatalf("web.New: %v", err)
+	}
+	return srv, store
+}
+
+// The defect, on the page: the board offers three outputs, the one listed
+// first and named "default" is the only one that cannot play, and the screen
+// gave an operator no way to find that out short of an air raid. Now it
+// opens each of them and says.
+func TestAudioMarksAnOutputThatCannotBeOpened(t *testing.T) {
+	srv, _ := newServerWithProber(t, realBoardProber())
+	setPassword(t, srv, "correct horse battery staple")
+	cookie := login(t, srv, "correct horse battery staple")
+
+	body := getAudio(t, srv, cookie, "")
+
+	if !strings.Contains(body, "Не працює зараз") {
+		t.Errorf("no output was marked unusable, though HDMI and \"default\" both refused to open; body:\n%s", body)
+	}
+	// The sentence has to be one an operator can act on — a cable and a
+	// screen, not a kernel constant.
+	if !strings.Contains(audioText(body), "HDMI передає звук лише тоді, коли під'єднано екран або підсилювач") {
+		t.Errorf("the page does not say why HDMI cannot play; body:\n%s", body)
+	}
+	// And aplay's own diagnostic stays in the log where it belongs.
+	if strings.Contains(body, "Unknown error 524") || strings.Contains(body, "exit status") {
+		t.Errorf("the raw aplay diagnostic reached the page; body:\n%s", body)
+	}
+	// The working output is marked as working. "It did not say it was
+	// broken" is not the same thing as "it said it works", and an operator
+	// picking between three rows needs the second.
+	if !strings.Contains(body, "Перевірено: вихід вдається відкрити.") {
+		t.Errorf("the working output is not marked as working; body:\n%s", body)
+	}
+}
+
+// A board whose HDMI amplifier is switched on an hour from now must not have
+// been permanently talked out of HDMI by one probe. Marked, never disabled.
+func TestAudioKeepsAnUnusableOutputSelectable(t *testing.T) {
+	srv, _ := newServerWithProber(t, realBoardProber())
+	setPassword(t, srv, "correct horse battery staple")
+	cookie := login(t, srv, "correct horse battery staple")
+
+	body := getAudio(t, srv, cookie, "")
+
+	if !strings.Contains(body, `value="plughw:CARD=vc4hdmi,DEV=0"`) {
+		t.Fatalf("the unusable output is not offered at all; body:\n%s", body)
+	}
+	if strings.Contains(body, "disabled") {
+		t.Errorf("an output was disabled; it must stay selectable for a sink plugged in later; body:\n%s", body)
+	}
+}
+
+// Thirteen probes on a page load is thirteen silent playbacks to learn what
+// three of them already said — eleven of the board's PCMs are the same two
+// cards answering again. The full list is probed only when one of its PCMs
+// is the output actually in use.
+func TestAudioDoesNotProbeTheFullDisclosureList(t *testing.T) {
+	lister := realBoardProber()
+	srv, _ := newServerWithProber(t, lister)
+	setPassword(t, srv, "correct horse battery staple")
+	cookie := login(t, srv, "correct horse battery staple")
+
+	getAudio(t, srv, cookie, "")
+
+	// The three grouped rows, and the stored output — which on an untouched
+	// device is "default", already one of the three.
+	if got := len(lister.probed); got > 4 {
+		t.Errorf("the page ran %d probes (%v), want at most the 3 grouped rows plus the stored output", got, lister.probed)
+	}
+	for _, pcm := range []string{"hw:CARD=Headphones,DEV=0", "dmix:CARD=vc4hdmi,DEV=0", "sysdefault:CARD=Headphones"} {
+		for _, p := range lister.probed {
+			if p == pcm {
+				t.Errorf("the page probed %q, which only the full disclosure list offers", pcm)
+			}
+		}
+	}
+}
+
+// A wedged card — one another process holds open — is a different thing to
+// tell an operator than a card with nothing plugged into it. The first sends
+// them to the daemon, the second to the cable.
+func TestAudioWordsAWedgedOutputDifferentlyFromARefusedOne(t *testing.T) {
+	lister := &probingLister{
+		devices: realBoardDevices,
+		refuse: map[string]player.ProbeResult{
+			"plughw:CARD=Headphones,DEV=0": {TimedOut: true},
+		},
+	}
+	srv, _ := newServerWithProber(t, lister)
+	setPassword(t, srv, "correct horse battery staple")
+	cookie := login(t, srv, "correct horse battery staple")
+
+	body := getAudio(t, srv, cookie, "")
+
+	if !strings.Contains(body, "не відповів вчасно") {
+		t.Errorf("a wedged output was not described as one; body:\n%s", body)
+	}
+}
+
+// A lister that cannot be asked whether an output opens — the plain
+// deviceListerFunc, a future implementation, a board with nothing wired up —
+// must leave the page saying nothing about it rather than guessing. A page
+// that claims an output works because nobody checked is the defect again.
+func TestAudioSaysNothingAboutOutputsWhenThereIsNoProber(t *testing.T) {
+	srv, _ := newServerWithDevices(t, realBoardDevices) // deviceListerFunc: Devices only
+	setPassword(t, srv, "correct horse battery staple")
+	cookie := login(t, srv, "correct horse battery staple")
+
+	body := getAudio(t, srv, cookie, "")
+
+	if strings.Contains(body, "Перевірено") || strings.Contains(body, "Не працює зараз") {
+		t.Errorf("the page claimed something about outputs nobody probed; body:\n%s", body)
+	}
+}
+
+// A probe that could not be carried out at all — no temp space for the
+// silence — is not evidence against the device, and must not be rendered as
+// if it were.
+func TestAudioSaysNothingWhenTheProbeItselfCouldNotRun(t *testing.T) {
+	lister := &probingLister{devices: realBoardDevices, err: errors.New("probe file: no space left on device")}
+	srv, _ := newServerWithProber(t, lister)
+	setPassword(t, srv, "correct horse battery staple")
+	cookie := login(t, srv, "correct horse battery staple")
+
+	body := getAudio(t, srv, cookie, "")
+
+	if strings.Contains(body, "Не працює зараз") {
+		t.Errorf("a probe that never ran was rendered as a broken output; body:\n%s", body)
+	}
+	if strings.Contains(body, "no space left") {
+		t.Errorf("the raw probe error reached the page; body:\n%s", body)
+	}
+}
+
+// The grouped list used to read "bcm2835 Headphones, bcm2835 Headphones" and
+// "vc4-hdmi, MAI PCM i2s-hifi-0" — driver strings, which are the right
+// answer to "which PCM" and no answer at all to "where do I plug the
+// speakers in". The PCM name stays, in smaller text: it is what the full
+// list and the event log use, and hiding it would make the two impossible to
+// match up.
+func TestAudioGroupedRowsAreLabelledForAnOperator(t *testing.T) {
+	srv, _ := newServerWithProber(t, realBoardProber())
+	setPassword(t, srv, "correct horse battery staple")
+	cookie := login(t, srv, "correct horse battery staple")
+
+	body := getAudio(t, srv, cookie, "")
+
+	for _, want := range []string{"Роз'єм для навушників (3,5 мм)", "HDMI"} {
+		if !strings.Contains(audioText(body), want) {
+			t.Errorf("the grouped picker never says %q; body:\n%s", want, body)
+		}
+	}
+	for _, pcm := range []string{"plughw:CARD=Headphones,DEV=0", "plughw:CARD=vc4hdmi,DEV=0"} {
+		if !strings.Contains(body, pcm) {
+			t.Errorf("the raw PCM name %q is not shown anywhere; the two lists cannot be matched up", pcm)
+		}
+	}
+}
+
+// The labels come from the words aplay -L gives for the card, not from a
+// list of board models: this project runs on Orange Pi and on whatever USB
+// card is in someone's drawer, and a table of Raspberry Pi revisions would
+// be wrong on every one of them.
+func TestAudioLabelsAUsbCardItHasNeverMet(t *testing.T) {
+	srv, _ := newServerWithProber(t, &probingLister{devices: []player.Device{
+		{Name: "default", Description: "Default Audio Device"},
+		{Name: "plughw:CARD=Device,DEV=0", Description: "USB Audio Device, USB Audio"},
+	}})
+	setPassword(t, srv, "correct horse battery staple")
+	cookie := login(t, srv, "correct horse battery staple")
+
+	body := getAudio(t, srv, cookie, "")
+
+	if !strings.Contains(body, "USB-аудіопристрій") {
+		t.Errorf("a USB card was not named as one; body:\n%s", body)
+	}
+}
+
+// The whole of the save half of this defect: a chosen output that cannot be
+// opened is stored anyway — the operator may be wiring the speakers next —
+// but the page must say plainly that it could not be opened. Silent success
+// on a device that cannot play is the bug.
+func TestAudioSaveWithAFailingProbeStoresTheDeviceAndSaysSo(t *testing.T) {
+	srv, store := newServerWithProber(t, realBoardProber())
+	setPassword(t, srv, "correct horse battery staple")
+	cookie := login(t, srv, "correct horse battery staple")
+
+	rec := audioPostForm(t, srv, cookie, url.Values{
+		"device": {"plughw:CARD=vc4hdmi,DEV=0"}, "master_volume": {"70"},
+	})
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: a failed probe must not reject the save; body:\n%s", rec.Code, rec.Body.String())
+	}
+	cfg := store.Get()
+	if cfg.Audio.Device != "plughw:CARD=vc4hdmi,DEV=0" {
+		t.Errorf("Audio.Device = %q, want the chosen output stored even though it could not be opened", cfg.Audio.Device)
+	}
+	if cfg.Audio.MasterVolume != 70 {
+		t.Errorf("Audio.MasterVolume = %d, want 70", cfg.Audio.MasterVolume)
+	}
+
+	body := rec.Body.String()
+	if !strings.Contains(body, "не вдалося відкрити") {
+		t.Errorf("the save reported nothing about the output refusing to open; body:\n%s", body)
+	}
+	if strings.Contains(body, "Вихід перевірено — його вдалося відкрити.") {
+		t.Errorf("the save claimed the output opened when it did not; body:\n%s", body)
+	}
+}
+
+// And the other side of it: a save whose probe succeeded says so, because
+// "збережено" alone is what left the operator with nothing to conclude.
+func TestAudioSaveConfirmsAnOutputThatOpened(t *testing.T) {
+	srv, store := newServerWithProber(t, realBoardProber())
+	setPassword(t, srv, "correct horse battery staple")
+	cookie := login(t, srv, "correct horse battery staple")
+
+	rec := audioPostForm(t, srv, cookie, url.Values{
+		"device": {"plughw:CARD=Headphones,DEV=0"}, "master_volume": {"70"},
+	})
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body:\n%s", rec.Code, rec.Body.String())
+	}
+	if got := store.Get().Audio.Device; got != "plughw:CARD=Headphones,DEV=0" {
+		t.Errorf("Audio.Device = %q, want the chosen output", got)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "Вихід перевірено — його вдалося відкрити.") {
+		t.Errorf("the save does not confirm the output opened; body:\n%s", body)
+	}
+	if strings.Contains(body, "не вдалося відкрити") {
+		t.Errorf("a working output was reported as unopenable; body:\n%s", body)
+	}
+}
+
+// The save probes what was saved, not what was stored a moment before it.
+// Getting this backwards would report the old output's health against the
+// new output's name — the same class of mistake as the player that kept
+// playing through the device it was built with.
+func TestAudioSaveProbesTheOutputItJustStored(t *testing.T) {
+	lister := realBoardProber()
+	srv, _ := newServerWithProber(t, lister)
+	setPassword(t, srv, "correct horse battery staple")
+	cookie := login(t, srv, "correct horse battery staple")
+
+	lister.probed = nil
+	audioPostForm(t, srv, cookie, url.Values{
+		"device": {"plughw:CARD=Headphones,DEV=0"}, "master_volume": {"70"},
+	})
+
+	found := false
+	for _, p := range lister.probed {
+		if p == "plughw:CARD=Headphones,DEV=0" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("the saved output was never probed; probed %v", lister.probed)
 	}
 }

@@ -9,6 +9,18 @@
     <section><p>{{.Error}}</p></section>
   </div>
   {{end}}
+  {{/*
+  A save that was stored and still has something to answer for: the chosen
+  output was written to the config, and opening it just now did not work.
+  It is not .Error — nothing was rejected, the choice is saved — and it
+  must not be folded into .Message either, because "збережено" on its own
+  is exactly the silent success this screen was reported for.
+  */}}
+  {{if .Warning}}
+  <div class="alert" data-variant="destructive" role="alert">
+    <section><p>{{.Warning}}</p></section>
+  </div>
+  {{end}}
 
   <div class="card p-6">
     <header class="mb-4">
@@ -25,6 +37,18 @@
     <div class="grid gap-2 rounded-md border border-border p-3 mb-4">
       <p class="font-semibold">Поточний вихід</p>
       <p><span class="font-mono text-sm">{{.Current.Device}}</span>{{if .Current.Description}} — {{.Current.Description}}{{end}}</p>
+      {{/*
+      Listed and openable are different facts, and this block used to show
+      only the first. The stored output on a fresh install is "default",
+      which this board reports happily and cannot play a sound through.
+      */}}
+      {{if .Current.Probed}}
+      {{if .Current.Unusable}}
+      <p class="text-sm text-destructive">Цей вихід зараз не вдається відкрити — звуку не буде. {{.Current.Note}}</p>
+      {{else}}
+      <p class="text-sm text-muted-foreground">Перевірено щойно: цей вихід вдається відкрити.</p>
+      {{end}}
+      {{end}}
       {{if .Current.DefaultCard}}
       <p class="text-sm text-muted-foreground">«За замовчуванням» веде на першу звукову карту пристрою — {{.Current.DefaultCard}}. Якщо колонки під'єднано до іншого виходу, звуку не буде.</p>
       {{end}}
@@ -63,11 +87,32 @@
         <div class="alert mb-2" role="status">
           <section><p>Якщо колонки під'єднано до роз'єму навушників, а не до HDMI, типовий вихід («За замовчуванням») може не відтворювати звук. Оберіть потрібний вихід нижче.</p></section>
         </div>
+        {{/*
+        Each row says three things: what the output physically is, which
+        PCM that is in smaller text — the name the full list below and the
+        event log both use, so the two can be matched up — and whether it
+        actually opened a moment ago.
+
+        An output that could not be opened is marked plainly and is still
+        selectable, deliberately: a board whose HDMI amplifier is switched
+        on an hour from now must not have been permanently talked out of
+        HDMI by one probe. Marked, not disabled.
+        */}}
         <div class="grid gap-2">
           {{range .Groups}}
-          <label class="flex items-center gap-2 rounded-md border border-border p-3">
+          <label class="flex items-center gap-2 rounded-md border {{if .Unusable}}border-destructive bg-destructive/10{{else}}border-border{{end}} p-3">
             <input type="radio" name="device" value="{{.Value}}"{{if .Selected}} checked{{end}} required>
-            <span>{{.Label}}</span>
+            <span class="grid gap-1">
+              <span class="font-semibold">{{.Label}}</span>
+              <span class="font-mono text-sm text-muted-foreground">{{.Detail}}</span>
+              {{if .Probed}}
+              {{if .Unusable}}
+              <span class="text-sm text-destructive">Не працює зараз. {{.Note}}</span>
+              {{else}}
+              <span class="text-sm text-muted-foreground">Перевірено: вихід вдається відкрити.</span>
+              {{end}}
+              {{end}}
+            </span>
           </label>
           {{end}}
         </div>

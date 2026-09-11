@@ -42,17 +42,41 @@ type mixerReporter interface {
 	MixerControl(ctx context.Context, device string) (string, error)
 }
 
-// The type assertion above is deliberate, but it fails silently: change
-// MixerControl's signature on ALSA and this page simply stops naming the
-// control, with nothing to say why. This line turns that into a build
-// error instead, which is the only way to catch it — a test cannot prove
-// a failure whose whole nature is that nothing fails.
-var _ mixerReporter = player.ALSA{}
+// deviceProber is the third thing player.ALSA can tell this page, and the
+// only one that is not a description: whether an output can actually be
+// opened. Reached by type assertion on Deps.Devices for exactly the reason
+// mixerReporter is — main.go hands the one ALSA value to Deps.Devices, and
+// a second field the wiring must fill is a field it can fill with something
+// else. A lister that cannot answer simply does not satisfy it, and the
+// page then says nothing about whether an output works rather than
+// guessing, which is the state this screen was in before.
+type deviceProber interface {
+	ProbeDevice(ctx context.Context, device string) (player.ProbeResult, error)
+}
+
+// The type assertions above are deliberate, but they fail silently: change
+// MixerControl's or ProbeDevice's signature on ALSA and this page simply
+// stops naming the control, or stops saying which outputs work, with
+// nothing to say why. These lines turn that into a build error instead,
+// which is the only way to catch it — a test cannot prove a failure whose
+// whole nature is that nothing fails.
+var (
+	_ mixerReporter = player.ALSA{}
+	_ deviceProber  = player.ALSA{}
+)
 
 // deviceListTimeout bounds the aplay call behind this page. A person is
 // watching a phone; a page that lists no devices with a line saying why is
 // better than one that never loads.
 const deviceListTimeout = 10 * time.Second
+
+// probeBudget bounds every probe this page runs put together. Each single
+// probe carries its own deadline inside player.ProbeDevice; this is the
+// second bound, over the whole set, so that a board where several cards are
+// wedged at once cannot multiply those deadlines into a page load nobody
+// waits out. A row left unprobed when the budget runs out says nothing
+// about its output, which is the honest thing for it to say.
+const probeBudget = 10 * time.Second
 
 // deviceRowView is one row of the picker — either the grouped list (one per
 // card, plus "default") or the full disclosure list (every PCM aplay -L
@@ -60,9 +84,128 @@ const deviceListTimeout = 10 * time.Second
 // read, and whether it is the one currently configured (or, on a rejected
 // submission, the one an operator just tried — see renderAudioPage).
 type deviceRowView struct {
-	Value    string
-	Label    string
+	Value string
+	// Label is what the thing is, in words an operator recognises — "HDMI",
+	// "Роз'єм для навушників (3,5 мм)" — for the grouped rows, and the raw
+	// PCM name for the full list, which is what that list is for.
+	Label string
+	// Detail is the grouped rows' smaller second line: the PCM name that
+	// goes to aplay and appears in the log, plus the card's own words. The
+	// friendly label alone would make the grouped picker and the full list
+	// impossible to match up against each other, and impossible to match
+	// against an error line in the event log.
+	Detail   string
 	Selected bool
+	// HDMI marks a row whose card names itself as HDMI. It decides which
+	// sentence an unusable row gets, not whether the row is shown.
+	HDMI bool
+	// Probed marks a row whose output was actually opened — or refused to
+	// open — during this request. False means nothing was asked (no prober
+	// wired up, or the budget ran out), and the row must then claim
+	// nothing either way.
+	Probed bool
+	// Unusable marks a probed row whose output could not be opened right
+	// now. The row stays selectable regardless: a board whose HDMI sink is
+	// plugged in an hour from now must not have been permanently talked
+	// out of it.
+	Unusable bool
+	// Note is the sentence under an unusable row, in terms an operator can
+	// act on — a cable, a screen, an amplifier — never aplay's own
+	// "Unknown error 524".
+	Note string
+}
+
+// probeOutcome is what one probe said, reduced to what this page renders. A
+// device absent from a probe map was not asked about; a device present with
+// Playable false was asked and could not be opened.
+type probeOutcome struct {
+	Playable bool
+	TimedOut bool
+}
+
+// probeOutputs opens each of names for real and reports what happened, one
+// probe per distinct name per request.
+//
+// Nothing is remembered between requests, on purpose: player.ProbeDevice
+// explains why at length, and the short of it is that whether an output
+// opens is a fact about cables and amplifiers, not about the driver. What
+// is shared is this map, within the one request — the grouped rows, the
+// live-state block and a save's confirmation are all answering the same
+// question at the same instant, and asking ALSA three times would be three
+// different answers to it as well as three needless playbacks.
+func (s *Server) probeOutputs(ctx context.Context, names []string) map[string]probeOutcome {
+	prober, ok := s.deps.Devices.(deviceProber)
+	if !ok {
+		return nil
+	}
+
+	probeCtx, cancel := context.WithTimeout(ctx, probeBudget)
+	defer cancel()
+
+	out := map[string]probeOutcome{}
+	for _, name := range names {
+		if name == "" {
+			continue
+		}
+		if _, done := out[name]; done {
+			continue
+		}
+		if probeCtx.Err() != nil {
+			break
+		}
+
+		res, err := prober.ProbeDevice(probeCtx, name)
+		if probeCtx.Err() != nil {
+			// The budget for the whole page ran out, not this device's own
+			// deadline. That is a fact about how many outputs this board
+			// has, and says nothing about this one.
+			break
+		}
+		if err != nil {
+			// The probe could not be carried out at all — no temp space to
+			// write the silence to. Warn and leave the row unprobed; a row
+			// that claims an output is broken on the strength of a full
+			// disk is worse than one that claims nothing.
+			s.deps.Logger.Warn("audio: output probe failed", "device", name, "err", err)
+			continue
+		}
+		out[name] = probeOutcome{Playable: res.Playable, TimedOut: res.TimedOut}
+		if !res.Playable {
+			// aplay's own diagnostic reaches the operator here and not on
+			// the page: "Unknown error 524" is a sentence about a kernel
+			// constant, and /log is where those belong.
+			s.deps.Logger.Warn("audio: output could not be opened", "device", name, "detail", res.Detail)
+		}
+	}
+	return out
+}
+
+// unusableNote words why an output could not be opened, in something an
+// operator standing at the board can do something about.
+func unusableNote(hdmi, timedOut bool) string {
+	switch {
+	case timedOut:
+		return "Цей вихід не відповів вчасно. Можливо, його зайняла інша програма або карта не відповідає."
+	case hdmi:
+		return "HDMI передає звук лише тоді, коли під'єднано екран або підсилювач, який цей звук приймає. Якщо колонки в роз'ємі для навушників, оберіть його."
+	default:
+		return "Не вдалося відкрити цей вихід зараз. Перевірте, чи під'єднано та увімкнено пристрій."
+	}
+}
+
+// applyProbes writes what the probes found onto the rows they describe.
+func applyProbes(rows []deviceRowView, probes map[string]probeOutcome) {
+	for i := range rows {
+		outcome, asked := probes[rows[i].Value]
+		if !asked {
+			continue
+		}
+		rows[i].Probed = true
+		rows[i].Unusable = !outcome.Playable
+		if rows[i].Unusable {
+			rows[i].Note = unusableNote(rows[i].HDMI, outcome.TimedOut)
+		}
+	}
 }
 
 // audioView is what audio.html reads.
@@ -100,6 +243,14 @@ type audioView struct {
 	// screen here keeps.
 	Error   string
 	Message string
+	// Warning is the third thing a save can have to say, and the reason
+	// this screen needs one where the others do not: a chosen output that
+	// could not be opened is stored all the same — the operator may be
+	// wiring the speakers next — so the submission was neither rejected
+	// nor plainly fine. Saying only "збережено" there is the whole bug
+	// this task exists for, in one word. It pairs with Message; it never
+	// pairs with Error, which means nothing was stored at all.
+	Warning string
 }
 
 // currentAudioView states what the device is playing through right now, in
@@ -129,6 +280,15 @@ type currentAudioView struct {
 	// configuration pointing at a PCM that no longer exists, and until now
 	// the page showed that as nothing being selected at all.
 	Missing bool
+
+	// Probed, Unusable and Note say whether this very output opened when
+	// the page asked it to, a moment ago. Being listed and being openable
+	// are different facts and this screen used to show only the first: the
+	// stored output on a fresh install is "default", which this board
+	// reports happily and cannot play through at all.
+	Probed   bool
+	Unusable bool
+	Note     string
 
 	// Volume is the stored master volume.
 	Volume int
@@ -191,7 +351,7 @@ func (s *Server) mixerControl(ctx context.Context, device string) (string, bool)
 // currentAudio reads the live state the block above the form describes. It
 // takes the already-fetched device list for the same reason renderAudioPage
 // does: one aplay call per request, not two.
-func (s *Server) currentAudio(ctx context.Context, devices []player.Device, notice string) currentAudioView {
+func (s *Server) currentAudio(ctx context.Context, devices []player.Device, notice string, probes map[string]probeOutcome) currentAudioView {
 	cfg := s.deps.Config.Get()
 	cur := currentAudioView{Device: cfg.Audio.Device, Volume: cfg.Audio.MasterVolume}
 	// An empty device means aplay runs with no -D at all and ALSA picks;
@@ -216,6 +376,21 @@ func (s *Server) currentAudio(ctx context.Context, devices []player.Device, noti
 
 	if cur.Device == "default" {
 		cur.DefaultCard = defaultCardDescription(devices)
+	}
+
+	if outcome, asked := probes[cur.Device]; asked {
+		cur.Probed = true
+		cur.Unusable = !outcome.Playable
+		if cur.Unusable {
+			// "default" carries no card of its own, so what decides the
+			// wording is the card it resolves to — which on the operator's
+			// board is the HDMI one, and is the whole trap.
+			hdmi := isHDMIText(cur.Description)
+			if cur.Device == "default" {
+				hdmi = isHDMIText(cur.DefaultCard)
+			}
+			cur.Note = unusableNote(hdmi, outcome.TimedOut)
+		}
 	}
 
 	if name, ok := s.mixerControl(ctx, cur.Device); ok {
@@ -254,6 +429,54 @@ func cardOf(name string) string {
 		rest = rest[:c]
 	}
 	return rest
+}
+
+func isHDMIText(s string) bool { return strings.Contains(strings.ToLower(s), "hdmi") }
+
+// outputKinds turns the card's own words into what the thing physically is.
+//
+// The grouped picker used to read "bcm2835 Headphones, bcm2835 Headphones"
+// and "vc4-hdmi, MAI PCM i2s-hifi-0" — ALSA driver strings, which are the
+// right answer to "which PCM" and no answer at all to "where do I plug the
+// speakers in". An operator who has just put a jack plug into the 3.5 mm
+// socket has to already know that the first of those is that socket.
+//
+// Matched against the words aplay -L reports for the card, deliberately,
+// and not against a list of board models: this project runs on Orange Pi
+// and on whatever USB card someone has in a drawer, and a table of
+// Raspberry Pi revisions would be wrong on every one of them. A card whose
+// words match nothing here keeps its own description, which is no worse
+// than what this screen showed before. Ordered because the words overlap —
+// an HDMI card that calls itself "hdmi-audio" must not be read as a
+// loudspeaker.
+var outputKinds = []struct {
+	// match is lowercase and is looked for inside the card id and the
+	// card's description together.
+	match string
+	label string
+}{
+	{"hdmi", "HDMI"},
+	{"headphone", "Роз'єм для навушників (3,5 мм)"},
+	{"headset", "Гарнітура"},
+	{"bluetooth", "Bluetooth"},
+	{"usb", "USB-аудіопристрій"},
+	{"speaker", "Вбудований динамік"},
+	{"analog", "Аналоговий вихід"},
+}
+
+// outputLabel names a card in words an operator recognises, falling back to
+// the card's own description and then to its ALSA id.
+func outputLabel(card, description string) string {
+	haystack := strings.ToLower(card + " " + description)
+	for _, kind := range outputKinds {
+		if strings.Contains(haystack, kind.match) {
+			return kind.label
+		}
+	}
+	if description != "" {
+		return description
+	}
+	return card
 }
 
 // cardGroup is one physical output: every PCM aplay -L reported for one
@@ -315,7 +538,7 @@ func groupByCard(devices []player.Device) []cardGroup {
 		if g.Device == "" || strings.HasPrefix(d.Name, "plughw:") {
 			g.Device = d.Name
 		}
-		if strings.Contains(strings.ToLower(card+" "+d.Description), "hdmi") {
+		if isHDMIText(card + " " + d.Description) {
 			g.HDMI = true
 		}
 	}
@@ -337,31 +560,49 @@ func buildDeviceRows(devices []player.Device, current string) (groups []deviceRo
 		if d.Name != "default" {
 			continue
 		}
-		label := "За замовчуванням"
-		if d.Description != "" {
-			label = "За замовчуванням (" + d.Description + ")"
-		}
-		groups = append(groups, deviceRowView{Value: "default", Label: label, Selected: current == "default"})
+		groups = append(groups, deviceRowView{
+			Value:    "default",
+			Label:    "За замовчуванням",
+			Detail:   rowDetail(d.Name, d.Description),
+			Selected: current == "default",
+			// "default" names no card of its own — ALSA resolves it, and
+			// on the operator's board it resolves to the HDMI one. Which
+			// card that is decides what an unusable "default" row has to
+			// say, so this row borrows the same heuristic the live-state
+			// block above the form already uses.
+			HDMI: isHDMIText(defaultCardDescription(devices)),
+		})
 		break
 	}
 
 	for _, g := range groupByCard(devices) {
-		label := g.Description
-		if label == "" {
-			label = g.Card
-		}
-		groups = append(groups, deviceRowView{Value: g.Device, Label: label, Selected: g.Device == current})
+		groups = append(groups, deviceRowView{
+			Value: g.Device,
+			// What the thing is, above; which PCM it is, in smaller text
+			// below. Dropping the second would make this picker and the
+			// full list behind the disclosure impossible to match against
+			// each other, and impossible to match against a log line.
+			Label:    outputLabel(g.Card, g.Description),
+			Detail:   rowDetail(g.Device, g.Description),
+			Selected: g.Device == current,
+			HDMI:     g.HDMI,
+		})
 	}
 
 	options = make([]deviceRowView, len(devices))
 	for i, d := range devices {
-		label := d.Name
-		if d.Description != "" {
-			label = d.Name + " — " + d.Description
-		}
-		options[i] = deviceRowView{Value: d.Name, Label: label, Selected: d.Name == current}
+		options[i] = deviceRowView{Value: d.Name, Label: rowDetail(d.Name, d.Description), Selected: d.Name == current}
 	}
 	return groups, options
+}
+
+// rowDetail is the "PCM — card's own words" line, the one string both lists
+// print so that a row in one can be found in the other.
+func rowDetail(name, description string) string {
+	if description == "" {
+		return name
+	}
+	return name + " — " + description
 }
 
 // listDevices runs the lister behind deviceListTimeout and turns every way
@@ -394,9 +635,23 @@ func (s *Server) listDevices(ctx context.Context) ([]player.Device, string) {
 // here: handleAudioSave already needs one aplay call to validate the
 // submission, and a second one just to re-render would double the wait an
 // operator on a phone is watching.
-func (s *Server) renderAudioPage(ctx context.Context, w http.ResponseWriter, status int, devices []player.Device, notice, current string, mutate func(*audioView)) {
+func (s *Server) renderAudioPage(ctx context.Context, w http.ResponseWriter, status int, devices []player.Device, notice, current string, mutate func(*audioView, map[string]probeOutcome)) {
 	cfg := s.deps.Config.Get()
 	groups, options := buildDeviceRows(devices, current)
+
+	// The grouped rows and the stored output, and deliberately not the full
+	// disclosure list: the real board reports thirteen PCMs, and thirteen
+	// silent playbacks on every page load buys nothing — eleven of them are
+	// the same two cards answering again. A PCM only the full list offers
+	// gets probed when it is the one actually chosen, which is what puts
+	// the stored device in here beside the groups.
+	probeNames := make([]string, 0, len(groups)+1)
+	for _, g := range groups {
+		probeNames = append(probeNames, g.Value)
+	}
+	probeNames = append(probeNames, currentDeviceName(cfg.Audio.Device))
+	probes := s.probeOutputs(ctx, probeNames)
+	applyProbes(groups, probes)
 
 	groupSelected, optionsSelected := false, false
 	for _, g := range groups {
@@ -418,12 +673,24 @@ func (s *Server) renderAudioPage(ctx context.Context, w http.ResponseWriter, sta
 		OptionsOpen:   optionsSelected && !groupSelected,
 		DevicesNotice: notice,
 		MasterVolume:  cfg.Audio.MasterVolume,
-		Current:       s.currentAudio(ctx, devices, notice),
+		Current:       s.currentAudio(ctx, devices, notice, probes),
 	}
 	if mutate != nil {
-		mutate(&view)
+		mutate(&view, probes)
 	}
 	s.render(w, status, "audio.html", view)
+}
+
+// currentDeviceName is the one place that spells out what an empty stored
+// device means: aplay with no -D at all, which player.ALSA.Play already
+// calls "default" in its errors and currentAudio already shows as
+// "default". Probing it under any other name would ask about a different
+// thing than the page is displaying.
+func currentDeviceName(stored string) string {
+	if stored == "" {
+		return "default"
+	}
+	return stored
 }
 
 // handleAudioPage renders the audio screen: where the sound comes out, and
@@ -482,7 +749,7 @@ func (s *Server) handleAudioSave(w http.ResponseWriter, r *http.Request) {
 	current := s.deps.Config.Get().Audio.Device
 
 	reject := func(status int, message string) {
-		s.renderAudioPage(r.Context(), w, status, devices, notice, device, func(v *audioView) {
+		s.renderAudioPage(r.Context(), w, status, devices, notice, device, func(v *audioView, _ map[string]probeOutcome) {
 			v.Error = message
 		})
 	}
@@ -523,10 +790,41 @@ func (s *Server) handleAudioSave(w http.ResponseWriter, r *http.Request) {
 		s.deps.Player.SetDevice(device)
 	}
 
-	s.renderAudioPage(r.Context(), w, http.StatusOK, devices, notice, device, func(v *audioView) {
-		v.Message = "Налаштування звуку збережено."
+	// The saved output is opened for real before this page claims anything
+	// about it. renderAudioPage probes the stored device as part of every
+	// render, and the store has just been written, so the answer below is
+	// about the output that was actually saved.
+	//
+	// A probe that fails does not undo the save. The operator may be about
+	// to wire the speakers, may be saving HDMI before the amplifier is
+	// switched on, and a settings screen that refuses to remember a choice
+	// until the hardware agrees with it is a screen that cannot be used to
+	// set the hardware up. What it must not do is stay quiet: silent
+	// success on an output that cannot play is this whole defect.
+	s.renderAudioPage(r.Context(), w, http.StatusOK, devices, notice, device, func(v *audioView, probes map[string]probeOutcome) {
+		v.Message = savedMessage
+		outcome, asked := probes[currentDeviceName(device)]
+		switch {
+		case !asked:
+			// Nothing could be asked — no prober wired up, or the budget
+			// ran out. The old, quiet behaviour, and the only case that
+			// still deserves it.
+		case outcome.Playable:
+			v.Message = savedAndPlayableMessage
+		default:
+			v.Warning = fmt.Sprintf("%s %s", saveProbeFailedPrefix, v.Current.Note)
+		}
 	})
 }
+
+// What a save says about the output it just stored. Three sentences and not
+// one, because there are three different things to have found out: nothing
+// was asked, the output opened, the output would not open.
+const (
+	savedMessage            = "Налаштування звуку збережено."
+	savedAndPlayableMessage = "Налаштування звуку збережено. Вихід перевірено — його вдалося відкрити."
+	saveProbeFailedPrefix   = "Вихід збережено, але зараз його не вдалося відкрити — звуку не буде, доки це не зміниться."
+)
 
 // The test-sound button. An operator changing the output has, until now, had
 // no way to find out whether the change worked without leaving this page —
@@ -594,17 +892,17 @@ var testSoundErrors = map[string]string{
 // cookie, exactly as /play and /stop do it: the message is meant to be seen
 // once, by the browser about to render this response, and never needs to
 // survive past it.
-func (s *Server) audioFlash(r *http.Request) func(*audioView) {
+func (s *Server) audioFlash(r *http.Request) func(*audioView, map[string]probeOutcome) {
 	q := r.URL.Query()
 	switch {
 	case q.Has("tested"):
-		return func(v *audioView) { v.Message = testSoundMessage }
+		return func(v *audioView, _ map[string]probeOutcome) { v.Message = testSoundMessage }
 	case q.Has("test_error"):
 		message, ok := testSoundErrors[q.Get("test_error")]
 		if !ok {
 			return nil
 		}
-		return func(v *audioView) { v.Error = message }
+		return func(v *audioView, _ map[string]probeOutcome) { v.Error = message }
 	}
 	return nil
 }
