@@ -271,8 +271,14 @@ func TestSoundsUploadWhenConversionIsUnavailableNamesTheRequiredFormat(t *testin
 		t.Fatalf("status = %d, want 400; body:\n%s", rec.Code, rec.Body.String())
 	}
 	body := rec.Body.String()
-	if !strings.Contains(body, "WAV") {
-		t.Errorf("the rejection does not name the required format; body:\n%s", body)
+	// "WAV" alone is not specific enough: the generic fallback message
+	// ("Спробуйте WAV або MP3.") also contains it, so a test asserting only
+	// that would still pass if this branch silently degraded into the
+	// generic one. PCM/44100 appear only in the curated
+	// ErrConversionUnavailable sentence, which is the actual point of this
+	// test — see uploadRejectionMessage.
+	if !strings.Contains(body, "PCM") || !strings.Contains(body, "44100") {
+		t.Errorf("the rejection does not name the required format precisely; body:\n%s", body)
 	}
 	if strings.Contains(body, "ErrConversionUnavailable") || strings.Contains(body, "ffmpeg is not installed") {
 		t.Errorf("the rejection leaked the Go error rather than a Ukrainian sentence; body:\n%s", body)
@@ -330,7 +336,11 @@ func TestSoundsUploadRejectsAFileOverTheLimit(t *testing.T) {
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400; body:\n%s", rec.Code, rec.Body.String())
 	}
-	if !strings.Contains(rec.Body.String(), "16") {
+	// "16" alone is not specific enough: sounds.html also renders each
+	// sound's modification time as HH:MM:SS, so during the 16th hour of any
+	// day a seeded sound's own timestamp would contain "16" and this would
+	// pass regardless of whether the limit message rendered at all.
+	if !strings.Contains(rec.Body.String(), "Файл завеликий") {
 		t.Errorf("the rejection does not mention the limit; body:\n%s", rec.Body.String())
 	}
 
