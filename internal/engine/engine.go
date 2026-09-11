@@ -373,7 +373,29 @@ func (e *Engine) StopManual() {
 }
 
 func (e *Engine) announce(trigger, kind string, at time.Time) {
-	for _, d := range rules.Resolve(e.d.Config(), trigger, at) {
+	cfg := e.d.Config()
+	// Quiet hours can be configured to cover alerts, and then this is a
+	// trigger that produces no decisions, no playback and — without the
+	// loop below — no trace of any kind. That is the one outcome this
+	// device must never leave behind: an operator asking the next morning
+	// why nothing sounded at 03:40 has the event log and nothing else.
+	// rules.Suppressions reports alerts only; a scheduled announcement
+	// skipped at night is the setting working, and logging those would bury
+	// the rows that matter.
+	for _, s := range rules.Suppressions(cfg, trigger, at) {
+		e.d.Logger.Warn("quiet hours silenced an alert",
+			"event", s.EventID, "sound", s.Sound,
+			"from", cfg.QuietHours.From, "to", cfg.QuietHours.To)
+		e.record(eventlog.Entry{
+			At: at, Kind: eventlog.KindAlertSuppressed, EventID: s.EventID, Sound: s.Sound,
+			// OK=false and an operator-facing reason, in Ukrainian like the
+			// rest of what /log shows: the row has to say which setting did
+			// this, or it only moves the question along.
+			OK:  false,
+			Err: fmt.Sprintf("тихі години %s–%s", cfg.QuietHours.From, cfg.QuietHours.To),
+		})
+	}
+	for _, d := range rules.Resolve(cfg, trigger, at) {
 		e.play(d, kind, at)
 	}
 }

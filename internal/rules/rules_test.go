@@ -55,9 +55,10 @@ func TestInQuietHoursDisabled(t *testing.T) {
 	}
 }
 
-// The single most important rule in the system: night must never silence a
-// siren. A device that goes quiet at 02:00 is silent exactly when it matters.
-func TestQuietHoursNeverSuppressAlerts(t *testing.T) {
+// Alerts are not covered by default, and the shipped default is what almost
+// every device in the field runs: a window that lists only scheduled events
+// must leave a siren at 02:00 completely alone.
+func TestQuietHoursLeaveAnAlertAloneWhenAlertsAreNotCovered(t *testing.T) {
 	cfg := config.Default()
 	cfg.QuietHours.Enabled = true
 	cfg.QuietHours.From = "22:00"
@@ -66,10 +67,13 @@ func TestQuietHoursNeverSuppressAlerts(t *testing.T) {
 
 	got := rules.Resolve(cfg, config.TriggerAlertStart, at(2, 0))
 	if len(got) != 1 {
-		t.Fatalf("alert decisions at 02:00 = %d, want 1", len(got))
+		t.Fatalf("alert decisions at 02:00 = %d, want 1 \u2014 alerts are not in applies_to, nothing may silence them", len(got))
 	}
 	if got[0].Priority != player.PriorityAlert {
 		t.Fatalf("priority = %v, want PriorityAlert", got[0].Priority)
+	}
+	if len(rules.Suppressions(cfg, config.TriggerAlertStart, at(2, 0))) != 0 {
+		t.Error("an alert that played was reported as suppressed")
 	}
 }
 
@@ -88,25 +92,100 @@ func TestQuietHoursSuppressScheduled(t *testing.T) {
 	}
 }
 
-// The veto is in the engine, not the default: an operator (or a hand-edited
-// config.json, or a device upgraded from before this rule existed) listing
-// the alerts category in applies_to still gets an alert. config.Validate
-// deliberately does not reject that value — refusing to start over it would
-// trade a suppressed alert for a dead announcer — so ForEvent is the one
-// place spec §5.1 actually has to hold, unconditionally.
-func TestQuietHoursNeverSuppressAlertsEvenWhenExplicitlyConfigured(t *testing.T) {
+// A scheduled event left out of applies_to plays through the window, exactly
+// as it did before alerts became selectable. The list is read the same way
+// for both categories now, so this is the half of that symmetry that must not
+// have regressed while the other half changed.
+func TestQuietHoursLeaveScheduledAloneWhenScheduledIsNotCovered(t *testing.T) {
+	cfg := config.Default()
+	cfg.QuietHours.Enabled = true
+	cfg.QuietHours.From = "08:00"
+	cfg.QuietHours.To = "10:00"
+	cfg.QuietHours.AppliesTo = []string{config.CategoryAlerts}
+
+	if got := rules.Resolve(cfg, config.TriggerScheduled, at(9, 0)); len(got) != 1 {
+		t.Fatalf("scheduled decisions at 09:00 = %d, want 1 \u2014 scheduled is not in applies_to", len(got))
+	}
+}
+
+// The reversal, stated as a test so nobody has to infer it: an operator who
+// lists the alerts category gets a device that does not sound an air raid
+// alert inside the window. This was forbidden until the operator asked for
+// it; it is deliberate, and the three tests below it are the conditions it
+// was granted under.
+func TestQuietHoursSilenceAnAlertWhenTheOperatorCoversAlerts(t *testing.T) {
 	cfg := config.Default()
 	cfg.QuietHours.Enabled = true
 	cfg.QuietHours.From = "22:00"
 	cfg.QuietHours.To = "07:00"
 	cfg.QuietHours.AppliesTo = []string{config.CategoryScheduled, config.CategoryAlerts}
 
-	got := rules.Resolve(cfg, config.TriggerAlertStart, at(2, 0))
-	if len(got) != 1 {
-		t.Fatalf("decisions = %d, want 1 — an alert must sound even when alerts are explicitly listed", len(got))
+	if got := rules.Resolve(cfg, config.TriggerAlertStart, at(2, 0)); len(got) != 0 {
+		t.Fatalf("alert decisions at 02:00 = %d, want 0 \u2014 applies_to lists alerts", len(got))
 	}
-	if got[0].Priority != player.PriorityAlert {
-		t.Fatalf("priority = %v, want PriorityAlert", got[0].Priority)
+	// Outside the window the same configuration is an ordinary announcer.
+	if got := rules.Resolve(cfg, config.TriggerAlertStart, at(13, 0)); len(got) != 1 {
+		t.Fatalf("alert decisions at 13:00 = %d, want 1 \u2014 13:00 is outside 22:00-07:00", len(got))
+	}
+}
+
+// Silencing an alert has to leave a trace, and this is where the trace comes
+// from: the engine writes one eventlog row per Suppression. An alert this
+// device chose not to sound, with nothing in the log about it, is
+// indistinguishable from an alert it failed to sound.
+func TestSuppressionsReportEverySilencedAlert(t *testing.T) {
+	cfg := config.Default()
+	cfg.QuietHours.Enabled = true
+	cfg.QuietHours.From = "22:00"
+	cfg.QuietHours.To = "07:00"
+	cfg.QuietHours.AppliesTo = []string{config.CategoryAlerts}
+
+	got := rules.Suppressions(cfg, config.TriggerAlertStart, at(2, 0))
+	if len(got) != 1 {
+		t.Fatalf("suppressions = %+v, want exactly one \u2014 a silenced alert that is not reported is never recorded", got)
+	}
+	if got[0].EventID != "alert-start" || got[0].Sound != "siren.wav" {
+		t.Fatalf("suppression = %+v, want the alert-start event and its sound", got[0])
+	}
+	// The all-clear is an alert too, and is silenced by the same setting.
+	if end := rules.Suppressions(cfg, config.TriggerAlertEnd, at(2, 0)); len(end) != 1 || end[0].EventID != "alert-end" {
+		t.Fatalf("alert-end suppressions = %+v, want the alert-end event", end)
+	}
+}
+
+// Everything the log must not be filled with. A routine scheduled
+// announcement, an event the operator switched off, a window that does not
+// cover alerts and a time outside the window are four different reasons
+// nothing sounded, and none of them is "this device silenced a raid".
+func TestSuppressionsReportNothingElse(t *testing.T) {
+	base := func() *config.Config {
+		cfg := config.Default()
+		cfg.QuietHours.Enabled = true
+		cfg.QuietHours.From = "22:00"
+		cfg.QuietHours.To = "07:00"
+		cfg.QuietHours.AppliesTo = []string{config.CategoryScheduled, config.CategoryAlerts}
+		return cfg
+	}
+
+	if got := rules.Suppressions(base(), config.TriggerScheduled, at(2, 0)); len(got) != 0 {
+		t.Errorf("scheduled suppressions = %+v, want none \u2014 a quiet night is the setting working", got)
+	}
+	if got := rules.Suppressions(base(), config.TriggerAlertStart, at(13, 0)); len(got) != 0 {
+		t.Errorf("suppressions outside the window = %+v, want none", got)
+	}
+
+	uncovered := base()
+	uncovered.QuietHours.AppliesTo = []string{config.CategoryScheduled}
+	if got := rules.Suppressions(uncovered, config.TriggerAlertStart, at(2, 0)); len(got) != 0 {
+		t.Errorf("suppressions with alerts uncovered = %+v, want none", got)
+	}
+
+	disabled := base()
+	for i := range disabled.Events {
+		disabled.Events[i].Enabled = false
+	}
+	if got := rules.Suppressions(disabled, config.TriggerAlertStart, at(2, 0)); len(got) != 0 {
+		t.Errorf("suppressions for a disabled event = %+v, want none \u2014 it was switched off, not silenced", got)
 	}
 }
 

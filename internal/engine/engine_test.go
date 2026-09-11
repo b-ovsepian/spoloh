@@ -1108,3 +1108,89 @@ func TestRegionChangePersistsTheNewOblast(t *testing.T) {
 		t.Error("stored alert = true for an oblast that is calm")
 	}
 }
+
+// The operator can configure quiet hours to cover air raid alerts, and when
+// they do this device says nothing during a raid. That is the one state where
+// a missing event-log row would be indistinguishable from a broken board: no
+// sound, no playback error, no trace. The row is the whole reason the
+// configuration is allowed to exist, so it is proven end to end, through a
+// real poll and a real event log, not through rules.Suppressions alone.
+func TestSuppressedAlertIsRecordedInTheEventLog(t *testing.T) {
+	// 02:00, inside 22:00-07:00: the hour the operator asked for this for,
+	// and the hour at which it costs the most.
+	clk := clock.NewFake(time.Date(2026, 9, 7, 2, 0, 0, 0, time.UTC))
+	h := newHarnessWithClock(t, clk)
+	h.cfg.QuietHours.Enabled = true
+	h.cfg.QuietHours.From = "22:00"
+	h.cfg.QuietHours.To = "07:00"
+	h.cfg.QuietHours.AppliesTo = []string{config.CategoryScheduled, config.CategoryAlerts}
+	ctx := context.Background()
+
+	if err := h.eng.PollOnce(ctx); err != nil { // quiet baseline
+		t.Fatalf("PollOnce: %v", err)
+	}
+	h.set(true)
+	if err := h.eng.PollOnce(ctx); err != nil {
+		t.Fatalf("PollOnce: %v", err)
+	}
+	time.Sleep(200 * time.Millisecond)
+
+	if got := h.rec.Played(); len(got) != 0 {
+		t.Fatalf("played %v during an alert inside quiet hours, want nothing", got)
+	}
+
+	entries, err := h.log.Recent(10)
+	if err != nil {
+		t.Fatalf("Recent: %v", err)
+	}
+	var found *eventlog.Entry
+	for i, e := range entries {
+		if e.Kind == eventlog.KindAlertSuppressed {
+			found = &entries[i]
+		}
+	}
+	if found == nil {
+		t.Fatalf("the device silenced an air raid alert and recorded nothing: %+v", entries)
+	}
+	if found.EventID != "alert-start" || found.Sound != "siren.wav" {
+		t.Errorf("suppression entry = %+v, want the alert-start event and its sound", *found)
+	}
+	if found.OK {
+		t.Error("a suppressed air raid alert was recorded as an ordinary healthy outcome")
+	}
+	// The row has to name the setting that did it, or it only moves the
+	// operator's question along.
+	if !strings.Contains(found.Err, "22:00") || !strings.Contains(found.Err, "07:00") {
+		t.Errorf("suppression reason = %q, want the quiet-hours window named", found.Err)
+	}
+}
+
+// The same device, the same hour, with alerts left out of applies_to: the
+// siren sounds and nothing is recorded as suppressed. This is what almost
+// every device in the field does, and it is the half that must not have moved.
+func TestAlertStillSoundsInQuietHoursWhenAlertsAreNotCovered(t *testing.T) {
+	clk := clock.NewFake(time.Date(2026, 9, 7, 2, 0, 0, 0, time.UTC))
+	h := newHarnessWithClock(t, clk)
+	h.cfg.QuietHours.Enabled = true
+	h.cfg.QuietHours.From = "22:00"
+	h.cfg.QuietHours.To = "07:00"
+	h.cfg.QuietHours.AppliesTo = []string{config.CategoryScheduled}
+	ctx := context.Background()
+
+	h.eng.PollOnce(ctx)
+	h.set(true)
+	h.eng.PollOnce(ctx)
+
+	if got := waitPlayed(t, h.rec); got != "siren.wav" {
+		t.Fatalf("played %q at 02:00, want siren.wav", got)
+	}
+	entries, err := h.log.Recent(10)
+	if err != nil {
+		t.Fatalf("Recent: %v", err)
+	}
+	for _, e := range entries {
+		if e.Kind == eventlog.KindAlertSuppressed {
+			t.Fatalf("an alert that sounded was recorded as suppressed: %+v", e)
+		}
+	}
+}

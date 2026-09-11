@@ -2,7 +2,6 @@
 package rules
 
 import (
-	"slices"
 	"time"
 
 	"github.com/b-ovsepian/spoloh/internal/config"
@@ -47,20 +46,41 @@ func ForEvent(cfg *config.Config, ev config.Event, at time.Time) (Decision, bool
 	if !ev.Enabled {
 		return Decision{}, false
 	}
-	// Quiet hours can only ever suppress a scheduled event, never an alert —
-	// spec §5.1, "quiet hours never silence an air raid alert". This is
-	// gated on ev.Category() itself, not on membership in AppliesTo: that
-	// list is operator-editable config, and a device upgrading from before
-	// this rule existed (or one hand-edited directly) could carry
-	// CategoryAlerts in it. config.Validate deliberately does not reject
-	// that value — refusing to start over it would trade a suppressed alert
-	// for a dead announcer, the worse of the two — so this is the one place
-	// the guarantee actually has to hold. main.go logs once at startup if
-	// it finds CategoryAlerts there, so a config carrying it is visible
-	// without being fatal.
-	if ev.Category() == config.CategoryScheduled &&
-		InQuietHours(cfg.QuietHours, at) &&
-		slices.Contains(cfg.QuietHours.AppliesTo, config.CategoryScheduled) {
+	// Quiet hours suppress exactly the categories listed in
+	// cfg.QuietHours.AppliesTo, alerts included when the operator put them
+	// there. There is nothing behind this check.
+	//
+	// There used to be. This was gated on ev.Category() itself, so that no
+	// configuration — stored, hand-edited or submitted — could keep an air
+	// raid alert silent; quiet hours silencing an alert was a bug in this
+	// codebase, found against spec §5.1 and fixed. The operator asked for
+	// the gate to come off after running the device on a wall and knowing
+	// what it costs, and that is theirs to decide. Say plainly what this
+	// build now does, because a stale comment promising the old guarantee
+	// would be worse than none: **between the configured hours, with alerts
+	// in AppliesTo, this device will not sound an air raid alert.**
+	//
+	// The care that went into the old guarantee did not go away with it; it
+	// moved. Three things hold instead, and none of them is optional:
+	//
+	//   - It cannot be reached by accident. /events will not add
+	//     CategoryAlerts to AppliesTo without a typed word, the same shape
+	//     /log's clear button uses, for the same reason: this device is
+	//     configured from a phone held next to it, and two taps in roughly
+	//     the same place is what a mis-tap is.
+	//   - It is visible while it is on, on the events form and as a standing
+	//     warning on the home page — not a hint, a sentence.
+	//   - Every alert it silences is written to the event log. Suppressions
+	//     below is what the engine records that from. A device that goes
+	//     quiet during a raid and cannot say afterwards that it chose to is
+	//     indistinguishable from a broken one.
+	//
+	// config.Validate still accepts every AppliesTo value a stored file can
+	// hold, and still must: refusing to start over this field would trade a
+	// suppressed alert for a dead announcer, which is the worse of the two.
+	// That principle is unchanged — it is the reason this check reads the
+	// list rather than the reason it used to ignore it.
+	if InQuietHours(cfg.QuietHours, at) && cfg.QuietHours.Covers(ev.Category()) {
 		return Decision{}, false
 	}
 
@@ -112,6 +132,44 @@ func Resolve(cfg *config.Config, trigger string, at time.Time) []Decision {
 		if d, ok := ForEvent(cfg, ev, at); ok {
 			out = append(out, d)
 		}
+	}
+	return out
+}
+
+// Suppression is one alert that quiet hours kept silent, and that the device
+// therefore owes the operator an account of.
+type Suppression struct {
+	EventID string
+	Sound   string
+}
+
+// Suppressions returns every alert of this trigger that quiet hours silenced
+// at at, for the caller to record.
+//
+// Alerts only, deliberately. A scheduled announcement missed at night is the
+// feature working as asked and would bury the rows that matter under routine
+// ones; an air raid alert missed at night is the operator standing in front
+// of this device the next morning asking why it said nothing at 03:40, with
+// the event log as the only place an answer can come from.
+//
+// A disabled event is not reported. It was not silenced by quiet hours — it
+// was switched off, which the home screen already warns about — and blaming
+// the window for it would make every other row here less trustworthy.
+//
+// This recomputes instead of riding along with Resolve's return value. What
+// Resolve hands back is what the caller plays; a suppressed event travelling
+// in that slice would be one careless loop away from being announced, which
+// is precisely the direction this package must never fail in.
+func Suppressions(cfg *config.Config, trigger string, at time.Time) []Suppression {
+	if !InQuietHours(cfg.QuietHours, at) || !cfg.QuietHours.Covers(config.CategoryAlerts) {
+		return nil
+	}
+	var out []Suppression
+	for _, ev := range cfg.Events {
+		if ev.Trigger != trigger || !ev.Enabled || ev.Category() != config.CategoryAlerts {
+			continue
+		}
+		out = append(out, Suppression{EventID: ev.ID, Sound: ev.Sound})
 	}
 	return out
 }
