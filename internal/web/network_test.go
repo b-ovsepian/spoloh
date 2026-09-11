@@ -492,3 +492,151 @@ func TestNetworkScanGenuineFailureIsStillLoggedAsAFailure(t *testing.T) {
 		t.Errorf("a genuine scan failure was not logged at Warn: %s", buf.String())
 	}
 }
+
+// getNetworkPage logs an operator in and returns the body of GET /network.
+func getNetworkPage(t *testing.T, srv *web.Server) string {
+	t.Helper()
+	cookie := login(t, srv, "correct horse battery staple")
+	req := httptest.NewRequest(http.MethodGet, "/network", nil)
+	req.AddCookie(cookie)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	return rec.Body.String()
+}
+
+// «не показується поточна мережа в налаштуваннях» — the operator's report
+// that started this task. /network must say what it is joined to right now,
+// above the scan list. These six cases are every state netmgr.Status can
+// report from a real board: joined over Wi-Fi, joined wired (no SSID),
+// hotspot up while also joined (not mutually exclusive), neither, a failed
+// lookup, and no manager wired up at all.
+func TestNetworkShowsCurrentSSIDWhenJoinedOverWifi(t *testing.T) {
+	srv, _, fake := newServerWithNetwork(t)
+	fake.CurrentStatus = netmgr.Status{Connected: true, SSID: "SiteWiFi"}
+	setPassword(t, srv, "correct horse battery staple")
+
+	body := getNetworkPage(t, srv)
+	if !strings.Contains(body, "SiteWiFi") {
+		t.Error("the page does not show the SSID the device is joined to")
+	}
+	if strings.Contains(body, "Не підключено") {
+		t.Error("the page claims not connected while joined over Wi-Fi")
+	}
+}
+
+// Connected true with an empty SSID is a wired upstream — a board on a wall
+// port in a PA closet. Telling that operator "not connected" sends them
+// chasing a fault that does not exist.
+func TestNetworkShowsWiredWhenConnectedWithNoSSID(t *testing.T) {
+	srv, _, fake := newServerWithNetwork(t)
+	fake.CurrentStatus = netmgr.Status{Connected: true, SSID: ""}
+	setPassword(t, srv, "correct horse battery staple")
+
+	body := getNetworkPage(t, srv)
+	if !strings.Contains(body, "Дротове підключення") {
+		t.Error("the page does not report a wired connection for Connected=true, SSID=\"\"")
+	}
+	if strings.Contains(body, "Не підключено") {
+		t.Error("the page claims not connected for a wired upstream")
+	}
+}
+
+// HotspotUp is independent of Connected: a board with a wired upstream can
+// report both, and the page must say both at once rather than picking one.
+func TestNetworkShowsBothWiredAndHotspotWhenBothAreTrue(t *testing.T) {
+	srv, store, fake := newServerWithNetwork(t)
+	fake.CurrentStatus = netmgr.Status{Connected: true, SSID: "", HotspotUp: true}
+	setPassword(t, srv, "correct horse battery staple")
+	if err := store.Update(func(c *config.Config) error {
+		c.Network.APSSID = "Spoloh-Setup"
+		return nil
+	}); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+
+	body := getNetworkPage(t, srv)
+	if !strings.Contains(body, "Дротове підключення") {
+		t.Error("the page does not report the wired upstream")
+	}
+	if !strings.Contains(body, "Роздає власну точку доступу") || !strings.Contains(body, "Spoloh-Setup") {
+		t.Error("the page does not report the hotspot it is still serving")
+	}
+}
+
+// Genuinely neither joined nor hotspotting: this is the only case that may
+// say «Не підключено».
+func TestNetworkShowsNotConnectedWhenNeitherJoinedNorHotspotting(t *testing.T) {
+	srv, _, fake := newServerWithNetwork(t)
+	fake.CurrentStatus = netmgr.Status{}
+	setPassword(t, srv, "correct horse battery staple")
+
+	body := getNetworkPage(t, srv)
+	if !strings.Contains(body, "Не підключено") {
+		t.Error("the page does not report the device as not connected")
+	}
+}
+
+// A failed Status lookup must say so in Ukrainian, and must not render the
+// misleading "Не підключено" for a status that is actually unknown.
+func TestNetworkShowsNoticeWhenStatusFails(t *testing.T) {
+	srv, _, fake := newServerWithNetwork(t)
+	fake.StatusErr = errors.New("nmcli: device or resource busy")
+	setPassword(t, srv, "correct horse battery staple")
+
+	body := getNetworkPage(t, srv)
+	if !strings.Contains(body, "Не вдалося визначити поточне підключення") {
+		t.Error("the page does not explain the failed status lookup")
+	}
+	if strings.Contains(body, "Не підключено") {
+		t.Error("a failed status lookup was rendered as a confirmed disconnection")
+	}
+}
+
+// statusDeadlineProbe records whether the context Status was called with
+// carried a deadline, without actually blocking until one fires — the same
+// approach TestNetworkConnectSurvivesTheClientDisconnecting takes for the
+// connect timeout, and for the same reason: a test must never sleep on a
+// real clock, so this proves the call is bounded rather than waiting the
+// full 15s out on a wedged manager.
+type statusDeadlineProbe struct {
+	netmgr.Fake
+	hadDeadline bool
+}
+
+func (p *statusDeadlineProbe) Status(ctx context.Context) (netmgr.Status, error) {
+	_, p.hadDeadline = ctx.Deadline()
+	return p.Fake.Status(ctx)
+}
+
+// A wedged NetworkManager must not turn a page load into a hang: Status is
+// called with a context carrying a deadline, the same shape the scan on this
+// page already uses.
+func TestNetworkStatusCallIsDeadlineBounded(t *testing.T) {
+	probe := &statusDeadlineProbe{}
+	srv, _ := newServerWithManager(t, probe, &netmgr.JoinGate{})
+	setPassword(t, srv, "correct horse battery staple")
+
+	getNetworkPage(t, srv)
+	if !probe.hadDeadline {
+		t.Error("Status was called with no deadline; a wedged NetworkManager would hang the page load forever")
+	}
+}
+
+// The page tolerates a missing network manager for the status section the
+// same way it already does for the scan and the connect form — Deps.Network
+// is nil on a fresh production board before Task 5 wires it up.
+func TestNetworkStatusSectionRendersWithNilNetworkManager(t *testing.T) {
+	srv, _ := newServerWithStore(t) // Deps.Network is nil
+	setPassword(t, srv, "correct horse battery staple")
+
+	body := getNetworkPage(t, srv)
+	if !strings.Contains(body, "Мережевий модуль недоступний на цьому пристрої") {
+		t.Error("the page does not explain the missing network manager in the status section")
+	}
+	if !strings.Contains(body, "<form") {
+		t.Error("a nil network manager took the join form down with it")
+	}
+}

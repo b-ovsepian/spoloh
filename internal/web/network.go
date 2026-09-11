@@ -17,6 +17,13 @@ import (
 // networks is still a page they can read and retry.
 const networkScanTimeout = 15 * time.Second
 
+// networkStatusTimeout bounds how long a page load waits on a real nmcli
+// status query. It matches networkScanTimeout in both value and reasoning —
+// the operator holding the phone is standing right there, and a wedged
+// NetworkManager must not turn a page load into a hang — see that constant's
+// doc comment for the full argument.
+const networkStatusTimeout = 15 * time.Second
+
 // networkConnectTimeout bounds a join. It is far longer than the scan's: the
 // operator has already committed by pressing the button, and association plus
 // a DHCP lease on the site's network genuinely takes tens of seconds. It exists
@@ -47,6 +54,28 @@ type networkView struct {
 	// SelectedSSID re-selects the network an operator just tried, when the
 	// page is re-rendered after a rejected or failed submission.
 	SelectedSSID string
+
+	// StatusConnected, StatusSSID and StatusHotspotUp mirror netmgr.Status
+	// for the "what am I on right now" section at the top of the page.
+	// They are named with a Status prefix rather than reusing Connected
+	// below, which already means something else here: "the join this
+	// request just submitted succeeded, show the post-submit view" — a
+	// live status and a one-shot submission result are different things
+	// that happen to both be true on the same request in the lucky case.
+	// StatusSSID is only ever non-empty when StatusConnected is true over
+	// Wi-Fi; a wired upstream reports StatusConnected true with an empty
+	// StatusSSID, exactly as netmgr.Status.SSID documents. StatusHotspotUp
+	// is independent of StatusConnected — see netmgr.Status.HotspotUp — so
+	// the page must be able to show both at once.
+	StatusConnected bool
+	StatusSSID      string
+	StatusHotspotUp bool
+	// StatusNotice explains a failed or timed-out status lookup, or a nil
+	// network manager, the same way ScanNotice explains an empty scan: in
+	// Ukrainian, and without taking the rest of the page down with it. When
+	// set, the page must not also claim "Не підключено" — an unknown status
+	// is not the same as a confirmed disconnection.
+	StatusNotice string
 
 	// APSSID and APPassword are the device's own access point, shown
 	// deliberately: an operator who lost the installer's printed output has
@@ -123,37 +152,79 @@ func (s *Server) scanNetworks(ctx context.Context) ([]netmgr.Network, string) {
 	return visibleNetworksBySignal(nets), ""
 }
 
+// currentStatus runs a bounded Status call and turns every way it can fail —
+// no manager wired up, the call itself failing, or the bound above expiring
+// — into an explanatory Ukrainian notice, the same shape scanNetworks uses
+// for the same reasons: a wedged NetworkManager must not take the rest of
+// this page down with it, and an operator whose network is broken is
+// exactly the operator who needs the join form to keep working.
+func (s *Server) currentStatus(ctx context.Context) (netmgr.Status, string) {
+	if s.deps.Network == nil {
+		return netmgr.Status{}, "Мережевий модуль недоступний на цьому пристрої."
+	}
+
+	statusCtx, cancel := context.WithTimeout(ctx, networkStatusTimeout)
+	defer cancel()
+
+	st, err := s.deps.Network.Status(statusCtx)
+	if err != nil {
+		// Same cancellation-vs-timeout distinction scanNetworks draws, and
+		// for the same reason: a browser leaving the page cancels ctx, which
+		// is not a fault worth a Warn, where a wedged NetworkManager timing
+		// out is.
+		if statusCtx.Err() == context.Canceled {
+			s.deps.Logger.Debug("network: status cancelled", "err", err)
+		} else {
+			s.deps.Logger.Warn("network: status failed", "err", err)
+		}
+		return netmgr.Status{}, "Не вдалося визначити поточне підключення."
+	}
+	return st, ""
+}
+
 // handleNetwork renders the page an operator sees over the device's own
-// access point: what Wi-Fi networks it can see, and its own access point
-// details so a lost password can still be read off the screen.
+// access point: what it is connected to right now, what Wi-Fi networks it
+// can see, and its own access point details so a lost password can still be
+// read off the screen.
 func (s *Server) handleNetwork(w http.ResponseWriter, r *http.Request) {
 	cfg := s.deps.Config.Get()
 	nets, notice := s.scanNetworks(r.Context())
+	st, statusNotice := s.currentStatus(r.Context())
 
 	view := networkView{
-		Networks:   nets,
-		ScanNotice: notice,
-		APSSID:     cfg.Network.APSSID,
-		APPassword: cfg.Network.APPassword,
-		Addresses:  LocalAddresses(),
+		Networks:        nets,
+		ScanNotice:      notice,
+		StatusConnected: st.Connected,
+		StatusSSID:      st.SSID,
+		StatusHotspotUp: st.HotspotUp,
+		StatusNotice:    statusNotice,
+		APSSID:          cfg.Network.APSSID,
+		APPassword:      cfg.Network.APPassword,
+		Addresses:       LocalAddresses(),
 	}
 	s.render(w, http.StatusOK, "network.html", view)
 }
 
 // renderNetworkRejected re-renders the connect form after a rejected or
-// failed submission, with the network list rebuilt (the page an operator
-// retries from still has to show one) and the submitted ssid kept selected
-// for convenience. It never receives or echoes the submitted password.
+// failed submission, with the network list and current status rebuilt (the
+// page an operator retries from still has to show both) and the submitted
+// ssid kept selected for convenience. It never receives or echoes the
+// submitted password.
 func (s *Server) renderNetworkRejected(w http.ResponseWriter, r *http.Request, status int, cfg *config.Config, ssid, message string) {
 	nets, notice := s.scanNetworks(r.Context())
+	st, statusNotice := s.currentStatus(r.Context())
 	view := networkView{
-		Networks:     nets,
-		ScanNotice:   notice,
-		SelectedSSID: ssid,
-		APSSID:       cfg.Network.APSSID,
-		APPassword:   cfg.Network.APPassword,
-		Addresses:    LocalAddresses(),
-		Error:        message,
+		Networks:        nets,
+		ScanNotice:      notice,
+		SelectedSSID:    ssid,
+		StatusConnected: st.Connected,
+		StatusSSID:      st.SSID,
+		StatusHotspotUp: st.HotspotUp,
+		StatusNotice:    statusNotice,
+		APSSID:          cfg.Network.APSSID,
+		APPassword:      cfg.Network.APPassword,
+		Addresses:       LocalAddresses(),
+		Error:           message,
 	}
 	s.render(w, status, "network.html", view)
 }

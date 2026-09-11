@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,9 +14,21 @@ import (
 	"github.com/b-ovsepian/spoloh/internal/library"
 )
 
-// fakeConv simulates ffmpeg: whatever it is given, it always emits a
-// conforming WAV (PCM 16-bit 44100 Hz stereo), exactly as the real FFmpeg
-// converter does via its "-ac 2 -ar 44100 -acodec pcm_s16le" flags.
+// fakeConv simulates ffmpeg: whatever it is given, it emits a conforming WAV
+// (PCM 16-bit 44100 Hz stereo), exactly as the real FFmpeg converter does via
+// its "-ac 2 -ar 44100 -acodec pcm_s16le" flags — but only if the destination
+// it is handed is named like a WAV.
+//
+// That last clause is the whole lesson of the extensionless-scratch-file bug.
+// Without it this fake was MORE PERMISSIVE THAN THE REAL THING: ffmpeg picks
+// its output muxer from the destination's extension and refuses to run at all
+// without one ("Unable to choose an output format for '/tmp/.convert-oypAfQuy'"),
+// while this fake happily wrote a WAV to any name at all. Every non-WAV upload
+// had therefore failed on every real device since the feature shipped — a
+// total, 100%-reproducible failure — and the suite stayed green the entire
+// time, because the one property of ffmpeg that broke was the one property the
+// fake did not model. A fake that accepts more than the real thing does not
+// test the code; it tests the fake.
 type fakeConv struct {
 	available bool
 	ran       int
@@ -25,6 +38,9 @@ func (f *fakeConv) Available() bool { return f.available }
 
 func (f *fakeConv) ToWAV(_ context.Context, src, dst string) error {
 	f.ran++
+	if !strings.HasSuffix(dst, ".wav") {
+		return fmt.Errorf("unable to choose an output format for %q: use a standard extension for the filename or specify the format manually", dst)
+	}
 	data, err := os.ReadFile(src)
 	if err != nil {
 		return err
@@ -442,5 +458,90 @@ func TestAddRejectsNonConformingConverterOutput(t *testing.T) {
 	}
 	if lib.Has("chime.wav") {
 		t.Fatal("non-conforming converter output must not be published to the library")
+	}
+}
+
+// ToWAV must state its output format on the command line rather than leaving
+// ffmpeg to infer one from the destination's file extension: convert names
+// that file, and the contract ToWAV implements is "write a WAV to dst",
+// whatever dst is called. ffmpeg itself is never run here — the RunFunc seam
+// captures the argv instead, which is the only thing this can assert without
+// the binary the suite is forbidden to invoke.
+func TestFFmpegToWAVNamesTheOutputFormatExplicitly(t *testing.T) {
+	var got []string
+	conv := library.FFmpeg{
+		Run: func(_ context.Context, name string, args ...string) ([]byte, error) {
+			got = append([]string{name}, args...)
+			return nil, nil
+		},
+	}
+
+	// Deliberately extensionless, exactly as the scratch file used to be.
+	const dst = "/var/lib/spoloh/sounds/.convert-oypAfQuy"
+	if err := conv.ToWAV(context.Background(), "/tmp/upload.mp3", dst); err != nil {
+		t.Fatalf("ToWAV: %v", err)
+	}
+
+	format := indexOf(got, "-f")
+	if format < 0 || format+1 >= len(got) || got[format+1] != "wav" {
+		t.Fatalf(`argv does not pass "-f wav": %q`, got)
+	}
+	target := indexOf(got, dst)
+	if target < 0 {
+		t.Fatalf("argv does not name the destination: %q", got)
+	}
+	// ffmpeg reads "-f" as applying to the file that follows it, so the flag
+	// after the destination would configure nothing.
+	if format > target {
+		t.Fatalf(`"-f wav" must come before the destination: %q`, got)
+	}
+}
+
+func indexOf(args []string, want string) int {
+	for i, a := range args {
+		if a == want {
+			return i
+		}
+	}
+	return -1
+}
+
+// With no Run injected the converter must still shell out for real — the seam
+// is for tests, not a behaviour switch, and a nil-Run FFmpeg is what the
+// daemon actually constructs. Asserting on the error rather than a success is
+// what keeps this from running ffmpeg: the binary named here cannot exist.
+func TestFFmpegWithoutARunFuncExecsTheBinary(t *testing.T) {
+	conv := library.FFmpeg{Bin: filepath.Join(t.TempDir(), "no-such-ffmpeg")}
+	err := conv.ToWAV(context.Background(), "/tmp/upload.mp3", "/tmp/out.wav")
+	if err == nil {
+		t.Fatal("expected an exec error from a binary that does not exist")
+	}
+	if !strings.Contains(err.Error(), "ffmpeg:") {
+		t.Fatalf("error should come from ToWAV's own wrapping, got: %v", err)
+	}
+}
+
+// convert stages its output in the library directory, and that scratch file
+// now ends in ".wav" so ffmpeg can never be left guessing a muxer. List must
+// therefore skip it by name: otherwise an mp3 being transcoded shows up as a
+// playable sound on /sounds and in the /events dropdowns for the seconds the
+// transcode takes, then disappears when it is renamed into place.
+func TestListSkipsAConversionInProgress(t *testing.T) {
+	dir := t.TempDir()
+	lib := library.New(dir, &fakeConv{available: false})
+
+	if _, err := lib.Add(context.Background(), "bell.wav", bytes.NewReader(conformingWAV())); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".convert-oypAfQuy.wav"), conformingWAV(), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	sounds, err := lib.List()
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(sounds) != 1 || sounds[0].Name != "bell.wav" {
+		t.Fatalf("List = %+v, want only bell.wav", sounds)
 	}
 }

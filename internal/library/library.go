@@ -25,21 +25,56 @@ var (
 
 var safeName = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
 
+// The prefixes of the two scratch files this package writes into the library
+// directory. Both are dot-prefixed so an operator listing the directory over
+// SSH sees them for what they are, and List skips them by these names rather
+// than by "starts with a dot": an upload genuinely called ".chime.wav" is an
+// odd choice but it is the operator's, and it must still show up.
+const (
+	uploadPrefix  = ".upload-"
+	convertPrefix = ".convert-"
+)
+
+func isStagingName(name string) bool {
+	return strings.HasPrefix(name, uploadPrefix) || strings.HasPrefix(name, convertPrefix)
+}
+
 type Sound struct {
 	Name    string
 	Size    int64
 	ModTime time.Time
 }
 
-// Converter turns an arbitrary audio file into a WAV.
+// Converter turns an arbitrary audio file into a WAV. The contract is "write
+// a WAV to dst" — an implementation must not make that conditional on how dst
+// happens to be spelled, because the caller picks that name (see convert).
 type Converter interface {
 	Available() bool
 	ToWAV(ctx context.Context, src, dst string) error
 }
 
+// RunFunc executes a command and returns its combined output. Nil means the
+// real thing.
+//
+// It is the same seam internal/player's ALSA uses, for the same reason: the
+// test suite must never run ffmpeg — it is not installed on a development
+// machine, it is slow, and a test that shells out to it is testing the
+// operator's board rather than this package. Capturing the argv is the only
+// way anything here gets a test.
+type RunFunc func(ctx context.Context, name string, args ...string) ([]byte, error)
+
 // FFmpeg is the production Converter.
 type FFmpeg struct {
 	Bin string // default "ffmpeg"
+	// Run replaces the exec of ffmpeg. Nil means the real thing.
+	Run RunFunc
+}
+
+func (f FFmpeg) run(ctx context.Context, name string, args ...string) ([]byte, error) {
+	if f.Run != nil {
+		return f.Run(ctx, name, args...)
+	}
+	return exec.CommandContext(ctx, name, args...).CombinedOutput()
 }
 
 func (f FFmpeg) bin() string {
@@ -54,12 +89,23 @@ func (f FFmpeg) Available() bool {
 	return err == nil
 }
 
+// ToWAV names its output format explicitly with "-f wav". Without it ffmpeg
+// chooses the muxer from the destination's file extension, and convert hands
+// it a scratch name that has none, so every non-WAV upload failed on real
+// hardware with:
+//
+//	Unable to choose an output format for '/tmp/.convert-oypAfQuy'; use a
+//	standard extension for the filename or specify the format manually.
+//
+// The Converter contract is "write a WAV to dst" — honouring it must not
+// depend on how the caller spelled dst.
 func (f FFmpeg) ToWAV(ctx context.Context, src, dst string) error {
-	out, err := exec.CommandContext(ctx, f.bin(),
+	out, err := f.run(ctx, f.bin(),
 		"-y", "-i", src,
 		"-ac", "2", "-ar", "44100", "-acodec", "pcm_s16le",
+		"-f", "wav",
 		dst,
-	).CombinedOutput()
+	)
 	if err != nil {
 		return fmt.Errorf("ffmpeg: %w: %s", err, out)
 	}
@@ -106,6 +152,16 @@ func (l *Library) List() ([]Sound, error) {
 		if e.IsDir() || !strings.HasSuffix(e.Name(), ".wav") {
 			continue
 		}
+		// Skip the half-written files this package stages in the library
+		// directory itself (it stages there so that the publishing rename
+		// stays on one filesystem). convert's scratch file now ends in
+		// ".wav", so without this an upload being transcoded would appear
+		// as a playable sound on /sounds and in the /events dropdowns for
+		// the several seconds ffmpeg takes, then vanish when it is renamed
+		// into place.
+		if isStagingName(e.Name()) {
+			continue
+		}
 		info, err := e.Info()
 		if err != nil {
 			continue
@@ -139,7 +195,7 @@ func (l *Library) Add(ctx context.Context, filename string, r io.Reader) (string
 		return "", err
 	}
 
-	tmp, err := os.CreateTemp(l.dir, ".upload-*")
+	tmp, err := os.CreateTemp(l.dir, uploadPrefix+"*")
 	if err != nil {
 		return "", err
 	}
@@ -194,7 +250,12 @@ func (l *Library) Add(ctx context.Context, filename string, r io.Reader) (string
 // cancellation, a crash, a full disk — then leaves nothing at dst for
 // Has/List/aplay to trip over.
 func (l *Library) convert(ctx context.Context, src, dst string) error {
-	tmp, err := os.CreateTemp(l.dir, ".convert-*")
+	// The ".wav" suffix is defence in depth, not the fix: os.CreateTemp
+	// substitutes its random string at the LAST "*", so this yields
+	// ".convert-abc123.wav". FFmpeg.ToWAV now states "-f wav" and no longer
+	// needs the hint, but any future Converter that is less explicit would
+	// need it, and the scratch file is at least honest about what is in it.
+	tmp, err := os.CreateTemp(l.dir, convertPrefix+"*.wav")
 	if err != nil {
 		return err
 	}

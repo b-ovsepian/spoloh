@@ -27,19 +27,42 @@ the network it just joined.
   requires, and it is display-only — see network.go's doc comment on why it
   must never be logged.
   */}}
+  {{/*
+  What the device is on right now, and where to reach it — one question to
+  the operator holding the phone, so they are answered together. A device on
+  a wall port in a PA closet ("Дротове підключення") and a hotspot it is
+  still serving on top of that are not mutually exclusive, so both can show
+  at once; StatusNotice replaces this whole determination on a failed lookup
+  rather than risking "Не підключено" for a status that is merely unknown.
+  */}}
   <section class="card p-4">
-    <h2 class="text-sm font-semibold text-muted-foreground">Точка доступу пристрою</h2>
-    <p>SSID: <span class="font-mono">{{.APSSID}}</span></p>
-    <p>Пароль: <span class="font-mono">{{.APPassword}}</span></p>
-  </section>
-
-  <section class="card p-4">
-    <h2 class="text-sm font-semibold text-muted-foreground">Адреса пристрою</h2>
+    <h2 class="text-sm font-semibold text-muted-foreground">Поточне підключення</h2>
+    {{if .StatusNotice}}
+    <p>{{.StatusNotice}}</p>
+    {{else}}
+    {{if .StatusSSID}}
+    <p>Підключено до мережі: <span class="font-mono">{{.StatusSSID}}</span></p>
+    {{else if .StatusConnected}}
+    <p>Дротове підключення</p>
+    {{end}}
+    {{if .StatusHotspotUp}}
+    <p>Роздає власну точку доступу: <span class="font-mono">{{.APSSID}}</span></p>
+    {{end}}
+    {{if and (not .StatusConnected) (not .StatusHotspotUp)}}
+    <p>Не підключено</p>
+    {{end}}
+    {{end}}
     {{if .Addresses}}
     {{range .Addresses}}<p class="font-mono text-2xl">{{.}}</p>{{end}}
     {{else}}
     <p class="text-lg">Адресу не визначено — пристрій не в мережі.</p>
     {{end}}
+  </section>
+
+  <section class="card p-4">
+    <h2 class="text-sm font-semibold text-muted-foreground">Точка доступу пристрою</h2>
+    <p>SSID: <span class="font-mono">{{.APSSID}}</span></p>
+    <p>Пароль: <span class="font-mono">{{.APPassword}}</span></p>
   </section>
 
   <div class="card p-6">
