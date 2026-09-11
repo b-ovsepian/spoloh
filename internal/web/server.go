@@ -111,6 +111,9 @@ func New(d Deps) (*Server, error) {
 	s.handle("POST /events/add", http.HandlerFunc(s.handleEventsAdd))
 	s.handle("POST /events/delete", http.HandlerFunc(s.handleEventsDelete))
 	s.handle("POST /events/quiet-hours", http.HandlerFunc(s.handleEventsQuietHours))
+	s.handle("GET /sounds", http.HandlerFunc(s.handleSoundsPage))
+	s.handle("POST /sounds/upload", http.HandlerFunc(s.handleSoundsUpload))
+	s.handle("POST /sounds/delete", http.HandlerFunc(s.handleSoundsDelete))
 	s.handle("GET /{$}", http.HandlerFunc(s.handleHome))
 
 	return s, nil

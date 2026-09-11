@@ -1,0 +1,93 @@
+{{define "title"}}Бібліотека звуків — Сполох{{end}}
+{{define "width"}}max-w-5xl{{end}}
+{{define "content"}}
+<div class="grid gap-4">
+  {{if .Error}}
+  <div class="alert" data-variant="destructive" role="alert">
+    <section><p>{{.Error}}</p></section>
+  </div>
+  {{end}}
+  {{if .Message}}
+  <div class="alert" role="status"><section><p>{{.Message}}</p></section></div>
+  {{end}}
+
+  {{/*
+  Upload first, list below: an operator arriving here usually came to add a
+  recording, not to browse what is already there. library.Add already
+  converts on upload (spec §5.4), so this form is nothing but a file picker
+  and a submit button.
+  */}}
+  <section class="card p-4 grid gap-3">
+    <header><h2 class="font-semibold">Завантажити звук</h2></header>
+    <form method="post" action="/sounds/upload" enctype="multipart/form-data" class="grid gap-3">
+      <div class="field">
+        <label for="sound-file">Файл</label>
+        <input class="input" type="file" id="sound-file" name="sound" accept="audio/*" required>
+      </div>
+      <button class="btn w-fit" type="submit">Завантажити</button>
+    </form>
+  </section>
+
+  <section class="card p-4 sm:p-6">
+    <header class="mb-4"><h1 class="text-lg font-semibold">Бібліотека звуків</h1></header>
+    {{if .LibraryNotice}}
+    <p class="text-muted-foreground">{{.LibraryNotice}}</p>
+    {{else if not .Rows}}
+    <p class="text-muted-foreground">Звуків поки немає.</p>
+    {{else}}
+    {{/*
+    The same two-renderings-of-one-list split log.html uses: a stacked card
+    per sound below sm, a table above it. A table's columns are what this
+    data actually is — name, size, modified, used by — but forcing that
+    onto a 390px screen is the horizontal scroll log.html's own comment
+    warns against.
+    */}}
+    <ul class="grid gap-2 sm:hidden">
+      {{range .Rows}}
+      <li class="rounded-md border border-border p-3">
+        <div class="flex items-baseline justify-between gap-2">
+          <span class="font-medium wrap-break-word">{{.Name}}</span>
+          <span class="text-sm text-muted-foreground">{{.SizeText}}</span>
+        </div>
+        <p class="text-sm text-muted-foreground">{{.ModTimeText}}</p>
+        {{if .UsedByText}}<p class="text-sm text-muted-foreground">Використовується: {{.UsedByText}}</p>{{end}}
+        <form method="post" action="/sounds/delete" class="mt-2">
+          <input type="hidden" name="name" value="{{.Name}}">
+          <button class="btn" data-variant="outline" data-size="sm" type="submit">Видалити</button>
+        </form>
+      </li>
+      {{end}}
+    </ul>
+    <div class="table-container hidden sm:block">
+      <table class="table">
+        <thead>
+          <tr>
+            <th>Назва</th>
+            <th>Розмір</th>
+            <th>Змінено</th>
+            <th>Використовується</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+          {{range .Rows}}
+          <tr>
+            <td>{{.Name}}</td>
+            <td>{{.SizeText}}</td>
+            <td class="font-mono text-sm">{{.ModTimeText}}</td>
+            <td>{{if .UsedByText}}{{.UsedByText}}{{else}}—{{end}}</td>
+            <td>
+              <form method="post" action="/sounds/delete">
+                <input type="hidden" name="name" value="{{.Name}}">
+                <button class="btn" data-variant="outline" data-size="sm" type="submit">Видалити</button>
+              </form>
+            </td>
+          </tr>
+          {{end}}
+        </tbody>
+      </table>
+    </div>
+    {{end}}
+  </section>
+</div>
+{{end}}
