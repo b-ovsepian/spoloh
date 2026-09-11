@@ -92,7 +92,11 @@ func newServerWithPlayer(t *testing.T) (*web.Server, *configstore.Store, *fakePl
 		Clock:   clock.System{Loc: time.UTC},
 	})
 
-	srv, err := web.New(web.Deps{Config: store, Engine: eng, Player: pl, Library: lib})
+	// A device lister as well, so /audio's save path — which refuses a
+	// device it cannot find among the real outputs — can be exercised
+	// against the same running player this harness already wires up.
+	lister := deviceListerFunc(func(context.Context) ([]player.Device, error) { return realBoardDevices, nil })
+	srv, err := web.New(web.Deps{Config: store, Engine: eng, Player: pl, Library: lib, Devices: lister})
 	if err != nil {
 		t.Fatalf("web.New: %v", err)
 	}

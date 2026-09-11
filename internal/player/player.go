@@ -70,6 +70,33 @@ func New(b Backend, device string) *Player {
 	return &Player{backend: b, device: device, wake: make(chan struct{}, 1)}
 }
 
+// SetDevice changes the output every later request plays through.
+//
+// The device was a construction-time value until an operator changed the
+// output on /audio and found the next sound still going to the old one:
+// the config was written, but this Player kept the device it was built
+// with until the daemon restarted. On a board whose default output is HDMI
+// with nothing plugged into it, that is the difference between a device
+// that announces and one that stays silent, and "reboot it" is not an
+// instruction this product gets to give.
+//
+// A request already playing is left alone. Changing the output underneath
+// a siren that is mid-announcement would cut it off, and the operator
+// pressing save on a settings page has not asked for that.
+func (p *Player) SetDevice(device string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.device = device
+}
+
+// deviceName reads the output under the lock. playOne runs outside it, so
+// it cannot touch p.device directly without racing SetDevice.
+func (p *Player) deviceName() string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.device
+}
+
 // Play enqueues a request. A request of higher priority than what is playing
 // cancels it and jumps ahead of anything of lower priority already waiting.
 func (p *Player) Play(r Request) {
@@ -169,7 +196,8 @@ func (p *Player) playOne(ctx context.Context, cancel context.CancelFunc, r Reque
 	defer expire()
 
 	// A card without a Master control must not stop the sound from playing.
-	if err := p.backend.SetVolume(ctx, p.device, r.Volume); err != nil {
+	device := p.deviceName()
+	if err := p.backend.SetVolume(ctx, device, r.Volume); err != nil {
 		p.reportStageError(r, "volume", limit, ctx.Err(), err)
 	}
 	// Cancelled while setting the volume (a preemption, a Stop, or the limit
@@ -177,7 +205,7 @@ func (p *Player) playOne(ctx context.Context, cancel context.CancelFunc, r Reque
 	if ctx.Err() != nil {
 		return
 	}
-	if err := p.backend.Play(ctx, p.device, r.Path); err != nil {
+	if err := p.backend.Play(ctx, device, r.Path); err != nil {
 		p.reportStageError(r, "play", limit, ctx.Err(), err)
 	}
 }

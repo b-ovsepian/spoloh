@@ -19,6 +19,7 @@ import (
 type fakePlaybackBackend struct {
 	mu      sync.Mutex
 	calls   []string
+	devices []string
 	started chan string
 }
 
@@ -28,8 +29,11 @@ func newFakePlaybackBackend() *fakePlaybackBackend {
 
 func (f *fakePlaybackBackend) SetVolume(context.Context, string, int) error { return nil }
 
-func (f *fakePlaybackBackend) Play(ctx context.Context, _, path string) error {
+func (f *fakePlaybackBackend) Play(ctx context.Context, device, path string) error {
 	name := filepath.Base(path)
+	f.mu.Lock()
+	f.devices = append(f.devices, device)
+	f.mu.Unlock()
 	f.record("play=" + name)
 	f.started <- name
 	<-ctx.Done()
@@ -41,6 +45,17 @@ func (f *fakePlaybackBackend) record(s string) {
 	f.mu.Lock()
 	f.calls = append(f.calls, s)
 	f.mu.Unlock()
+}
+
+// Devices is what Play was handed as its output, in order. Kept apart from
+// Calls so the existing call-sequence assertions keep reading the same
+// strings they always did.
+func (f *fakePlaybackBackend) Devices() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]string, len(f.devices))
+	copy(out, f.devices)
+	return out
 }
 
 func (f *fakePlaybackBackend) Calls() []string {

@@ -771,3 +771,48 @@ func TestAudioFlashNeverEchoesTheQueryString(t *testing.T) {
 		t.Errorf("an unvalidated flash code was echoed onto the page; body:\n%s", body)
 	}
 }
+
+// Saving an output must reach the running player, not only the config file.
+// Observed on the board before this was fixed: the output was switched to
+// the headphone jack, the config said so, and the very next test sound
+// still went to "default" — HDMI, with nothing plugged into it — because
+// the player had taken its device at construction and never looked again.
+// On this product that is the difference between announcing and staying
+// silent, and the only cure was a restart.
+func TestAudioSaveRetargetsTheRunningPlayer(t *testing.T) {
+	srv, _, backend := newServerWithPlayer(t)
+	setPassword(t, srv, "correct horse battery staple")
+	cookie := login(t, srv, "correct horse battery staple")
+
+	form := url.Values{
+		"device":        {"plughw:CARD=Headphones,DEV=0"},
+		"master_volume": {"80"},
+	}
+	req := httptest.NewRequest(http.MethodPost, "/audio", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Origin", "http://example.test")
+	req.Host = "example.test"
+	req.AddCookie(cookie)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("save status = %d, want 200; body:\n%s", rec.Code, rec.Body.String())
+	}
+
+	play := url.Values{"sound": {"siren.wav"}}
+	preq := httptest.NewRequest(http.MethodPost, "/play", strings.NewReader(play.Encode()))
+	preq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	preq.Header.Set("Origin", "http://example.test")
+	preq.Host = "example.test"
+	preq.AddCookie(cookie)
+	srv.Handler().ServeHTTP(httptest.NewRecorder(), preq)
+
+	waitPlayed(t, backend)
+	got := backend.Devices()
+	if len(got) == 0 {
+		t.Fatal("Play was never called")
+	}
+	if got[len(got)-1] != "plughw:CARD=Headphones,DEV=0" {
+		t.Errorf("played to %q, want the output just saved; all devices: %v", got[len(got)-1], got)
+	}
+}

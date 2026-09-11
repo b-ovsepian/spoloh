@@ -513,6 +513,16 @@ func (s *Server) handleAudioSave(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The running player took its device at construction, so without this
+	// the config said one output and the next announcement went to the old
+	// one until the daemon restarted. Observed on the board: the output was
+	// switched to the headphone jack and the test sound still went to HDMI.
+	// After Update, never before — a player pointed at a device the stored
+	// config does not name is the one state worse than the stale one.
+	if s.deps.Player != nil {
+		s.deps.Player.SetDevice(device)
+	}
+
 	s.renderAudioPage(r.Context(), w, http.StatusOK, devices, notice, device, func(v *audioView) {
 		v.Message = "Налаштування звуку збережено."
 	})
