@@ -1,0 +1,71 @@
+{
+  "alerts": [
+    {
+      "id": 10,
+      "location_title": "Луганська область",
+      "location_type": "oblast",
+      "started_at": "2022-04-04T16:45:39.000Z",
+      "finished_at": null,
+      "alert_type": "air_raid",
+      "location_uid": "16",
+      "location_oblast": "Луганська область",
+      "location_oblast_uid": "16",
+      "location_raion": "Луганський район",
+      "alert_level": "yellow",
+      "threats": [
+        {
+          "threat_type": "drones",
+          "level": "yellow",
+          "started_at": "2022-04-04T16:45:39.000Z",
+          "source_message": "Загроза застосування БпЛА"
+        }
+      ]
+    },
+    {
+      "id": 8821,
+      "location_title": "Сумська область",
+      "location_type": "oblast",
+      "started_at": "2026-09-12T03:12:04.000Z",
+      "finished_at": null,
+      "alert_type": "air_raid",
+      "location_uid": "20",
+      "location_oblast": "Сумська область",
+      "location_oblast_uid": "20",
+      "alert_level": "red",
+      "threats": []
+    },
+    {
+      "id": 8823,
+      "location_title": "м. Шостка та Шосткинська територіальна громада",
+      "location_type": "hromada",
+      "started_at": "2026-09-12T03:44:19.000Z",
+      "finished_at": null,
+      "alert_type": "air_raid",
+      "location_uid": "1198",
+      "location_oblast": "Сумська область",
+      "location_oblast_uid": "20",
+      "location_raion": "Шосткинський район",
+      "alert_level": "red",
+      "threats": []
+    },
+    {
+      "id": 8822,
+      "location_title": "м. Шостка та Шосткинська територіальна громада",
+      "location_type": "hromada",
+      "started_at": "2026-09-12T03:10:51.000Z",
+      "finished_at": null,
+      "alert_type": "artillery_shelling",
+      "location_uid": "1198",
+      "location_oblast": "Сумська область",
+      "location_oblast_uid": "20",
+      "location_raion": "Шосткинський район",
+      "alert_level": "yellow",
+      "threats": []
+    }
+  ],
+  "meta": {
+    "last_updated_at": "2026-09-12T03:45:00.000Z",
+    "type": "full"
+  },
+  "disclaimer": "If you use alerts.in.ua API you must add a link to https://alerts.in.ua/"
+}

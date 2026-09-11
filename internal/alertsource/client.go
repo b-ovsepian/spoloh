@@ -30,6 +30,12 @@ const DocsURL = "https://wiki.ubilling.net.ua/doku.php?id=aerialalertsapi"
 // an unbounded read on a broken upstream would be a memory hazard on a Pi 2.
 const maxBody = 1 << 20
 
+// userAgent identifies this device to every upstream it dials. One string for
+// both providers: an operator asking a provider why their device is being
+// throttled, and the provider looking it up in a log, should be talking about
+// the same name whichever endpoint answered.
+const userAgent = "spoloh/1.0 (+https://github.com/b-ovsepian/spoloh)"
+
 // Source produces alert snapshots.
 type Source interface {
 	Fetch(ctx context.Context) (Snapshot, error)
@@ -96,7 +102,7 @@ func (c *Client) fetchOne(ctx context.Context, source string) (Snapshot, error) 
 		return Snapshot{}, err
 	}
 	req.Header.Set("Accept", "application/json")
-	req.Header.Set("User-Agent", "spoloh/1.0 (+https://github.com/b-ovsepian/spoloh)")
+	req.Header.Set("User-Agent", userAgent)
 
 	resp, err := c.hc.Do(req)
 	if err != nil {
