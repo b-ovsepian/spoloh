@@ -15,6 +15,17 @@ import (
 // DefaultBaseURL is the Ubilling aerial alerts endpoint.
 const DefaultBaseURL = "https://ubilling.net.ua/aerialalerts/"
 
+// DocsURL documents that endpoint, including every value its "?source="
+// parameter accepts. It is what the dashboard links an operator to, because
+// the question they have on that screen — what is "jaam", and why would I
+// pick it over "skog" — is answered here and nowhere in this repository.
+//
+// Separate from DefaultBaseURL on purpose: one is fetched by the daemon
+// every few seconds and the other is opened by a person once. Pointing a
+// reader at the JSON endpoint would show them a payload, not an
+// explanation.
+const DocsURL = "https://wiki.ubilling.net.ua/doku.php?id=aerialalertsapi"
+
 // maxBody caps how much of a response we read; the real payload is a few KB and
 // an unbounded read on a broken upstream would be a memory hazard on a Pi 2.
 const maxBody = 1 << 20

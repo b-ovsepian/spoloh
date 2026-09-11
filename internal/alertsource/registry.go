@@ -7,14 +7,22 @@ package alertsource
 // and no provenance; a registry where the two can drift apart is a registry
 // that will drift.
 //
-// This device fetches alerts from these URLs over the real internet, so URL
-// is a claim about where alert data comes from, not decoration. It is left
-// empty rather than guessed for every key besides "default":
-// docs/superpowers/specs/2026-09-06-spoloh-design.md (spec §3) documents only
-// the Ubilling base endpoint with confidence — the other five keys are
-// upstream's own "?source=" values, and nothing on disk here says which
-// distinct provider each one names. A wrong URL on a safety device's control
-// surface is worse than no URL.
+// URL is a claim about where alert data comes from, not decoration, so it
+// points at what can actually be established.
+//
+// All six keys reach the same endpoint. "?source=" selects which upstream
+// aggregator Ubilling asks on this device's behalf (spec §3); it does not
+// name six separate APIs with six addresses, and giving each key a different
+// URL would assert exactly that falsehood. The names below are the keys
+// themselves in title case — placeholders, not provenance. What each source
+// actually calls itself arrives in the API's own response at runtime and is
+// what the dashboard shows as the live source name; "default", for
+// instance, currently answers as "Vadym Klymenko API".
+//
+// So every entry carries the documentation for the one API all of them
+// speak. That is the page an operator choosing between these keys, or
+// debugging one that is failing, actually needs — the wiki documents what
+// each "?source=" value is.
 type SourceInfo struct {
 	Key  string
 	Name string
@@ -27,12 +35,12 @@ type SourceInfo struct {
 // picker, its validation, and its provenance links all read Sources() and
 // Lookup() rather than keeping a second copy that could drift.
 var sources = []SourceInfo{
-	{Key: "default", Name: "Ubilling", URL: DefaultBaseURL},
-	{Key: "skog", Name: "Skog"},
-	{Key: "klimenko", Name: "Klimenko"},
-	{Key: "jaam", Name: "JAAM"},
-	{Key: "aiu", Name: "AIU"},
-	{Key: "ual", Name: "UAL"},
+	{Key: "default", Name: "Ubilling", URL: DocsURL},
+	{Key: "skog", Name: "Skog", URL: DocsURL},
+	{Key: "klimenko", Name: "Klimenko", URL: DocsURL},
+	{Key: "jaam", Name: "JAAM", URL: DocsURL},
+	{Key: "aiu", Name: "AIU", URL: DocsURL},
+	{Key: "ual", Name: "UAL", URL: DocsURL},
 }
 
 // Sources returns a copy of the six keys "?source=" accepts.

@@ -633,35 +633,38 @@ func TestAlertsPageShowsNoDocumentationLinkForAnUnusedSlot(t *testing.T) {
 	}
 }
 
-// A chosen source the registry cannot back with a URL — "skog", here — must
-// render with nothing broken and no link, the same as an unused slot: a
-// guessed URL on a device that really dials out to it is worse than none.
-func TestAlertsPageShowsNoLinkForAChosenSourceWithNoKnownURL(t *testing.T) {
+// Every registered source now carries the documentation URL for the one API
+// they are all values of, so the "no link" branch can no longer be reached
+// through the real registry. It is still the right behaviour for a source
+// added later without a URL, and buildSourceSlots is tested against a
+// URL-less entry directly in alerts_internal_test.go. What this asserts is
+// the claim the page makes today: choose a source, get a way to read about
+// it.
+func TestAlertsPageLinksEveryChosenSource(t *testing.T) {
 	srv, _ := newServerWithStore(t)
 	setPassword(t, srv, "correct horse battery staple")
 	cookie := login(t, srv, "correct horse battery staple")
 
-	info, ok := alertsource.Lookup("skog")
-	if !ok || info.URL != "" {
-		t.Fatalf("setup: want \"skog\" registered with no URL, got %+v (ok=%v)", info, ok)
-	}
+	for _, key := range alertsource.Sources() {
+		info, ok := alertsource.Lookup(key)
+		if !ok || info.URL == "" {
+			t.Fatalf("setup: source %q carries no URL: %+v", key, info)
+		}
 
-	req := postForm("/alerts", url.Values{
-		"region": {"Львівська область"}, "source": {"skog"},
-		"poll_interval": {"20"},
-	})
-	req.AddCookie(cookie)
-	rec := httptest.NewRecorder()
-	srv.Handler().ServeHTTP(rec, req)
+		req := postForm("/alerts", url.Values{
+			"region": {"Львівська область"}, "source": {key},
+			"poll_interval": {"20"},
+		})
+		req.AddCookie(cookie)
+		rec := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200; body:\n%s", rec.Code, rec.Body.String())
-	}
-	field := sourceSlotFieldHTML(t, rec.Body.String(), 1)
-	if !strings.Contains(field, selectedOption("skog")) {
-		t.Fatalf("position 1 does not show \"skog\" selected: %s", field)
-	}
-	if strings.Contains(field, "<a ") {
-		t.Errorf("a source with no known URL rendered a link anyway; field markup: %s", field)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%s: status = %d, want 200; body:\n%s", key, rec.Code, rec.Body.String())
+		}
+		field := sourceSlotFieldHTML(t, rec.Body.String(), 1)
+		if !strings.Contains(field, info.URL) {
+			t.Errorf("%s: no link to %s; field markup: %s", key, info.URL, field)
+		}
 	}
 }
