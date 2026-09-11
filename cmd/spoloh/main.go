@@ -43,6 +43,17 @@ var arch = "dev"
 const logCapacity = 2000
 
 func main() {
+	// Dispatched before flag.Parse: the daemon's own flags are defined below
+	// and a subcommand must not be mistaken for one of them.
+	switch subcommand(os.Args) {
+	case "":
+	case "update":
+		os.Exit(runUpdate(os.Args[2:], os.Stdout))
+	default:
+		fmt.Fprintf(os.Stderr, "unknown command %q; the only one is \"update\"\n", os.Args[1])
+		os.Exit(2)
+	}
+
 	configPath := flag.String("config", "/etc/spoloh/config.json", "path to config.json")
 	dataDir := flag.String("data", "/var/lib/spoloh", "data directory for sounds, state, and the log")
 	// The listen address is a flag, not a config.json field: a bad edit to
