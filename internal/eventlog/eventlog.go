@@ -18,6 +18,25 @@ const (
 	KindSourceFailure = "source_failure"
 	KindConfigChange  = "config_change"
 	KindPlaybackError = "playback_error"
+	// KindAlertSuppressed is an air raid alert this device deliberately did
+	// not sound, because the operator configured quiet hours to cover the
+	// alerts category (config.QuietHours.AppliesTo, rules.ForEvent).
+	//
+	// It is its own kind rather than a KindAlert row with OK=false, because
+	// those two answer different questions and the operator will be asking
+	// the second one: "the siren failed" and "the siren was told to stay
+	// quiet" are not the same event, and a page that renders them the same
+	// way sends someone to check the speaker wiring over a setting. Nothing
+	// else in this log records an announcement that never started, so
+	// without this row the suppression leaves no trace at all — and a
+	// device silent through a raid with nothing in its log is
+	// indistinguishable from a broken one.
+	//
+	// Recorded with OK=false. Nothing failed, but a raid that went
+	// unannounced is not a healthy outcome, and false is what puts the row
+	// in /log's failure styling — the marked edge, the ✕, the tinted row —
+	// which is what makes it findable in a page of two hundred entries.
+	KindAlertSuppressed = "alert_suppressed"
 	// KindLogCleared is the one entry a Clear leaves behind. An empty log
 	// cannot tell "this device has never done anything" apart from
 	// "somebody erased the record", and on a device whose log is the only
