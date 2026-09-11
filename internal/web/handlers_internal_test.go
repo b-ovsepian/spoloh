@@ -5,6 +5,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/b-ovsepian/spoloh/internal/config"
 )
 
 // homeView is unexported, so a test that proves its MDNS field actually
@@ -38,5 +40,27 @@ func TestHomeViewMDNSFieldReachesTheTemplate(t *testing.T) {
 				t.Errorf("homeView.MDNS = %q: page contains the rendered name = %v, want %v", tc.mdns, got, tc.want)
 			}
 		})
+	}
+}
+
+// alertStartDisabled is unexported, so the second of its two independent
+// lines of defence — a *Config built some other way than config.Load, which
+// is where the first line (restoring a missing alert-start event) actually
+// lives — needs a test that can hand it a *config.Config directly, without
+// going through configstore.Store or config.Load at all. A hand-built
+// config.Config (a test fixture, an import, a future migration path) is
+// exactly the case that first line cannot reach.
+func TestAlertStartDisabledReportsTrueWhenTheEventIsMissingEntirely(t *testing.T) {
+	cfg := config.Default()
+	var withoutAlertStart []config.Event
+	for _, ev := range cfg.Events {
+		if ev.Trigger != config.TriggerAlertStart {
+			withoutAlertStart = append(withoutAlertStart, ev)
+		}
+	}
+	cfg.Events = withoutAlertStart
+
+	if !alertStartDisabled(cfg) {
+		t.Error("alertStartDisabled = false for a config with no alert-start event at all, want true")
 	}
 }

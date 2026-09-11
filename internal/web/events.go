@@ -46,8 +46,11 @@ var weekdayOptions = []weekdayOption{
 }
 
 // triggerLabel translates a trigger constant into the Ukrainian label shown
-// on the page. Anything unrecognised is shown as-is rather than hidden,
-// matching kindLabel's reasoning in handlers.go.
+// on the page. Unlike kindLabel in handlers.go (whose unrecognised case is a
+// developer-facing log constant, harmless as-is), a Trigger comes from
+// config.json — echoing it verbatim would put raw, possibly English, text on
+// a page every other word of which is Ukrainian, so anything unrecognised
+// gets a Ukrainian fallback instead of the trigger string itself.
 func triggerLabel(trigger string) string {
 	switch trigger {
 	case config.TriggerAlertStart:
@@ -57,7 +60,7 @@ func triggerLabel(trigger string) string {
 	case config.TriggerScheduled:
 		return "За розкладом"
 	default:
-		return trigger
+		return "Невідома подія"
 	}
 }
 
@@ -161,29 +164,41 @@ func (s *Server) soundMissing(sound string) bool {
 	return sound != "" && s.deps.Library != nil && !s.deps.Library.Has(sound)
 }
 
-// volumeErrorMessage is shown for any volume this form will not accept:
-// unparseable (an empty form submission, most notably — config.Validate's
-// 0..100 range would otherwise happily accept Atoi's zero value for a blank
-// field, letting an empty POST here mutate stored state, which leak_test.go's
-// walk of every route assumes cannot happen), zero, negative, or over 100.
-// Zero gets a message of its own reason rather than "outside 1..100" alone:
-// rules.ForEvent treats event volume 0 as an explicit, silent mute — the
-// same effect as disabling the event, but invisible on the home screen's
-// AlertsDisabled warning (see alertStartDisabled in handlers.go). Refusing
-// it here keeps "disable the event" the one, visible way to silence it,
-// rather than leaving a second, hidden one.
-const volumeErrorMessage = "Гучність має бути від 1 до 100. Щоб вимкнути подію, зніміть позначку «Увімкнено» — гучність 0 для цього не призначена."
+// The three ways parseVolume refuses a submission each say something
+// different, rather than sharing one message tuned for only one of them: a
+// blank or non-numeric field is a different mistake from typing 150, and
+// both are different from typing 0, which is the one case with an actual
+// alternative to point at — see parseVolume.
+const (
+	volumeInvalidMessage    = "Вкажіть гучність числом від 1 до 100."
+	volumeOutOfRangeMessage = "Гучність має бути від 1 до 100."
+	// rules.ForEvent treats event volume 0 as an explicit, silent mute — the
+	// same effect as disabling the event, but invisible on the home
+	// screen's AlertsDisabled warning (see alertStartDisabled in
+	// handlers.go). Refusing it here keeps "disable the event" the one,
+	// visible way to silence it, rather than leaving a second, hidden one.
+	volumeZeroMessage = "Гучність не може бути 0. Щоб вимкнути подію, зніміть позначку «Увімкнено»."
+)
 
-// parseVolume parses and range-checks the "volume" form field. It refuses
-// anything config.Validate would not itself need to catch: a blank or
-// non-numeric value, and — stricter than config.Validate's own 0..100 range —
-// zero, for the reason volumeErrorMessage explains.
-func parseVolume(s string) (int, bool) {
+// parseVolume parses and range-checks the "volume" form field. On failure it
+// returns the message that explains why: unparseable (an empty form
+// submission, most notably — config.Validate's 0..100 range would otherwise
+// happily accept Atoi's zero value for a blank field, letting an empty POST
+// here mutate stored state, which leak_test.go's walk of every route assumes
+// cannot happen), zero specifically, or out of range otherwise. An empty
+// return value means volume is valid.
+func parseVolume(s string) (int, string) {
 	v, err := strconv.Atoi(s)
-	if err != nil || v < 1 || v > 100 {
-		return 0, false
+	if err != nil {
+		return 0, volumeInvalidMessage
 	}
-	return v, true
+	if v == 0 {
+		return 0, volumeZeroMessage
+	}
+	if v < 0 || v > 100 {
+		return 0, volumeOutOfRangeMessage
+	}
+	return v, ""
 }
 
 // parseWeekdays reads the (possibly empty, possibly repeated) "weekdays"
@@ -281,10 +296,10 @@ func (s *Server) handleEventsSave(w http.ResponseWriter, r *http.Request) {
 	timeStr := r.FormValue("time")
 	weekdays := parseWeekdays(r.Form["weekdays"])
 
-	volume, ok := parseVolume(r.FormValue("volume"))
-	if !ok {
+	volume, volumeErr := parseVolume(r.FormValue("volume"))
+	if volumeErr != "" {
 		s.renderEventsPage(w, http.StatusBadRequest, func(v *eventsView) {
-			v.Error = volumeErrorMessage
+			v.Error = volumeErr
 		})
 		return
 	}
@@ -346,9 +361,9 @@ func (s *Server) handleEventsAdd(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
-	volume, ok := parseVolume(r.FormValue("volume"))
-	if !ok {
-		reject(volumeErrorMessage)
+	volume, volumeErr := parseVolume(r.FormValue("volume"))
+	if volumeErr != "" {
+		reject(volumeErr)
 		return
 	}
 	if name == "" {

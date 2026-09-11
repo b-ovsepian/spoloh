@@ -55,25 +55,28 @@ type homeView struct {
 }
 
 // alertStartDisabled reports whether the configured alert-start event will
-// not be heard: disabled, or volume 0. events.go's /events forms refuse a
-// volume of 0 for exactly this reason — disabling the event is meant to be
-// the one, visible way to silence it — but nothing stops a volume of 0
-// reaching config.json by hand, and that is exactly the person who most
-// needs this page to say so.
+// not be heard: disabled, volume 0, or missing outright. events.go's
+// /events forms refuse a volume of 0 for exactly this reason — disabling
+// the event is meant to be the one, visible way to silence it — but nothing
+// stops a volume of 0 reaching config.json by hand, and that is exactly the
+// person who most needs this page to say so.
 //
 // It walks cfg.Events by Trigger rather than assuming a fixed index or a
 // fixed ID, since nothing about the events list's shape guarantees either.
-// A config with no alert-start event at all reports false here —
-// config.Default always seeds one, and nothing on the events screen can
-// remove it (see events.go's handleEventsDelete) — so this is never the
-// check standing between an operator and that fact.
+// A config missing an alert-start event entirely reports true — the second
+// of two independent lines of defence against that: config.Load restores
+// one from config.Default whenever it reads a config missing it, so this
+// case should never actually be reached in production, but a *Config built
+// some other way — a test, an import, a future migration that constructs
+// one without going through Load — must not read as "fine" here just
+// because the loop found nothing to object to.
 func alertStartDisabled(cfg *config.Config) bool {
 	for _, ev := range cfg.Events {
 		if ev.Trigger == config.TriggerAlertStart {
 			return !ev.Enabled || ev.Volume == 0
 		}
 	}
-	return false
+	return true
 }
 
 // status returns the engine's live status with two fields already filled in

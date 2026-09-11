@@ -1,6 +1,8 @@
 package config_test
 
 import (
+	"bytes"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -105,4 +107,99 @@ func TestLoadMissingFileReportsNotExist(t *testing.T) {
 	if !os.IsNotExist(err) {
 		t.Fatalf("want os.IsNotExist, got %v", err)
 	}
+}
+
+// A device with no alert_start event has nothing to announce an air raid
+// with and no way on the dashboard to add one back (the events screen only
+// creates TriggerScheduled rows) — so Load restores it from Default rather
+// than merely rejecting or silently accepting the gap. This is the guarantee
+// that must hold for a hand-edited config.json, a config migrated from
+// before this rule existed, or any other bytes on disk, not only the ones
+// this daemon itself ever wrote.
+func TestLoadRestoresAMissingAlertStartEvent(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+
+	cfg := config.Default()
+	var withoutAlertStart []config.Event
+	for _, ev := range cfg.Events {
+		if ev.Trigger != config.TriggerAlertStart {
+			withoutAlertStart = append(withoutAlertStart, ev)
+		}
+	}
+	cfg.Events = withoutAlertStart
+	if err := config.Save(path, cfg); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	var logs bytes.Buffer
+	restoreLogger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+	defer slog.SetDefault(restoreLogger)
+
+	loaded, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	var restored *config.Event
+	for i := range loaded.Events {
+		if loaded.Events[i].Trigger == config.TriggerAlertStart {
+			restored = &loaded.Events[i]
+		}
+	}
+	if restored == nil {
+		t.Fatal("Load did not restore the missing alert-start event")
+	}
+	want := config.Default().Events[0] // alert-start, per config.Default's own ordering
+	if want.Trigger != config.TriggerAlertStart {
+		t.Fatalf("test assumption broken: config.Default().Events[0] is trigger %q, not alert_start", want.Trigger)
+	}
+	if restored.ID != want.ID || restored.Sound != want.Sound || restored.Volume != want.Volume || !restored.Enabled {
+		t.Fatalf("restored event = %+v, want the Default() alert-start event %+v", *restored, want)
+	}
+
+	if !strings.Contains(logs.String(), "restored a missing alert event") {
+		t.Errorf("Load did not log the restoration; log = %q", logs.String())
+	}
+	if !strings.Contains(logs.String(), config.TriggerAlertStart) {
+		t.Errorf("the log line does not name which trigger was restored; log = %q", logs.String())
+	}
+	if lvl := "level=ERROR"; !strings.Contains(logs.String(), lvl) {
+		t.Errorf("the restoration was not logged at Error; log = %q", logs.String())
+	}
+}
+
+// Restoring is only for an event that is absent — one that is present, even
+// disabled, must come back exactly as loaded. enabled: false is the
+// supported way to stop alert announcements, and Load must not paper over
+// it as if it were the same problem as a missing event.
+func TestLoadDoesNotTouchAPresentAlertStartEvent(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+
+	cfg := config.Default()
+	for i := range cfg.Events {
+		if cfg.Events[i].Trigger == config.TriggerAlertStart {
+			cfg.Events[i].Enabled = false
+			cfg.Events[i].Sound = "custom-siren.wav"
+			cfg.Events[i].Volume = 37
+		}
+	}
+	if err := config.Save(path, cfg); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	loaded, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	for _, ev := range loaded.Events {
+		if ev.Trigger != config.TriggerAlertStart {
+			continue
+		}
+		if ev.Enabled || ev.Sound != "custom-siren.wav" || ev.Volume != 37 {
+			t.Fatalf("a present alert-start event was altered by Load: %+v", ev)
+		}
+		return
+	}
+	t.Fatal("alert-start event disappeared entirely")
 }
