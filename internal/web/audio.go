@@ -42,6 +42,13 @@ type mixerReporter interface {
 	MixerControl(ctx context.Context, device string) (string, error)
 }
 
+// The type assertion above is deliberate, but it fails silently: change
+// MixerControl's signature on ALSA and this page simply stops naming the
+// control, with nothing to say why. This line turns that into a build
+// error instead, which is the only way to catch it — a test cannot prove
+// a failure whose whole nature is that nothing fails.
+var _ mixerReporter = player.ALSA{}
+
 // deviceListTimeout bounds the aplay call behind this page. A person is
 // watching a phone; a page that lists no devices with a line saying why is
 // better than one that never loads.
