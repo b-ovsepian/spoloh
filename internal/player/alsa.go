@@ -7,12 +7,30 @@ import (
 	"strings"
 )
 
+// RunFunc executes a command and returns its combined output. Nil means the
+// real thing.
+//
+// It exists because ALSA is the one part of this daemon that cannot be
+// exercised on a development machine: aplay and amixer are not installed, and
+// the build is CGO_ENABLED=0 precisely so that no ALSA library is linked. A
+// seam is the only way anything here gets a test.
+type RunFunc func(ctx context.Context, name string, args ...string) ([]byte, error)
+
 // ALSA shells out to alsa-utils. Exec is deliberate: it keeps the binary free
 // of cgo, which is what lets us cross-compile for every board from a laptop.
 type ALSA struct {
 	AplayBin  string // default "aplay"
 	AmixerBin string // default "amixer"
 	Mixer     string // default "Master"
+	// Run replaces the exec of aplay/amixer. Nil means the real thing.
+	Run RunFunc
+}
+
+func (a ALSA) run(ctx context.Context, name string, args ...string) ([]byte, error) {
+	if a.Run != nil {
+		return a.Run(ctx, name, args...)
+	}
+	return exec.CommandContext(ctx, name, args...).CombinedOutput()
 }
 
 func (a ALSA) aplay() string {
@@ -88,7 +106,7 @@ func (a ALSA) SetVolume(ctx context.Context, device string, pct int) error {
 	}
 	args = append(args, "sset", a.mixer(), fmt.Sprintf("%d%%", pct))
 
-	out, err := exec.CommandContext(ctx, a.amixer(), args...).CombinedOutput()
+	out, err := a.run(ctx, a.amixer(), args...)
 	if err != nil {
 		return fmt.Errorf("amixer: %w: %s", err, out)
 	}
@@ -104,7 +122,7 @@ func (a ALSA) Play(ctx context.Context, device, path string) error {
 	// not as a flag.
 	args = append(args, "--", path)
 
-	out, err := exec.CommandContext(ctx, a.aplay(), args...).CombinedOutput()
+	out, err := a.run(ctx, a.aplay(), args...)
 	if err != nil {
 		return fmt.Errorf("aplay: %w: %s", err, out)
 	}
