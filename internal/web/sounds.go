@@ -223,9 +223,30 @@ func (s *Server) renderSoundsPage(w http.ResponseWriter, status int, mutate func
 }
 
 // handleSoundsPage renders the sounds screen: every sound the library
-// holds, and the forms to add or remove one.
+// holds, and the forms to add, preview or remove one.
+//
+// The flash is /play's answer arriving back here. Each row's preview button
+// posts to /play naming this page as where to return, so the notice that
+// redirect carries — "Відтворюється: …", or the reason it could not — has to
+// land on the page the operator is standing on. It is read through the same
+// flashMessage the dashboard uses rather than a second copy of the rules,
+// because the two pages must not disagree about which names are safe to
+// repeat back.
 func (s *Server) handleSoundsPage(w http.ResponseWriter, r *http.Request) {
-	s.renderSoundsPage(w, http.StatusOK, nil)
+	flash := s.flashMessage(r)
+	// A failure belongs in Error, which the page renders as a destructive
+	// alert; a confirmation belongs in Message. soundsView's contract is
+	// that exactly one is ever set.
+	failed := r.URL.Query().Has("playfailed")
+	s.renderSoundsPage(w, http.StatusOK, func(v *soundsView) {
+		switch {
+		case flash == "":
+		case failed:
+			v.Error = flash
+		default:
+			v.Message = flash
+		}
+	})
 }
 
 // handleSoundsUpload adds a sound to the library. The body is capped at

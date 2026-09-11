@@ -577,3 +577,257 @@ func TestSoundsPageKeepsAFormThatPostsWithoutJavaScript(t *testing.T) {
 		t.Errorf("the upload form has no submit button; body:\n%s", rec.Body.String())
 	}
 }
+
+// --- Preview -------------------------------------------------------------
+//
+// The operator's complaint this answers: «все ще не можу прослухати звуки в
+// розділі Звуки». /sounds listed what the library held and offered no way to
+// hear any of it, so telling the siren from the all-clear meant deleting one
+// and finding out during an air raid.
+
+// playForm posts to /play the way a row's preview button does — the sound
+// and the page to come back to — through the full handler stack, so the
+// session and same-origin checks are exercised rather than bypassed.
+func playForm(t *testing.T, srv *web.Server, cookie *http.Cookie, form url.Values) *httptest.ResponseRecorder {
+	t.Helper()
+	return eventsPostForm(t, srv, cookie, "/play", form)
+}
+
+// The preview has to reach the real backend, not merely return a redirect: a
+// handler that answered 303 and played nothing would satisfy every status
+// assertion in this file while leaving the operator listening to silence.
+// newServerWithPlayer wires a real engine and player over a recording
+// backend, so this asserts on what was actually handed to playback.
+func TestSoundsPreviewPlaysTheNamedSoundThroughTheEngine(t *testing.T) {
+	srv, _, backend := newServerWithPlayer(t)
+	setPassword(t, srv, "correct horse battery staple")
+	cookie := login(t, srv, "correct horse battery staple")
+
+	rec := playForm(t, srv, cookie, url.Values{"sound": {"siren.wav"}, "return": {"/sounds"}})
+
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("status = %d, want 303; body:\n%s", rec.Code, rec.Body.String())
+	}
+	if got := waitPlayed(t, backend); got != "siren.wav" {
+		t.Fatalf("the device played %q, want siren.wav", got)
+	}
+}
+
+// A preview that bounced the operator to the dashboard would make previewing
+// three uploads in a row unusable: the list they are working through is on
+// /sounds, and every press would take them off it.
+func TestSoundsPreviewReturnsToTheSoundsPage(t *testing.T) {
+	srv, _, backend := newServerWithPlayer(t)
+	setPassword(t, srv, "correct horse battery staple")
+	cookie := login(t, srv, "correct horse battery staple")
+
+	rec := playForm(t, srv, cookie, url.Values{"sound": {"siren.wav"}, "return": {"/sounds"}})
+	waitPlayed(t, backend)
+
+	if loc := rec.Header().Get("Location"); loc != "/sounds?played=siren.wav" {
+		t.Fatalf("redirected to %q, want /sounds?played=siren.wav", loc)
+	}
+}
+
+// The one security-relevant line in this feature. A return value is taken
+// from a form and reflected into a Location header, so anything that can
+// name a host off this device turns the dashboard into an open redirect: a
+// crafted link would carry an operator away from the device's own address
+// onto a page of someone else's choosing.
+func TestPlayRefusesAnOffSiteReturnPath(t *testing.T) {
+	srv, _, _ := newServerWithPlayer(t)
+	setPassword(t, srv, "correct horse battery staple")
+	cookie := login(t, srv, "correct horse battery staple")
+
+	for _, off := range []string{
+		"http://evil.example/x",
+		"https://evil.example/x",
+		"//evil.example/x",
+		`/\evil.example`,
+		"evil.example/x",
+		"sounds",
+		"javascript:alert(1)",
+		"mailto:someone@evil.example",
+		"http://evil.example",
+	} {
+		t.Run(off, func(t *testing.T) {
+			// Not waiting on the backend here, unlike the tests above: the
+			// recording backend blocks on Play until cancelled, so only the
+			// first of these ever starts and the rest sit in the player's
+			// queue. What is under test is the Location, and the play is
+			// deliberately allowed to succeed so that a fallback cannot be
+			// mistaken for a refusal to play at all.
+			rec := playForm(t, srv, cookie, url.Values{"sound": {"siren.wav"}, "return": {off}})
+
+			loc := rec.Header().Get("Location")
+			if loc != "/?played=siren.wav" {
+				t.Fatalf("return=%q redirected to %q, want the /?played=siren.wav fallback", off, loc)
+			}
+		})
+	}
+}
+
+// A name that is not in the library is the case an operator reaches by
+// pressing a preview for a sound another tab has just deleted. It must be
+// refused, it must not panic, and — because they are standing on /sounds —
+// the refusal has to be readable there rather than on a bare error page.
+func TestSoundsPreviewOfAMissingSoundIsRefusedOnTheSoundsPage(t *testing.T) {
+	srv, _, _ := newServerWithPlayer(t)
+	setPassword(t, srv, "correct horse battery staple")
+	cookie := login(t, srv, "correct horse battery staple")
+
+	rec := playForm(t, srv, cookie, url.Values{"sound": {"../../etc/passwd"}, "return": {"/sounds"}})
+
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("status = %d, want 303 back to /sounds; body:\n%s", rec.Code, rec.Body.String())
+	}
+	loc := rec.Header().Get("Location")
+	if loc != "/sounds?playfailed=missing" {
+		t.Fatalf("redirected to %q, want /sounds?playfailed=missing", loc)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, loc, nil)
+	req.AddCookie(cookie)
+	page := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(page, req)
+	if !strings.Contains(page.Body.String(), "Такого звука немає в бібліотеці.") {
+		t.Errorf("the sounds page does not say why the preview failed; body:\n%s", page.Body.String())
+	}
+}
+
+// The flash is the whole point of the return path: without it the operator
+// gets a page that looks exactly as it did before they pressed anything, and
+// no way to tell a preview that started from one that was refused.
+func TestSoundsPageShowsThePreviewFlash(t *testing.T) {
+	srv, _, _ := newServerWithPlayer(t)
+	setPassword(t, srv, "correct horse battery staple")
+	cookie := login(t, srv, "correct horse battery staple")
+
+	for _, tc := range []struct {
+		query string
+		want  string
+	}{
+		{"/sounds?played=siren.wav", "Відтворюється: siren.wav"},
+		{"/sounds?playfailed=missing", "Такого звука немає в бібліотеці."},
+		{"/sounds?playfailed=unavailable", "Відтворення недоступне на цьому пристрої."},
+	} {
+		t.Run(tc.query, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, tc.query, nil)
+			req.AddCookie(cookie)
+			rec := httptest.NewRecorder()
+			srv.Handler().ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d, want 200", rec.Code)
+			}
+			if !strings.Contains(rec.Body.String(), tc.want) {
+				t.Errorf("%s does not carry %q; body:\n%s", tc.query, tc.want, rec.Body.String())
+			}
+		})
+	}
+}
+
+// An unrecognised code — a hand-edited link, a redirect from an older build
+// still in a browser's history — must not be echoed onto the device's own
+// dashboard dressed as something the device said. Same rule flashMessage
+// already applies to "played".
+func TestSoundsPageDoesNotEchoAnUnknownFailureCode(t *testing.T) {
+	srv, _, _ := newServerWithPlayer(t)
+	setPassword(t, srv, "correct horse battery staple")
+	cookie := login(t, srv, "correct horse battery staple")
+
+	req := httptest.NewRequest(http.MethodGet, "/sounds?playfailed="+url.QueryEscape("Тривога! Це не тест"), nil)
+	req.AddCookie(cookie)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+
+	body := rec.Body.String()
+	if strings.Contains(body, "Тривога! Це не тест") {
+		t.Error("an unvalidated playfailed value was echoed onto the page")
+	}
+	if !strings.Contains(body, "Не вдалося відтворити звук.") {
+		t.Errorf("the generic fallback sentence is missing; body:\n%s", body)
+	}
+}
+
+// The preview is a plain form for the same reason the upload form is: this
+// device is safety equipment, and the only way to tell the siren from the
+// all-clear must not depend on a script being alive.
+func TestSoundsPageRendersAPreviewFormPerRowWithoutJavaScript(t *testing.T) {
+	srv, _ := newServerWithLibrary(t, "siren.wav", "all-clear.wav")
+	setPassword(t, srv, "correct horse battery staple")
+	cookie := login(t, srv, "correct horse battery staple")
+
+	req := httptest.NewRequest(http.MethodGet, "/sounds", nil)
+	req.AddCookie(cookie)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+
+	body := rec.Body.String()
+	if n := strings.Count(body, `<form method="post" action="/play">`); n != 4 {
+		// Two sounds, each rendered twice: the stacked card below sm and the
+		// table above it.
+		t.Errorf("page has %d preview forms, want 4 (2 sounds in both the card and table renderings); body:\n%s", n, body)
+	}
+	for _, want := range []string{
+		`<input type="hidden" name="sound" value="siren.wav">`,
+		`<input type="hidden" name="sound" value="all-clear.wav">`,
+		`<input type="hidden" name="return" value="/sounds">`,
+		"Прослухати",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("the preview form is missing %q; body:\n%s", want, body)
+		}
+	}
+	if strings.Contains(body, `action="/play"`) && !strings.Contains(body, `type="submit">Прослухати`) {
+		t.Error("the preview is not a submit button on a plain form")
+	}
+}
+
+// /play is the dashboard's manual playback as well, and nothing about adding
+// a return field may change what the home page's own form — which names no
+// return at all — has always done: 303 to /?played= on success, a plain
+// error response on a sound that is not there.
+func TestPlayWithoutAReturnPathIsUnchanged(t *testing.T) {
+	srv, _, backend := newServerWithPlayer(t)
+	setPassword(t, srv, "correct horse battery staple")
+	cookie := login(t, srv, "correct horse battery staple")
+
+	rec := playForm(t, srv, cookie, url.Values{"sound": {"siren.wav"}})
+	waitPlayed(t, backend)
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("status = %d, want 303", rec.Code)
+	}
+	if loc := rec.Header().Get("Location"); loc != "/?played=siren.wav" {
+		t.Fatalf("redirected to %q, want /?played=siren.wav", loc)
+	}
+
+	rec = playForm(t, srv, cookie, url.Values{"sound": {"nope.wav"}})
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("a missing sound with no return path = %d, want 400 — the home page's own error response", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "Такого звука немає в бібліотеці.") {
+		t.Errorf("the 400 does not name the problem; body:\n%s", rec.Body.String())
+	}
+}
+
+// The same-origin check every mutating handler here uses applies to the
+// preview too, and it has to keep applying: /play is reached from a new page
+// now, and a reviewer could reasonably wonder whether that changed anything.
+func TestSoundsPreviewRejectsCrossOrigin(t *testing.T) {
+	srv, _, _ := newServerWithPlayer(t)
+	setPassword(t, srv, "correct horse battery staple")
+	cookie := login(t, srv, "correct horse battery staple")
+
+	form := url.Values{"sound": {"siren.wav"}, "return": {"/sounds"}}
+	req := httptest.NewRequest(http.MethodPost, "/play", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Origin", "http://evil.example")
+	req.AddCookie(cookie)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", rec.Code)
+	}
+}

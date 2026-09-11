@@ -62,6 +62,21 @@
     <p class="text-muted-foreground">Звуків поки немає.</p>
     {{else}}
     {{/*
+    «Прослухати» is a plain form posting to /play — the same route the
+    dashboard's manual playback uses, with this page named as where to come
+    back to. It plays through the engine, the player's priority queue and the
+    configured output, which is what an operator previewing a sound actually
+    needs to know: that the thing on the wall makes this noise. A browser
+    playing the file over HTTP would prove nothing about the device, and a
+    second playback path would be a preview that can lie about what it is
+    previewing. A real alert still preempts it — nothing here raises a
+    preview's priority.
+
+    No script, deliberately: this is the device's only way to tell the siren
+    from the all-clear before an air raid does it for you, and it must work
+    with JavaScript off, the same rule the upload form above follows.
+    */}}
+    {{/*
     The same two-renderings-of-one-list split log.html uses: a stacked card
     per sound below sm, a table above it. A table's columns are what this
     data actually is — name, size, modified, used by — but forcing that
@@ -77,10 +92,17 @@
         </div>
         <p class="text-sm text-muted-foreground">{{.ModTimeText}}</p>
         {{if .UsedByText}}<p class="text-sm text-muted-foreground">Використовується: {{.UsedByText}}</p>{{end}}
-        <form method="post" action="/sounds/delete" class="mt-2">
-          <input type="hidden" name="name" value="{{.Name}}">
-          <button class="btn" data-variant="outline" data-size="sm" type="submit">Видалити</button>
-        </form>
+        <div class="mt-2 flex flex-wrap gap-2">
+          <form method="post" action="/play">
+            <input type="hidden" name="sound" value="{{.Name}}">
+            <input type="hidden" name="return" value="/sounds">
+            <button class="btn" data-variant="outline" data-size="sm" type="submit">Прослухати</button>
+          </form>
+          <form method="post" action="/sounds/delete">
+            <input type="hidden" name="name" value="{{.Name}}">
+            <button class="btn" data-variant="outline" data-size="sm" type="submit">Видалити</button>
+          </form>
+        </div>
       </li>
       {{end}}
     </ul>
@@ -103,10 +125,17 @@
             <td class="font-mono text-sm">{{.ModTimeText}}</td>
             <td>{{if .UsedByText}}{{.UsedByText}}{{else}}—{{end}}</td>
             <td>
-              <form method="post" action="/sounds/delete">
-                <input type="hidden" name="name" value="{{.Name}}">
-                <button class="btn" data-variant="outline" data-size="sm" type="submit">Видалити</button>
-              </form>
+              <div class="flex flex-wrap gap-2">
+                <form method="post" action="/play">
+                  <input type="hidden" name="sound" value="{{.Name}}">
+                  <input type="hidden" name="return" value="/sounds">
+                  <button class="btn" data-variant="outline" data-size="sm" type="submit">Прослухати</button>
+                </form>
+                <form method="post" action="/sounds/delete">
+                  <input type="hidden" name="name" value="{{.Name}}">
+                  <button class="btn" data-variant="outline" data-size="sm" type="submit">Видалити</button>
+                </form>
+              </div>
             </td>
           </tr>
           {{end}}
