@@ -34,13 +34,12 @@ const maxUploadBytes = 16 << 20
 // wedged converter must not hang the request forever.
 const uploadTimeout = 30 * time.Second
 
-// soundRowView is what one row of sounds.html reads. library.Sound carries
-// no duration — playback never decodes anything, so nothing in this package
-// ever computes one — and this must not invent one either.
+// soundRowView is what one row of sounds.html reads.
 type soundRowView struct {
-	Name        string
-	SizeText    string
-	ModTimeText string
+	Name         string
+	DurationText string
+	SizeText     string
+	ModTimeText  string
 	// UsedByText names, comma-joined, the events that play this sound —
 	// empty when none do. It exists so the page shows, before an operator
 	// ever tries, the exact reason handleSoundsDelete would refuse it.
@@ -96,6 +95,26 @@ func humanSize(n int64) string {
 	default:
 		return fmt.Sprintf("%d Б", n)
 	}
+}
+
+// humanDuration renders a playback length the way someone reads a clock —
+// "0:12", "1:05", "4:30" — not as a Go duration string ("1m5s", "4m30s").
+// known is false whenever library.Sound could not determine the length: a
+// header that would not parse, or one with a byte rate of zero to divide by.
+// Rendering that case as "0:00" would tell an operator a sound is silent,
+// which is a different, worse claim than "I could not tell" — they read
+// those two facts differently, and an event that repeats what turns out to
+// be a four-minute siren three times is not a mistake this page should be
+// able to hide.
+func humanDuration(d time.Duration, known bool) string {
+	if !known {
+		return "невідомо"
+	}
+	totalSeconds := int64(d / time.Second)
+	if totalSeconds < 0 {
+		totalSeconds = 0
+	}
+	return fmt.Sprintf("%d:%02d", totalSeconds/60, totalSeconds%60)
 }
 
 // uploadRejectionMessage turns library.Add's own error into one sentence an
@@ -200,10 +219,11 @@ func (s *Server) soundsBaseView(cfg *config.Config) soundsView {
 	view.Rows = make([]soundRowView, len(sounds))
 	for i, snd := range sounds {
 		view.Rows[i] = soundRowView{
-			Name:        snd.Name,
-			SizeText:    humanSize(snd.Size),
-			ModTimeText: snd.ModTime.In(loc).Format("2006-01-02 15:04:05"),
-			UsedByText:  strings.Join(soundUsers(cfg, snd.Name), ", "),
+			Name:         snd.Name,
+			DurationText: humanDuration(snd.Duration, snd.DurationKnown),
+			SizeText:     humanSize(snd.Size),
+			ModTimeText:  snd.ModTime.In(loc).Format("2006-01-02 15:04:05"),
+			UsedByText:   strings.Join(soundUsers(cfg, snd.Name), ", "),
 		}
 	}
 	return view

@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -80,6 +81,26 @@ func uploadRequest(t *testing.T, filename string, body []byte) *http.Request {
 	req.Header.Set("Content-Type", w.FormDataContentType())
 	req.Header.Set("Origin", "http://"+req.Host)
 	return req
+}
+
+// newServerWithLibraryDir is newServerWithLibrary's counterpart for fixtures
+// too large to reasonably POST through /sounds/upload's own maxUploadBytes
+// ceiling: it hands the test the library directory itself, to write into
+// directly, the same way an existing file the operator did not upload
+// through this form is already sitting there when the daemon starts.
+func newServerWithLibraryDir(t *testing.T) (*web.Server, string) {
+	t.Helper()
+	store, err := configstore.Open(filepath.Join(t.TempDir(), "config.json"))
+	if err != nil {
+		t.Fatalf("configstore.Open: %v", err)
+	}
+	dir := t.TempDir()
+	lib := library.New(dir, library.FFmpeg{})
+	srv, err := web.New(web.Deps{Config: store, Library: lib})
+	if err != nil {
+		t.Fatalf("web.New: %v", err)
+	}
+	return srv, dir
 }
 
 func TestSoundsPageRequiresSession(t *testing.T) {
@@ -575,6 +596,141 @@ func TestSoundsPageKeepsAFormThatPostsWithoutJavaScript(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), `type="submit"`) {
 		t.Errorf("the upload form has no submit button; body:\n%s", rec.Body.String())
+	}
+}
+
+// --- Duration --------------------------------------------------------------
+//
+// «на Бібліотека звуків показувати тривалість звуку» — the operator's
+// request this answers. Size in megabytes does not say how long a sound
+// plays, and on this device that matters: an event repeats a sound a
+// configured number of times and quiet hours are measured in minutes.
+
+// wavOfDuration builds a conforming (PCM 16-bit 44100 Hz stereo) WAV of
+// exactly the given length, so a test can assert on the page's own
+// formatted text ("0:12") instead of an arithmetic result it has to trust.
+func wavOfDuration(seconds int) []byte {
+	const byteRate = 44100 * 2 * 2 // sampleRate * channels * bytesPerSample
+	return makeWAV(1, 2, 44100, 16, make([]byte, byteRate*seconds))
+}
+
+// wavWithZeroByteRate conforms on every field library.Add checks (format
+// tag, channel count, sample rate, bit depth) except the fmt chunk's own
+// ByteRate field, which no real encoder writes as zero. It is the one way
+// to get an unknown-duration sound into the library through the same
+// upload path an operator uses, rather than by writing into the library
+// directory directly the way library_test.go's equivalent fixture does.
+func wavWithZeroByteRate() []byte {
+	data := []byte("some audio payload, its content does not matter here")
+	const blockAlign = 2 * (16 / 8) // channels * bytesPerSample
+
+	var buf bytes.Buffer
+	buf.WriteString("RIFF")
+	binary.Write(&buf, binary.LittleEndian, uint32(36+len(data)))
+	buf.WriteString("WAVE")
+	buf.WriteString("fmt ")
+	binary.Write(&buf, binary.LittleEndian, uint32(16))
+	binary.Write(&buf, binary.LittleEndian, uint16(1)) // PCM
+	binary.Write(&buf, binary.LittleEndian, uint16(2)) // stereo
+	binary.Write(&buf, binary.LittleEndian, uint32(44100))
+	binary.Write(&buf, binary.LittleEndian, uint32(0)) // the malformed field under test
+	binary.Write(&buf, binary.LittleEndian, uint16(blockAlign))
+	binary.Write(&buf, binary.LittleEndian, uint16(16))
+	buf.WriteString("data")
+	binary.Write(&buf, binary.LittleEndian, uint32(len(data)))
+	buf.Write(data)
+	return buf.Bytes()
+}
+
+// Covers a sub-minute, a minute-plus and a multi-minute value — the three
+// shapes humanDuration's "%d:%02d" formatting can produce — asserted against
+// both of sounds.html's two renderings of the row (the table cell and the
+// mobile card's "duration · size" line). Each expected string is matched
+// with a boundary on both sides so a coincidental digit run inside a
+// modification timestamp rendered elsewhere on the same page (HH:MM:SS)
+// cannot be mistaken for it.
+//
+// The fixtures are written straight into the library directory rather than
+// posted through /sounds/upload: 4 minutes 30 seconds of conforming PCM
+// audio is about 45 MB, well past maxUploadBytes's 16 MiB ceiling on the
+// upload form itself, but an ordinary file already sitting in the library
+// directory — restored from a backup, copied over SSH, present before that
+// ceiling existed — is exactly what List reads on every page load regardless
+// of how it got there.
+//
+// Mutation to prove this test: format duration as a Go duration string
+// (d.String(), e.g. "1m5s") instead of "%d:%02d". None of "1m5s", "4m30s" or
+// "12s" match this test's expectations.
+func TestSoundsPageRendersDurationForEachMagnitude(t *testing.T) {
+	srv, dir := newServerWithLibraryDir(t)
+	setPassword(t, srv, "correct horse battery staple")
+	cookie := login(t, srv, "correct horse battery staple")
+
+	for _, tc := range []struct {
+		filename string
+		seconds  int
+	}{
+		{"short.wav", 12},  // sub-minute
+		{"medium.wav", 65}, // minute-plus
+		{"long.wav", 270},  // multi-minute
+	} {
+		if err := os.WriteFile(filepath.Join(dir, tc.filename), wavOfDuration(tc.seconds), 0o644); err != nil {
+			t.Fatalf("WriteFile %s: %v", tc.filename, err)
+		}
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/sounds", nil)
+	req.AddCookie(cookie)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+	body := rec.Body.String()
+
+	for _, want := range []string{"0:12", "1:05", "4:30"} {
+		if !strings.Contains(body, ">"+want+"<") {
+			t.Errorf("the table does not show duration %q; body:\n%s", want, body)
+		}
+		if !strings.Contains(body, want+" ·") {
+			t.Errorf("the mobile card does not show duration %q; body:\n%s", want, body)
+		}
+	}
+}
+
+// A duration that cannot be determined must say so, not claim the sound is
+// silent. "0:00" and "I could not tell" are different facts and an operator
+// reads them differently — an event pointed at a sound that actually plays
+// for four minutes is not something this page may hide behind a wrong zero.
+//
+// Mutation to prove this test: have humanDuration format the unknown case as
+// "0:00" instead of returning the unknown-duration text. This test's checks
+// for the exact rendered patterns "0:00 ·" and ">0:00<" then fail, because
+// that is exactly what the mutation would produce.
+func TestSoundsPageRendersUnknownDurationRatherThanZero(t *testing.T) {
+	srv, _ := newServerWithLibrary(t)
+	setPassword(t, srv, "correct horse battery staple")
+	cookie := login(t, srv, "correct horse battery staple")
+
+	req := uploadRequest(t, "bad-rate.wav", wavWithZeroByteRate())
+	req.AddCookie(cookie)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("uploading bad-rate.wav: status = %d, want 200 (it conforms on every field library.Add checks); body:\n%s", rec.Code, rec.Body.String())
+	}
+
+	req2 := httptest.NewRequest(http.MethodGet, "/sounds", nil)
+	req2.AddCookie(cookie)
+	rec2 := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec2, req2)
+	body := rec2.Body.String()
+
+	if !strings.Contains(body, "bad-rate.wav") {
+		t.Fatalf("the uploaded sound is not listed; body:\n%s", body)
+	}
+	if strings.Contains(body, "0:00 ·") || strings.Contains(body, ">0:00<") {
+		t.Errorf("an unknown duration rendered as 0:00; body:\n%s", body)
+	}
+	if !strings.Contains(body, "невідомо") {
+		t.Errorf("an unknown duration does not say so; body:\n%s", body)
 	}
 }
 
