@@ -113,3 +113,33 @@ func TestUnauthenticatedPagesCarryNoShell(t *testing.T) {
 		t.Error("/login offers navigation to pages a visitor cannot reach yet")
 	}
 }
+
+// The header's measure must follow the page's, not pin its own. Three
+// screens widen past the default, and a nav bar that stays narrow while the
+// cards beneath it run wider reads as a rendering fault. Both widths are
+// asserted from one request each, because the failure this catches is the
+// two disagreeing — checking either alone would pass with the header
+// hardcoded.
+func TestHeaderWidthTracksThePageWidth(t *testing.T) {
+	srv := newServer(t)
+	setPassword(t, srv, "correct horse battery staple")
+	cookie := login(t, srv, "correct horse battery staple")
+
+	for _, tc := range []struct {
+		path  string
+		width string
+	}{
+		{"/", "max-w-5xl"},       // home.html defines "width"
+		{"/alerts", "max-w-3xl"}, // no override: the layout's default
+	} {
+		req := httptest.NewRequest(http.MethodGet, tc.path, nil)
+		req.AddCookie(cookie)
+		rec := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(rec, req)
+
+		header := `<div class="mx-auto flex ` + tc.width + ` items-center gap-2 p-3 sm:gap-4">`
+		if !strings.Contains(rec.Body.String(), header) {
+			t.Errorf("%s: header is not %s; body:\n%s", tc.path, tc.width, rec.Body.String())
+		}
+	}
+}

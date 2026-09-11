@@ -53,7 +53,16 @@ phone that adds it to the home screen otherwise stores a screenshot.
 </head>
 <body class="min-h-screen bg-background text-foreground">
 <header class="border-b border-border bg-card">
-  <div class="mx-auto flex max-w-3xl items-center gap-2 p-3 sm:gap-4">
+  {{/*
+  The header tracks the content's measure rather than pinning its own. Three
+  screens already widen past the default, and a nav bar that stays narrow
+  while the cards beneath it run wider reads as a rendering fault — most
+  visibly on the dashboard, where the alert banner is the widest thing on the
+  page. "width" is a block, so this re-executes whatever the page defined,
+  and both class names appear literally in template source for Tailwind to
+  find.
+  */}}
+  <div class="mx-auto flex {{template "width" .}} items-center gap-2 p-3 sm:gap-4">
     <a href="/" class="flex items-center gap-2 text-lg font-semibold tracking-wide">{{template "mark" 22}}Сполох</a>
     {{/*
     aria-current is bound by Alpine from the address bar rather than passed in
