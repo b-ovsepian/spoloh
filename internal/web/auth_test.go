@@ -534,3 +534,38 @@ func TestLogoutIgnoresACookieItDidNotSign(t *testing.T) {
 		t.Fatalf("status = %d, want 200: a forged logout ended a real session", rec.Code)
 	}
 }
+
+// Chrome sends Origin: null with no Sec-Fetch-Site and no Referer for ordinary
+// same-origin form posts to a device served over plain HTTP on a .local name.
+// Rejecting that made every submission on the setup page fail on real hardware.
+func TestSameOriginAcceptsAnOpaqueOrigin(t *testing.T) {
+	srv, _ := newServerWithStore(t)
+
+	form := url.Values{"password": {"correct horse battery staple"}, "confirm": {"correct horse battery staple"}}
+	req := httptest.NewRequest(http.MethodPost, "/setup", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Origin", "null")
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+
+	if rec.Code == http.StatusForbidden {
+		t.Fatalf("an opaque origin was refused: %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+// An Origin that names a different host is still positive evidence and is
+// still refused — the opaque case must not have opened the door generally.
+func TestSameOriginStillRefusesADifferentHost(t *testing.T) {
+	srv, _ := newServerWithStore(t)
+
+	form := url.Values{"password": {"correct horse battery staple"}, "confirm": {"correct horse battery staple"}}
+	req := httptest.NewRequest(http.MethodPost, "/setup", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Origin", "http://evil.example")
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("a cross-origin POST returned %d, want 403", rec.Code)
+	}
+}

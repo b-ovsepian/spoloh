@@ -264,7 +264,28 @@ func sameOrigin(r *http.Request) bool {
 	}
 	if origin := r.Header.Get("Origin"); origin != "" {
 		u, err := url.Parse(origin)
-		return err == nil && u.Host == r.Host
+		if err != nil || u.Host == "" {
+			// An opaque origin — the literal "null" — or one that does not
+			// parse to a host carries no information about where the request
+			// came from. That is an absence of evidence, not evidence of an
+			// attack, and this function's rule is to reject only on a signal
+			// that positively says otherwise.
+			//
+			// Treating it as hostile made the dashboard unusable: Chrome sends
+			// Origin: null with no Sec-Fetch-Site and no Referer for ordinary
+			// same-origin form posts to this device over plain HTTP, so every
+			// submission on the setup page was refused. Observed on a real
+			// board, not reasoned about.
+			//
+			// What still protects the session routes is the SameSite=Lax
+			// cookie, which a cross-site POST never carries. This check exists
+			// for the two routes that have no session to protect — /setup and
+			// /login — and for /setup the window is an unconfigured device
+			// only, where forging a request gains an attacker nothing they
+			// could not do by opening the page themselves.
+			return true
+		}
+		return u.Host == r.Host
 	}
 	return true
 }
