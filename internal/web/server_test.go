@@ -116,6 +116,30 @@ func newServerWithNetwork(t *testing.T) (*web.Server, *configstore.Store, *netmg
 	return srv, store, fake
 }
 
+// deviceListerFunc adapts a function to web.DeviceLister, the same shape
+// http.HandlerFunc gives http.Handler — lets a test script a slow, failing
+// or empty device list without a dedicated struct.
+type deviceListerFunc func(context.Context) ([]player.Device, error)
+
+func (f deviceListerFunc) Devices(ctx context.Context) ([]player.Device, error) { return f(ctx) }
+
+// newServerWithDevices wires a stub DeviceLister returning devices
+// unconditionally, for audio_test.go's exercise of /audio against a
+// scripted device list rather than real aplay.
+func newServerWithDevices(t *testing.T, devices []player.Device) (*web.Server, *configstore.Store) {
+	t.Helper()
+	store, err := configstore.Open(filepath.Join(t.TempDir(), "config.json"))
+	if err != nil {
+		t.Fatalf("configstore.Open: %v", err)
+	}
+	lister := deviceListerFunc(func(context.Context) ([]player.Device, error) { return devices, nil })
+	srv, err := web.New(web.Deps{Config: store, Devices: lister})
+	if err != nil {
+		t.Fatalf("web.New: %v", err)
+	}
+	return srv, store
+}
+
 func appendAlert(t *testing.T, lg *eventlog.Log, sound string) {
 	t.Helper()
 	if err := lg.Append(eventlog.Entry{Kind: eventlog.KindAlert, Sound: sound, OK: true}); err != nil {

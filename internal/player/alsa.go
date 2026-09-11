@@ -124,7 +124,21 @@ func (a ALSA) Play(ctx context.Context, device, path string) error {
 
 	out, err := a.run(ctx, a.aplay(), args...)
 	if err != nil {
-		return fmt.Errorf("aplay: %w: %s", err, out)
+		// The device is named in the error, not just aplay's own exit status:
+		// on a freshly installed board `default` resolves to the HDMI card,
+		// and with nothing plugged into it every single playback fails the
+		// same way ("audio open error: Unknown error 524", observed on a
+		// real Raspberry Pi 4). Without the device name here, that error
+		// reaches whoever reads the log as an unqualified "aplay: exit
+		// status 1" — no way to tell which of possibly several configured
+		// outputs is the broken one. web.handleLog points a playback error
+		// at /audio for the same reason; this is what lets that message say
+		// which device to change there.
+		name := device
+		if name == "" {
+			name = "default"
+		}
+		return fmt.Errorf("aplay -D %s: %w: %s", name, err, out)
 	}
 	return nil
 }

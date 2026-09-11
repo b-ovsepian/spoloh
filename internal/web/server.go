@@ -41,7 +41,12 @@ type Deps struct {
 	// the join in progress. Nil is tolerated like every other optional
 	// dependency here, and a nil gate is simply never held.
 	JoinGate *netmgr.JoinGate
-	Logger   *slog.Logger
+	// Devices lists the ALSA outputs the /audio page offers. player.ALSA
+	// (already constructed in main.go for playback) satisfies this; nil is
+	// tolerated like every other optional dependency here, and in this
+	// package's own tests that don't need one.
+	Devices DeviceLister
+	Logger  *slog.Logger
 }
 
 type Server struct {
@@ -114,6 +119,8 @@ func New(d Deps) (*Server, error) {
 	s.handle("GET /sounds", http.HandlerFunc(s.handleSoundsPage))
 	s.handle("POST /sounds/upload", http.HandlerFunc(s.handleSoundsUpload))
 	s.handle("POST /sounds/delete", http.HandlerFunc(s.handleSoundsDelete))
+	s.handle("GET /audio", http.HandlerFunc(s.handleAudioPage))
+	s.handle("POST /audio", http.HandlerFunc(s.handleAudioSave))
 	s.handle("GET /{$}", http.HandlerFunc(s.handleHome))
 
 	return s, nil

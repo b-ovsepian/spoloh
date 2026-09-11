@@ -64,7 +64,7 @@ func TestDevicesParsesRealAplayOutput(t *testing.T) {
 		}
 	}
 	want := map[string]string{
-		"default":                      "Playback/recording through the PLUG plugin",
+		"default":                      "Default Audio Device",
 		"sysdefault:CARD=Headphones":   "bcm2835 Headphones, bcm2835 Headphones",
 		"hdmi:CARD=vc4hdmi0,DEV=0":     "vc4-hdmi-0, MAI PCM i2s-hifi-0",
 		"sysdefault:CARD=Device":       "USB Audio Device, USB Audio",
@@ -78,6 +78,47 @@ func TestDevicesParsesRealAplayOutput(t *testing.T) {
 	for name, desc := range want {
 		if found[name] != desc {
 			t.Errorf("device %q description = %q, want %q", name, found[name], desc)
+		}
+	}
+}
+
+// TestDevicesParsesTheRealBoardCapture parses the verbatim `aplay -L`
+// capture taken over SSH from a real Raspberry Pi 4 — internal/web's /audio
+// screen is what a freshly installed device needs this exact shape for: 13
+// devices, of which 11 are indistinguishable from each other by description
+// alone (six read "vc4-hdmi, MAI PCM i2s-hifi-0", five read "bcm2835
+// Headphones, bcm2835 Headphones"), which is why that screen groups by card
+// rather than listing them flat.
+func TestDevicesParsesTheRealBoardCapture(t *testing.T) {
+	rec := &recorder{out: fixture(t, "aplay-L-rpi4.txt")}
+	a := player.ALSA{Run: rec.run}
+
+	got, err := a.Devices(context.Background())
+	if err != nil {
+		t.Fatalf("Devices: %v", err)
+	}
+	if len(got) != 13 {
+		t.Fatalf("got %d devices, want 13 (null dropped from the capture's 14 lines)", len(got))
+	}
+
+	want := []player.Device{
+		{Name: "default", Description: "Default Audio Device"},
+		{Name: "sysdefault", Description: "Default Audio Device"},
+		{Name: "hw:CARD=vc4hdmi,DEV=0", Description: "vc4-hdmi, MAI PCM i2s-hifi-0"},
+		{Name: "plughw:CARD=vc4hdmi,DEV=0", Description: "vc4-hdmi, MAI PCM i2s-hifi-0"},
+		{Name: "default:CARD=vc4hdmi", Description: "vc4-hdmi, MAI PCM i2s-hifi-0"},
+		{Name: "sysdefault:CARD=vc4hdmi", Description: "vc4-hdmi, MAI PCM i2s-hifi-0"},
+		{Name: "hdmi:CARD=vc4hdmi,DEV=0", Description: "vc4-hdmi, MAI PCM i2s-hifi-0"},
+		{Name: "dmix:CARD=vc4hdmi,DEV=0", Description: "vc4-hdmi, MAI PCM i2s-hifi-0"},
+		{Name: "hw:CARD=Headphones,DEV=0", Description: "bcm2835 Headphones, bcm2835 Headphones"},
+		{Name: "plughw:CARD=Headphones,DEV=0", Description: "bcm2835 Headphones, bcm2835 Headphones"},
+		{Name: "default:CARD=Headphones", Description: "bcm2835 Headphones, bcm2835 Headphones"},
+		{Name: "sysdefault:CARD=Headphones", Description: "bcm2835 Headphones, bcm2835 Headphones"},
+		{Name: "dmix:CARD=Headphones,DEV=0", Description: "bcm2835 Headphones, bcm2835 Headphones"},
+	}
+	for i, w := range want {
+		if i >= len(got) || got[i] != w {
+			t.Errorf("device %d = %+v, want %+v", i, got[i], w)
 		}
 	}
 }

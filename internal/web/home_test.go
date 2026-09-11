@@ -3,6 +3,7 @@ package web_test
 import (
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 
@@ -130,6 +131,47 @@ func TestHomePutsStopAheadOfPlay(t *testing.T) {
 	}
 	if stop > play {
 		t.Error("the play control comes before the stop button, which is the one pressed in a hurry")
+	}
+}
+
+// A stop button offering to stop a silent device has nothing to do — see
+// engine.Status.PlayingEventID, which is what this gates on.
+func TestHomeHidesStopButtonWhenNothingIsPlaying(t *testing.T) {
+	srv, _, _ := newServerWithPlayer(t)
+	setPassword(t, srv, "correct horse battery staple")
+	cookie := login(t, srv, "correct horse battery staple")
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.AddCookie(cookie)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+
+	if !strings.Contains(rec.Body.String(), `x-show="playing" style="display:none"`) {
+		t.Errorf("a device playing nothing does not hide the stop button; body:\n%s", rec.Body.String())
+	}
+}
+
+func TestHomeShowsStopButtonWhileSomethingIsPlaying(t *testing.T) {
+	srv, _, backend := newServerWithPlayer(t)
+	setPassword(t, srv, "correct horse battery staple")
+	cookie := login(t, srv, "correct horse battery staple")
+
+	playReq := postForm("/play", url.Values{"sound": {"siren.wav"}})
+	playReq.AddCookie(cookie)
+	srv.Handler().ServeHTTP(httptest.NewRecorder(), playReq)
+	waitPlayed(t, backend)
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.AddCookie(cookie)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+
+	body := rec.Body.String()
+	if !strings.Contains(body, `action="/stop"`) {
+		t.Fatal("the stop button is missing from the page entirely")
+	}
+	if strings.Contains(body, `x-show="playing" style="display:none"`) {
+		t.Errorf("the stop button stayed hidden while something is playing; body:\n%s", body)
 	}
 }
 

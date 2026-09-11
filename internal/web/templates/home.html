@@ -76,13 +76,21 @@
   the alert itself — a permanent red bar on a calm device would read as an
   alarm from across the corridor, which is the one thing this screen must
   never get wrong.
+
+  Shown only while something is actually playing: engine.Status already
+  carries PlayingEventID for exactly this, and a button offering to stop a
+  silent device is a button with nothing to do. Both states are rendered and
+  one is hidden, the same shape the alert/calm blocks above use, so a browser
+  with no JavaScript still sees the state the server rendered.
   */}}
-  <form method="post" action="/stop">
-    <button class="btn h-14 w-full border-2 border-destructive bg-card text-xl font-semibold text-destructive hover:bg-destructive/10" type="submit">
-      <svg class="size-6" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>
-      Зупинити звук
-    </button>
-  </form>
+  <div x-show="playing"{{if not .Status.PlayingEventID}} style="display:none"{{end}}>
+    <form method="post" action="/stop">
+      <button class="btn h-14 w-full border-2 border-destructive bg-card text-xl font-semibold text-destructive hover:bg-destructive/10" type="submit">
+        <svg class="size-6" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>
+        Зупинити звук
+      </button>
+    </form>
+  </div>
 
   {{if .Flash}}<div class="alert" role="status"><section><p>{{.Flash}}</p></section></div>{{end}}
 
@@ -171,6 +179,9 @@ function status() {
     lastSuccess: {{.LastSuccessText}}, lastError: {{.Status.LastError}}, source: {{.Status.SourceName}},
     failing: {{.Status.Failing}}, clockSynced: {{.Status.ClockSynced}},
     nextEvent: {{.Status.NextEventName}}, nextEventAt: {{.NextEventAtText}},
+    // Truthy exactly while the player has something current — see sse.go's
+    // Playing field, which carries the event id for that same reason.
+    playing: {{.Status.PlayingEventID}},
     // stale says the frames stopped arriving, so everything above is a
     // photograph of some earlier moment rather than the state of the device.
     stale: false,
@@ -190,6 +201,7 @@ function status() {
         this.lastSuccess = d.last_success; this.lastError = d.last_error; this.source = d.source;
         this.failing = d.failing; this.clockSynced = d.clock_synced;
         this.nextEvent = d.next_event; this.nextEventAt = d.next_event_at;
+        this.playing = d.playing;
       };
       // Every way this stream can end arrives here: the daemon restarting,
       // Wi-Fi dropping, the router rebooting, somebody unplugging the switch.

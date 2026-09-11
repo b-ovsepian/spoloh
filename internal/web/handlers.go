@@ -191,6 +191,13 @@ type logEntryView struct {
 	Sound   string
 	OK      bool
 	Err     string
+	// PlaybackError marks a row the player itself failed on — as opposed to
+	// a source failure or a rejected manual request — so log.html can point
+	// at /audio right where the error is read. On a board with no monitor
+	// this log page is the whole diagnostic surface, and the raw aplay
+	// error alone (device already named — see player.ALSA.Play) does not
+	// say where to go to fix it.
+	PlaybackError bool
 }
 
 // logView is what log.html reads. Notice carries an operator-facing
@@ -252,12 +259,13 @@ func (s *Server) handleLog(w http.ResponseWriter, r *http.Request) {
 			view.Entries = make([]logEntryView, len(entries))
 			for i, e := range entries {
 				view.Entries[i] = logEntryView{
-					AtText:  e.At.In(loc).Format("2006-01-02 15:04:05"),
-					Kind:    kindLabel(e.Kind),
-					EventID: e.EventID,
-					Sound:   e.Sound,
-					OK:      e.OK,
-					Err:     e.Err,
+					AtText:        e.At.In(loc).Format("2006-01-02 15:04:05"),
+					Kind:          kindLabel(e.Kind),
+					EventID:       e.EventID,
+					Sound:         e.Sound,
+					OK:            e.OK,
+					Err:           e.Err,
+					PlaybackError: e.Kind == eventlog.KindPlaybackError,
 				}
 			}
 		}

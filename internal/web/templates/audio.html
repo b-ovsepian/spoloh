@@ -1,0 +1,76 @@
+{{define "title"}}Звук — Сполох{{end}}
+{{define "content"}}
+<div class="grid gap-4">
+  {{if .Message}}
+  <div class="alert" role="status"><section><p>{{.Message}}</p></section></div>
+  {{end}}
+  {{if .Error}}
+  <div class="alert" data-variant="destructive" role="alert">
+    <section><p>{{.Error}}</p></section>
+  </div>
+  {{end}}
+
+  <div class="card p-6">
+    <header class="mb-4">
+      <h1 class="text-lg font-semibold">Звук</h1>
+    </header>
+
+    {{if .DevicesNotice}}
+    <p class="text-muted-foreground">{{.DevicesNotice}}</p>
+    {{else}}
+    <form method="post" action="/audio" class="grid gap-4">
+      <fieldset class="field">
+        <legend>Вихід звуку</legend>
+        {{/*
+        Said once, here, rather than per row: on the real board "default"
+        resolves to the HDMI card, and with nothing plugged into HDMI
+        playback fails outright — the very first thing a freshly installed
+        device does. An operator reading this before picking anything below
+        is the whole point of this screen.
+        */}}
+        <div class="alert mb-2" role="status">
+          <section><p>Якщо колонки під'єднано до роз'єму навушників, а не до HDMI, типовий вихід («За замовчуванням») може не відтворювати звук. Оберіть потрібний вихід нижче.</p></section>
+        </div>
+        <div class="grid gap-2">
+          {{range .Groups}}
+          <label class="flex items-center gap-2 rounded-md border border-border p-3">
+            <input type="radio" name="device" value="{{.Value}}"{{if .Selected}} checked{{end}} required>
+            <span>{{.Label}}</span>
+          </label>
+          {{end}}
+        </div>
+        {{/*
+        The full, ungrouped list of every PCM aplay -L reported — never
+        filtered away, because a USB sound card sometimes needs exactly the
+        specific PCM this is the only place offering. A <details> rather
+        than a second always-visible list: eleven of the thirteen PCMs the
+        real board reports read identically to the grouped rows above, and
+        showing them unconditionally would recreate the very wall of
+        duplicates this screen exists to avoid.
+        */}}
+        {{if .Options}}
+        <details class="mt-2"{{if .OptionsOpen}} open{{end}}>
+          <summary class="cursor-pointer text-sm text-muted-foreground">Повний список виходів ALSA</summary>
+          <div class="mt-2 grid gap-2">
+            {{range .Options}}
+            <label class="flex items-center gap-2 rounded-md border border-border p-3">
+              <input type="radio" name="device" value="{{.Value}}"{{if .Selected}} checked{{end}}>
+              <span class="font-mono text-sm">{{.Label}}</span>
+            </label>
+            {{end}}
+          </div>
+        </details>
+        {{end}}
+      </fieldset>
+
+      <div class="field">
+        <label for="master_volume">Гучність (1–100)</label>
+        <input class="input" type="number" min="1" max="100" id="master_volume" name="master_volume" value="{{.MasterVolume}}" required>
+      </div>
+
+      <button class="btn w-fit" type="submit">Зберегти</button>
+    </form>
+    {{end}}
+  </div>
+</div>
+{{end}}

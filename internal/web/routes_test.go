@@ -43,6 +43,7 @@ func TestEveryRouteIsPublicOrPrivateAsIntended(t *testing.T) {
 		"/sounds":             false,
 		"/sounds/upload":      false,
 		"/sounds/delete":      false,
+		"/audio":              false,
 	}
 
 	seen := map[string]bool{}

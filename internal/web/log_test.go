@@ -172,6 +172,38 @@ func TestLogMarksFailuresWithMoreThanColour(t *testing.T) {
 	if !strings.Contains(body, "sm:hidden") || !strings.Contains(body, "hidden sm:block") {
 		t.Error("the log has only one layout, so a phone gets the six-column table")
 	}
+	// On a board with no monitor this page is the whole diagnostic surface;
+	// a playback error must point at the one screen that can fix it. Checked
+	// by the hint's own sentence, not by a bare href="/audio": layout.html's
+	// navigation links to /audio on every page, so that alone would prove
+	// nothing about this row specifically.
+	if !strings.Contains(body, "Перевірте вихідний пристрій") {
+		t.Error("a playback error does not point at /audio, the one screen that can fix it")
+	}
+}
+
+// A failure that has nothing to do with the output device — a source
+// unreachable, say — must not send an operator to /audio looking for a
+// problem that is not there.
+func TestLogDoesNotPointNonPlaybackFailuresAtAudio(t *testing.T) {
+	srv, _, lg := newServerWithLog(t)
+	setPassword(t, srv, "correct horse battery staple")
+	cookie := login(t, srv, "correct horse battery staple")
+
+	if err := lg.Append(eventlog.Entry{
+		Kind: eventlog.KindSourceFailure, OK: false, Err: "context deadline exceeded",
+	}); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/log", nil)
+	req.AddCookie(cookie)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+
+	if strings.Contains(rec.Body.String(), "Перевірте вихідний пристрій") {
+		t.Error("a non-playback failure points at /audio anyway")
+	}
 }
 
 // The page shows the most recent rows out of a database that holds many times

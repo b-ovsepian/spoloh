@@ -131,7 +131,22 @@ func (s *Server) scanNetworks(ctx context.Context) ([]netmgr.Network, string) {
 
 	nets, err := s.deps.Network.Scan(scanCtx)
 	if err != nil {
-		s.deps.Logger.Warn("network: scan failed", "err", err)
+		// A browser that left the page cancels ctx, which nmcli under
+		// exec.CommandContext answers by dying to a signal — "network: scan
+		// failed ... signal: killed" at Warn, on a scan that took 0.09s on
+		// the real board. That is an ordinary cancellation, not a fault, and
+		// logging it as one trains whoever reads the journal to ignore the
+		// line that means an actual scan broke. scanCtx.Err() distinguishes
+		// the two: context.Canceled means the parent (this request's own
+		// context, which server.go ties to the daemon's shutdown signal as
+		// well as to the client) was cancelled out from under this call,
+		// where a timeout — context.DeadlineExceeded — is a real problem
+		// still worth a Warn.
+		if scanCtx.Err() == context.Canceled {
+			s.deps.Logger.Debug("network: scan cancelled", "err", err)
+		} else {
+			s.deps.Logger.Warn("network: scan failed", "err", err)
+		}
 		return nil, "Не вдалося виконати пошук мереж. Спробуйте ще раз."
 	}
 	return visibleNetworksBySignal(nets), ""

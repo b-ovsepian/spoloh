@@ -3,7 +3,7 @@ ALSA lib conf.c:4732:(_snd_config_evaluate) function snd_func_card_driver return
 null
     Discard all samples (playback) or generate zero samples (capture)
 default
-    Playback/recording through the PLUG plugin
+    Default Audio Device
 sysdefault:CARD=Headphones
     bcm2835 Headphones, bcm2835 Headphones
     Default Audio Device

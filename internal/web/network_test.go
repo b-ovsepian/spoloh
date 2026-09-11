@@ -1,8 +1,10 @@
 package web_test
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -535,5 +537,80 @@ func TestNetworkConnectReleasesTheJoinGateOnFailure(t *testing.T) {
 	}
 	if gate.Held(time.Now()) {
 		t.Error("a failed join left the join gate held")
+	}
+}
+
+// scanProbe scripts a Scan that always fails — with a genuine problem, or
+// with the "signal: killed" shape exec.CommandContext gives a process
+// killed by a parent context going away, which is what a browser leaving
+// the page looks like from inside nmcli.
+type scanProbe struct {
+	netmgr.Fake
+	err error
+}
+
+func (p *scanProbe) Scan(context.Context) ([]netmgr.Network, error) {
+	return nil, p.err
+}
+
+func newServerWithScanProbe(t *testing.T, probe *scanProbe) (*web.Server, *bytes.Buffer) {
+	t.Helper()
+	store, err := configstore.Open(filepath.Join(t.TempDir(), "config.json"))
+	if err != nil {
+		t.Fatalf("configstore.Open: %v", err)
+	}
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	srv, err := web.New(web.Deps{Config: store, Network: probe, Logger: logger})
+	if err != nil {
+		t.Fatalf("web.New: %v", err)
+	}
+	return srv, &buf
+}
+
+// A scan cancelled because the browser left the page is an ordinary
+// cancellation, not a fault: a real scan on the reference board takes 0.09s,
+// so logging every cancellation at Warn would train whoever reads the
+// journal to ignore the line that means an actual scan broke.
+func TestNetworkScanCancelledByTheClientIsNotLoggedAsAFailure(t *testing.T) {
+	srv, buf := newServerWithScanProbe(t, &scanProbe{err: errors.New("signal: killed")})
+	setPassword(t, srv, "correct horse battery staple")
+	cookie := login(t, srv, "correct horse battery staple")
+
+	req := httptest.NewRequest(http.MethodGet, "/network", nil)
+	req.AddCookie(cookie)
+	// The browser already left the page: cancel the request's own context
+	// before the handler ever runs, the same shape
+	// TestNetworkConnectSurvivesTheClientDisconnecting uses for Connect.
+	ctx, cancel := context.WithCancel(req.Context())
+	cancel()
+	req = req.WithContext(ctx)
+
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+
+	if strings.Contains(buf.String(), "level=WARN") {
+		t.Errorf("an ordinary cancellation was logged as a failure: %s", buf.String())
+	}
+	if !strings.Contains(buf.String(), "scan cancelled") {
+		t.Errorf("the cancellation was not logged at all, which would make a real regression silent: %s", buf.String())
+	}
+}
+
+// A scan that fails for a real reason — not because the request context was
+// already gone — must still reach the journal at Warn: this is the case the
+// distinction above must not accidentally silence.
+func TestNetworkScanGenuineFailureIsStillLoggedAsAFailure(t *testing.T) {
+	srv, buf := newServerWithScanProbe(t, &scanProbe{err: errors.New("nmcli: no such device")})
+	setPassword(t, srv, "correct horse battery staple")
+	cookie := login(t, srv, "correct horse battery staple")
+
+	req := httptest.NewRequest(http.MethodGet, "/network", nil)
+	req.AddCookie(cookie)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+
+	if !strings.Contains(buf.String(), "level=WARN") || !strings.Contains(buf.String(), "scan failed") {
+		t.Errorf("a genuine scan failure was not logged at Warn: %s", buf.String())
 	}
 }

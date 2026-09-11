@@ -196,7 +196,11 @@ func run(configPath, dataDir, listen string) error {
 		}
 	})
 
-	pl := player.New(player.ALSA{}, cfg.Audio.Device)
+	// alsa is named rather than built inline so /audio's device list (Deps.
+	// Devices below) shares the exact value playback runs through, instead
+	// of a second, pointlessly separate ALSA{} construction.
+	alsa := player.ALSA{}
+	pl := player.New(alsa, cfg.Audio.Device)
 	pl.OnError = func(r player.Request, stage string, err error) {
 		logger.Error("playback failed", "stage", stage, "event", r.EventID, "err", err)
 		_ = lg.Append(eventlog.Entry{
@@ -266,6 +270,7 @@ func run(configPath, dataDir, listen string) error {
 		Library:  lib,
 		Network:  netManager,
 		JoinGate: joinGate,
+		Devices:  alsa,
 		Logger:   logger,
 	})
 	if err != nil {
