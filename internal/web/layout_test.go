@@ -128,8 +128,23 @@ func TestTheHomePageReportsNetworkHealth(t *testing.T) {
 	rec := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rec, req)
 
-	if !strings.Contains(rec.Body.String(), "Мережа:") {
-		t.Error("the home page carries no network-health line")
+	// The signal is the addresses themselves when there are any — their
+	// presence is what "on the network" looks like from inside the daemon —
+	// and a named absence when there are none. Either is a health line; a
+	// page carrying neither tells the operator nothing about which half of
+	// the path is broken.
+	body := rec.Body.String()
+	addrs := web.LocalAddresses()
+	if len(addrs) == 0 {
+		if !strings.Contains(body, "не в мережі") {
+			t.Error("the home page does not report holding no address as being off the network")
+		}
+		return
+	}
+	for _, addr := range addrs {
+		if !strings.Contains(body, addr) {
+			t.Errorf("the home page does not carry the address %s, which is its network-health signal", addr)
+		}
 	}
 }
 
