@@ -38,7 +38,7 @@
         <div class="grid gap-2">
           {{range .SourceSlots}}
           <div class="field">
-            <label for="source-{{.Position}}">{{.Position}}</label>
+            <label for="source-{{.Position}}">Джерело {{.Position}}</label>
             <select class="select" id="source-{{.Position}}" name="source">
               {{range .Options}}<option value="{{.Key}}"{{if .Selected}} selected{{end}}>{{if .Key}}{{.Key}}{{else}}— не використовується —{{end}}</option>{{end}}
             </select>
