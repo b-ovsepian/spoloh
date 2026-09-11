@@ -2,7 +2,6 @@ package alertsource
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -69,19 +68,11 @@ func New(baseURL string, sources []string, hc *http.Client) *Client {
 }
 
 // Fetch tries each configured source in order and returns the first success.
+// It is FetchCascade without the per-key report, kept because most callers
+// want a snapshot and nothing else.
 func (c *Client) Fetch(ctx context.Context) (Snapshot, error) {
-	var errs []error
-	for _, src := range c.sources {
-		snap, err := c.fetchOne(ctx, src)
-		if err == nil {
-			return snap, nil
-		}
-		errs = append(errs, fmt.Errorf("source %s: %w", src, err))
-		if ctx.Err() != nil {
-			break
-		}
-	}
-	return Snapshot{}, errors.Join(errs...)
+	snap, _, err := c.FetchCascade(ctx)
+	return snap, err
 }
 
 func (c *Client) fetchOne(ctx context.Context, source string) (Snapshot, error) {

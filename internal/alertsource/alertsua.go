@@ -50,6 +50,15 @@ const alertsUASourceName = "alerts.in.ua"
 // one", the other is "the one you have stopped working".
 var ErrNoToken = errors.New("alerts.in.ua: no API token configured")
 
+// ErrTokenRejected reports that the token was sent and refused — expired,
+// revoked, or mistyped when it was entered.
+//
+// A sentinel rather than a bare message so that SourceAttempt.Reason can tell
+// this failure apart from an unreachable host without reading the error's
+// text. The operator's next step is different for each, and the text itself
+// must never reach a page: see Reason.
+var ErrTokenRejected = errors.New("alerts.in.ua rejected the API token")
+
 // AlertsUA fetches active alerts from alerts.in.ua.
 //
 // Rate limits, from the API's own documentation: a soft limit of 8–10
@@ -151,7 +160,7 @@ func (c *AlertsUA) Fetch(ctx context.Context) (Snapshot, error) {
 	case http.StatusTooManyRequests:
 		return Snapshot{}, &RateLimitError{RetryAfter: retryAfter(resp)}
 	case http.StatusUnauthorized, http.StatusForbidden:
-		return Snapshot{}, fmt.Errorf("alerts.in.ua rejected the API token (http %d)", resp.StatusCode)
+		return Snapshot{}, fmt.Errorf("%w (http %d)", ErrTokenRejected, resp.StatusCode)
 	case http.StatusOK:
 	default:
 		return Snapshot{}, fmt.Errorf("http %d", resp.StatusCode)
