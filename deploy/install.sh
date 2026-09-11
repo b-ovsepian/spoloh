@@ -38,7 +38,17 @@ fi
 # 3. Fetch everything into one directory and verify it before touching the
 #    system. A half-installed device is worse than one that was never touched.
 TMP="$(mktemp -d)"
-trap 'rm -rf "$TMP"' EXIT INT TERM
+# Split rather than one `trap ... EXIT INT TERM`: a handler for INT or TERM
+# that never calls exit does not terminate the process under POSIX, it just
+# resumes at the next statement. That would let a volunteer's Ctrl-C during
+# the apt-get step delete TMP out from under the still-running script and let
+# it fall through to the file-placement step with its downloads gone -
+# packages installed, binary not, the half-installed device this section's
+# own comment exists to prevent. Each signal handler exits explicitly, which
+# fires the EXIT trap in turn, so cleanup still happens in exactly one place.
+trap 'rm -rf "$TMP"' EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 cd "$TMP"
 
 FILES="spoloh-$ARCH spoloh.service spoloh.sysusers spoloh.tmpfiles 50-spoloh-networkmanager.rules"

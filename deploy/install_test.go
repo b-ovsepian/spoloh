@@ -1,6 +1,7 @@
 package deploy
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
@@ -8,7 +9,9 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 )
 
 // The installer is shell, runs as root and talks to apt, systemd and the
@@ -17,7 +20,11 @@ import (
 // the parts that actually go wrong: the architecture mapping, the checksum
 // gate, which files land where, and that the access point password is read
 // back and printed.
-func runInstaller(t *testing.T, downloads, uname string, extraEnv ...string) (string, error) {
+//
+// newInstallerCmd builds the *exec.Cmd; runInstaller (below) is the common
+// blocking case, and TestInstallerExitsOnSIGTERM below needs the unstarted
+// command itself so it can signal the process mid-run.
+func newInstallerCmd(t *testing.T, downloads, uname string, extraEnv ...string) (cmd *exec.Cmd, logPath, prefix string) {
 	t.Helper()
 	root := t.TempDir()
 	fakeBin := filepath.Join(root, "bin")
@@ -35,12 +42,19 @@ func runInstaller(t *testing.T, downloads, uname string, extraEnv ...string) (st
 		"systemd-tmpfiles": "#!/bin/sh\necho \"systemd-tmpfiles $*\" >> \"$SPOLOH_TEST_LOG\"\n",
 		"systemctl":        "#!/bin/sh\necho \"systemctl $*\" >> \"$SPOLOH_TEST_LOG\"\n",
 		"hostnamectl":      "#!/bin/sh\necho \"hostnamectl $*\" >> \"$SPOLOH_TEST_LOG\"\n",
-		"hostname":         "#!/bin/sh\nif [ \"$1\" = -I ]; then echo 192.168.1.50; else echo raspberrypi; fi\n",
-		"curl":             "#!/bin/sh\nwhile [ $# -gt 0 ]; do case $1 in -o) out=$2; shift 2;; -*) shift;; *) url=$1; shift;; esac; done\ncp \"$SPOLOH_TEST_DOWNLOADS/$(basename \"$url\")\" \"$out\"\n",
+		// The non-`-I` branch defaults to a hostname that is not "spoloh",
+		// so the every-test-but-one path exercises the rename; overridden via
+		// SPOLOH_TEST_HOSTNAME by the idempotence test below.
+		"hostname": "#!/bin/sh\nif [ \"$1\" = -I ]; then echo 192.168.1.50; else echo \"${SPOLOH_TEST_HOSTNAME:-raspberrypi}\"; fi\n",
+		"curl":     "#!/bin/sh\nwhile [ $# -gt 0 ]; do case $1 in -o) out=$2; shift 2;; -*) shift;; *) url=$1; shift;; esac; done\ncp \"$SPOLOH_TEST_DOWNLOADS/$(basename \"$url\")\" \"$out\"\n",
 		// install -D and sha256sum are GNU coreutils; a developer's macOS has
 		// neither. These shims are faithful to the two behaviours the script
 		// depends on, so the checksum gate is still genuinely exercised rather
-		// than stubbed out.
+		// than stubbed out. One behaviour this shim does *not* reproduce: real
+		// install(1) unlinks the destination before writing, so it would not
+		// hit ETXTBSY against a currently-running binary; this shim's cp would.
+		// Irrelevant to install.sh, which only ever runs before the service
+		// exists, but worth keeping honest since the shim is a stand-in.
 		"install": "#!/bin/sh\nmode=0644\nwhile [ $# -gt 2 ]; do case $1 in -m) mode=$2; shift 2;; *) shift;; esac; done\nmkdir -p \"$(dirname \"$2\")\"\ncp \"$1\" \"$2\"\nchmod \"$mode\" \"$2\"\n",
 	}
 	// Only shimmed when the real thing is absent, so on Linux the script is
@@ -54,9 +68,9 @@ func runInstaller(t *testing.T, downloads, uname string, extraEnv ...string) (st
 		}
 	}
 
-	logPath := filepath.Join(root, "log")
-	prefix := filepath.Join(root, "prefix")
-	cmd := exec.Command("sh", "install.sh")
+	logPath = filepath.Join(root, "log")
+	prefix = filepath.Join(root, "prefix")
+	cmd = exec.Command("sh", "install.sh")
 	cmd.Env = append(os.Environ(),
 		"PATH="+fakeBin+":"+os.Getenv("PATH"),
 		"SPOLOH_PREFIX="+prefix,
@@ -64,10 +78,18 @@ func runInstaller(t *testing.T, downloads, uname string, extraEnv ...string) (st
 		"SPOLOH_TEST_LOG="+logPath,
 		"SPOLOH_TEST_DOWNLOADS="+downloads,
 		// No config.json will ever appear in these runs, and a test may not
-		// sleep on a real clock. The password test overrides this.
+		// sleep on a real clock. The password test overrides this; the SIGTERM
+		// test raises it just enough to still be inside the wait loop when the
+		// signal is sent.
 		"SPOLOH_AP_WAIT=0",
 	)
 	cmd.Env = append(cmd.Env, extraEnv...)
+	return cmd, logPath, prefix
+}
+
+func runInstaller(t *testing.T, downloads, uname string, extraEnv ...string) (string, error) {
+	t.Helper()
+	cmd, logPath, prefix := newInstallerCmd(t, downloads, uname, extraEnv...)
 	out, err := cmd.CombinedOutput()
 	t.Logf("installer output:\n%s", out)
 	return string(out) + "\n--- commands ---\n" + readFile(logPath) + "\n--- prefix ---\n" + tree(t, prefix), err
@@ -161,6 +183,12 @@ func TestInstallerRefusesACorruptDownloadAndInstallsNothing(t *testing.T) {
 	if strings.Contains(report, "systemctl enable") {
 		t.Errorf("the unit was started despite the refusal\n%s", report)
 	}
+	// The script's checksum loop runs entirely before the apt-get step; this
+	// pins that ordering down instead of relying on it as an accident of
+	// where the die happens to land in the file.
+	if strings.Contains(report, "apt-get") {
+		t.Errorf("packages were installed despite the checksum failure\n%s", report)
+	}
 }
 
 func TestInstallerMapsEachBoardToItsArtifact(t *testing.T) {
@@ -213,5 +241,82 @@ func TestInstallerPrintsTheAccessPointPassword(t *testing.T) {
 	}
 	if !strings.Contains(report, "http://spoloh.local/") {
 		t.Errorf("the dashboard address was never printed\n%s", report)
+	}
+}
+
+func TestInstallerSkipsHostnameChangeWhenAlreadySpoloh(t *testing.T) {
+	// The brief asks specifically about idempotence here: a device already
+	// named spoloh (a re-run, or a second install attempt) must not call
+	// hostnamectl again.
+	report, err := runInstaller(t, downloadDir(t, ""), "armv7l", "SPOLOH_TEST_HOSTNAME=spoloh")
+	if err != nil {
+		t.Fatalf("installer failed: %v\n%s", err, report)
+	}
+	if strings.Contains(report, "hostnamectl") {
+		t.Errorf("hostnamectl ran even though the hostname was already spoloh\n%s", report)
+	}
+}
+
+// TestInstallerExitsOnSIGTERM proves the fix for the trap bug: a single
+// `trap ... EXIT INT TERM` runs the handler and then resumes at the next
+// statement under POSIX, rather than terminating the process, so a
+// volunteer's Ctrl-C (or an init system's SIGTERM) during the run would
+// delete the scratch directory out from under the script and let it
+// continue to completion anyway — packages installed, binary not. The fix
+// gives INT and TERM their own handlers that call exit explicitly.
+func TestInstallerExitsOnSIGTERM(t *testing.T) {
+	downloads := downloadDir(t, "")
+	// High enough that the wait loop is still sleeping when the signal
+	// arrives, but low enough that even the unfixed script (which ignores
+	// the signal and runs to completion) finishes well inside the test's own
+	// timeout, rather than this test hanging on a regression.
+	cmd, _, prefix := newInstallerCmd(t, downloads, "armv7l", "SPOLOH_AP_WAIT=5")
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = &out
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start installer: %v", err)
+	}
+
+	// Poll for the installed binary rather than sleeping a guessed interval:
+	// step 5 (file placement) runs before the access-point wait loop, so its
+	// appearance means the script has moved on to systemd/systemctl and is
+	// at or about to enter the loop the signal needs to interrupt.
+	binPath := filepath.Join(prefix, "usr", "local", "bin", "spoloh")
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		if _, err := os.Stat(binPath); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			_ = cmd.Process.Kill()
+			t.Fatalf("installer never reached the point of installing the binary\n%s", out.String())
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
+		t.Fatalf("signal installer: %v", err)
+	}
+
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+
+	select {
+	case err := <-done:
+		exitErr, ok := err.(*exec.ExitError)
+		if err == nil || !ok {
+			t.Fatalf("installer did not fail after SIGTERM (err=%v) — the signal was not honored\n%s", err, out.String())
+		}
+		// 143 = 128 + SIGTERM(15), the trap's own convention (see
+		// install.sh), which also rules out the process merely being killed
+		// by the OS after the test's own bounded wait rather than exiting on
+		// its own via the trap.
+		if code := exitErr.ExitCode(); code != 143 {
+			t.Errorf("installer exited %d after SIGTERM, want 143\n%s", code, out.String())
+		}
+	case <-time.After(3 * time.Second):
+		_ = cmd.Process.Kill()
+		t.Fatalf("installer did not exit within 3s of SIGTERM — it survived the signal and kept running\n%s", out.String())
 	}
 }
