@@ -16,6 +16,12 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: '1.25'
+      # release fires on the same tag push as ci.yml, in a separate workflow
+      # with no dependency between them, so ci.yml going red must not leave
+      # this one free to publish anyway. Re-running its gate here removes
+      # that unstated "the tagged commit already passed CI" assumption.
+      - run: go vet ./...
+      - run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
       - run: go test ./... -race
       - run: make dist
       # Every file in dist/ is an asset, SHA256SUMS included: install.sh and
