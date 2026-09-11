@@ -1,3 +1,5 @@
+[![Stand With Ukraine](https://raw.githubusercontent.com/vshymanskyy/StandWithUkraine/main/banner2-direct.svg)](https://stand-with-ukraine.pp.ua)
+
 # Spoloh
 
 Spoloh is a self-hosted appliance that announces air raid alerts and
@@ -40,3 +42,12 @@ sudo spoloh update --rollback
 An update is verified against the checksum published with the release and is
 proven to run on the board before it replaces anything. If the new version
 will not start, the previous one is put back automatically.
+
+## Stand with Ukraine
+
+[![StandWithUkraine](https://raw.githubusercontent.com/vshymanskyy/StandWithUkraine/main/badges/StandWithUkraine.svg)](https://stand-with-ukraine.pp.ua/)
+
+This software exists because of the war. If it is useful to you, consider
+[supporting Ukraine](https://stand-with-ukraine.pp.ua/) — through
+[humanitarian aid](https://savelife.in.ua/en/donate/), or by helping someone
+who needs a siren they can hear.
