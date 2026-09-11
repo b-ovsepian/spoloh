@@ -8,6 +8,7 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -48,7 +49,7 @@ func main() {
 	switch subcommand(os.Args) {
 	case "":
 	case "update":
-		os.Exit(runUpdate(os.Args[2:], os.Stdout))
+		os.Exit(runUpdate(os.Args[2:], os.Stdout, &http.Client{Timeout: 5 * time.Minute}))
 	default:
 		fmt.Fprintf(os.Stderr, "unknown command %q; the only one is \"update\"\n", os.Args[1])
 		os.Exit(2)

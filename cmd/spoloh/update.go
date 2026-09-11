@@ -31,7 +31,10 @@ func subcommand(args []string) string {
 
 // runUpdate implements `spoloh update`. It returns the process exit code and
 // writes everything a person should see to out, so the test can read it.
-func runUpdate(args []string, out io.Writer) int {
+// client is the HTTP client used for every request the update makes; main
+// passes the real one, and tests pass one whose Transport is a stub so no
+// socket is ever opened.
+func runUpdate(args []string, out io.Writer, client *http.Client) int {
 	fs := flag.NewFlagSet("spoloh update", flag.ContinueOnError)
 	fs.SetOutput(out)
 	check := fs.Bool("check", false, "report the installed and available versions, change nothing")
@@ -40,6 +43,18 @@ func runUpdate(args []string, out io.Writer) int {
 	unit := fs.String("unit", "spoloh", "systemd unit to restart")
 	baseURL := fs.String("base-url", defaultReleases, "release download root")
 	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+
+	// The two flags express contradictory intents, and an operator who typed
+	// both meant one of them: honouring --check silently would leave someone
+	// who wanted a rollback staring at a version report with nothing
+	// restored, and honouring --rollback silently is the dangerous one — a
+	// caller that always forwards a dry-run flag alongside whatever else it
+	// was asked to do would get a real rollback out of what it thought was a
+	// check. Refuse instead of guessing which one was meant.
+	if *check && *rollback {
+		fmt.Fprintln(out, "--check and --rollback cannot both be set: --check only reports versions and --rollback restores the previous binary; pick one")
 		return 2
 	}
 
@@ -55,7 +70,7 @@ func runUpdate(args []string, out io.Writer) int {
 		Version: version,
 		BinPath: *binPath,
 		Unit:    *unit,
-		HTTP:    &http.Client{Timeout: 5 * time.Minute},
+		HTTP:    client,
 	}
 
 	if *rollback {
