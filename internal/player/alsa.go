@@ -2,10 +2,13 @@ package player
 
 import (
 	"context"
+	"encoding/binary"
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 	"sync"
+	"time"
 )
 
 // RunFunc executes a command and returns its combined output. Nil means the
@@ -30,6 +33,12 @@ type ALSA struct {
 	Mixer string
 	// Run replaces the exec of aplay/amixer. Nil means the real thing.
 	Run RunFunc
+	// ProbeTimeout bounds one ProbeDevice call. Zero means
+	// defaultProbeTimeout. It is a field rather than a constant so that a
+	// test can prove the bound exists without waiting out the real one —
+	// and so a board with a famously slow card can be given more room
+	// without a rebuild.
+	ProbeTimeout time.Duration
 	// mixers holds the discovered control per card. Nil — which is what
 	// every production construction leaves it, since the field is
 	// unexported — means the package-wide cache below. The cache cannot
@@ -306,4 +315,189 @@ func (a ALSA) Play(ctx context.Context, device, path string) error {
 		return fmt.Errorf("aplay -D %s: %w: %s", name, err, out)
 	}
 	return nil
+}
+
+// The probe: answering "can this output actually be opened?" by opening it.
+//
+// Every other thing this package knows about an output is a name — a PCM
+// string from `aplay -L` and a card description beside it. None of that says
+// whether a sound comes out. On the operator's Raspberry Pi 4 the output
+// named "default" is the one that cannot play at all: ALSA resolves it to
+// card 0, which is HDMI, and HDMI with nothing attached that accepts audio
+// returns ENOTSUPP the moment it is opened —
+//
+//	aplay -q -D default /tmp/sil.wav
+//	aplay: main:850: audio open error: Unknown error 524
+//
+// while the very same command aimed at plughw:CARD=Headphones,DEV=0 exits 0
+// immediately. Reasoning about the names cannot tell those two apart. Opening
+// them can, and that is the whole of this.
+
+// probe audio format. PCM 16-bit 44100 Hz stereo is what every ALSA card this
+// project has met accepts, and plughw converts for the ones that would not.
+const (
+	probeSampleRate    = 44100
+	probeChannels      = 2
+	probeBitsPerSample = 16
+	// probeSilence is how much silence the probe plays. Long enough that
+	// aplay opens the device and hands it real frames — the ENOTSUPP this
+	// exists to catch arrives at open, not at the end — and short enough
+	// that three of these in a row on a page load are not a wait.
+	probeSilence = 100 * time.Millisecond
+	// wavHeaderLen is the canonical 44-byte RIFF/WAVE/fmt /data header.
+	wavHeaderLen = 44
+)
+
+// defaultProbeTimeout bounds one probe when ALSA.ProbeTimeout says nothing.
+// A wedged ALSA device — a card another process holds open, a driver that
+// never answers — must not hang the page that is trying to diagnose it.
+const defaultProbeTimeout = 3 * time.Second
+
+// ProbeResult is what one attempt to open an output for real said.
+//
+// It is a value and not an error because "this output cannot be opened" is
+// an answer, not a failure of the asking: it is precisely the answer the
+// dashboard exists to obtain. ProbeDevice's error return is reserved for the
+// probe itself not having been carried out.
+type ProbeResult struct {
+	// Playable is true only when aplay opened the device and played the
+	// silence through it without complaint.
+	Playable bool
+	// TimedOut marks a device that never answered inside the deadline,
+	// which is a different thing to say to an operator than a device that
+	// refused: the first reads as "something is holding it", the second as
+	// "nothing is attached to it". A caller who cancels the request its
+	// context came from lands here too — the page it was for is gone by
+	// then, so nothing is claimed about the device either way.
+	TimedOut bool
+	// Detail is aplay's own diagnostic, for the log. It is deliberately
+	// not what the page shows: "Unknown error 524" is a sentence about a
+	// kernel constant, and an operator standing at the board needs a
+	// sentence about a cable.
+	Detail string
+}
+
+// ProbeDevice reports whether device can be opened for playback, by opening
+// it: a short silent WAV is written to a temp file and played through
+// `aplay -q -D device`, which is the one recipe verified on the operator's
+// own board.
+//
+// The silence is generated here rather than shipped as an asset or produced
+// by ffmpeg. ffmpeg is optional on these devices, and a probe that needed it
+// would fail on exactly the boards that most need probing — the freshly
+// installed ones.
+//
+// `aplay --dump-hw-params /dev/null` is the obvious cheaper alternative and
+// does not work: tried on the board, it exits 1 on a *working* device too,
+// because aplay fails reading the WAV header before it ever reaches the
+// card. It cannot tell the two apart, which is the only thing being asked.
+//
+// Nothing here is cached, and that is deliberate — see MixerControl, which
+// does cache. The two questions differ in kind. Which simple control sets a
+// card's volume is a property of the driver: it is the same answer for the
+// life of the daemon, and asking twice per announcement was pure waste.
+// Whether an output opens is a property of the world outside the box — a
+// speaker plugged into the jack, an amplifier switched on at the far end of
+// an HDMI cable, another process holding the card. A cached "this output is
+// broken" would outlive the moment someone plugs the speaker in, and the
+// page would go on telling them their working output does not work, which
+// is the same class of bug as the one this probe was written to fix. The
+// cost of not caching is one 100 ms silent playback per grouped row per page
+// load, and a failing device answers instantly.
+func (a ALSA) ProbeDevice(ctx context.Context, device string) (ProbeResult, error) {
+	path, remove, err := writeSilentWAV(probeSilence)
+	if err != nil {
+		// The probe could not be carried out at all — a read-only or full
+		// temp directory. This says nothing about the device, and callers
+		// must not render it as if it did.
+		return ProbeResult{}, fmt.Errorf("probe file: %w", err)
+	}
+	defer remove()
+
+	probeCtx, cancel := context.WithTimeout(ctx, a.probeTimeout())
+	defer cancel()
+
+	playErr := a.Play(probeCtx, device, path)
+	// Checked before playErr, and not merely as a classification of it: a
+	// Run that returns success after its context expired would otherwise be
+	// reported as a working device on the strength of an answer that came
+	// too late to mean anything.
+	if probeCtx.Err() != nil {
+		return ProbeResult{TimedOut: true, Detail: probeCtx.Err().Error()}, nil
+	}
+	if playErr != nil {
+		return ProbeResult{Detail: strings.TrimSpace(playErr.Error())}, nil
+	}
+	return ProbeResult{Playable: true}, nil
+}
+
+func (a ALSA) probeTimeout() time.Duration {
+	if a.ProbeTimeout > 0 {
+		return a.ProbeTimeout
+	}
+	return defaultProbeTimeout
+}
+
+// writeSilentWAV puts d worth of silence in a temp file and returns its path
+// together with the function that removes it. The file is the probe's whole
+// payload and has no business outliving the probe, so every return path of
+// ProbeDevice runs remove.
+func writeSilentWAV(d time.Duration) (path string, remove func(), err error) {
+	f, err := os.CreateTemp("", "spoloh-probe-*.wav")
+	if err != nil {
+		return "", nil, err
+	}
+	name := f.Name()
+	cleanup := func() { os.Remove(name) }
+
+	if _, err := f.Write(silentWAV(d)); err != nil {
+		f.Close()
+		cleanup()
+		return "", nil, err
+	}
+	// Closed before aplay is told about it, not deferred: a file still open
+	// for writing is a file aplay may read short.
+	if err := f.Close(); err != nil {
+		cleanup()
+		return "", nil, err
+	}
+	return name, cleanup, nil
+}
+
+// silentWAV builds a complete PCM WAV file of d worth of silence: the
+// canonical 44-byte header followed by zero samples, which is what silence
+// is in signed 16-bit PCM.
+//
+// Silence and not a tone, because this runs unannounced on a page load. A
+// device whose entire job is to be heard must not make a noise nobody asked
+// for; the operator has a button for that, and it plays the all-clear.
+func silentWAV(d time.Duration) []byte {
+	// Integer arithmetic throughout: d * rate / second is exact where
+	// d.Seconds() * rate rounds, and a frame count short by one is a WAV
+	// whose header disagrees with its body.
+	frames := int(time.Duration(probeSampleRate) * d / time.Second)
+	if frames < 1 {
+		frames = 1
+	}
+	const blockAlign = probeChannels * probeBitsPerSample / 8
+	dataLen := frames * blockAlign
+
+	buf := make([]byte, wavHeaderLen+dataLen)
+	copy(buf[0:], "RIFF")
+	// Everything after this field: the 36 remaining header bytes plus the
+	// samples.
+	binary.LittleEndian.PutUint32(buf[4:], uint32(wavHeaderLen-8+dataLen))
+	copy(buf[8:], "WAVE")
+	copy(buf[12:], "fmt ")
+	binary.LittleEndian.PutUint32(buf[16:], 16) // PCM fmt chunk length
+	binary.LittleEndian.PutUint16(buf[20:], 1)  // format 1 = uncompressed PCM
+	binary.LittleEndian.PutUint16(buf[22:], probeChannels)
+	binary.LittleEndian.PutUint32(buf[24:], probeSampleRate)
+	binary.LittleEndian.PutUint32(buf[28:], probeSampleRate*blockAlign)
+	binary.LittleEndian.PutUint16(buf[32:], blockAlign)
+	binary.LittleEndian.PutUint16(buf[34:], probeBitsPerSample)
+	copy(buf[36:], "data")
+	binary.LittleEndian.PutUint32(buf[40:], uint32(dataLen))
+	// The samples themselves are the zero value of the slice: silence.
+	return buf
 }
