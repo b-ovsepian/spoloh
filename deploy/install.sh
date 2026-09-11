@@ -101,9 +101,16 @@ if [ "$(hostname)" != spoloh ] && command -v hostnamectl >/dev/null 2>&1; then
   hostnamectl set-hostname spoloh
 fi
 
-# 8. Start it.
+# 8. Start it. `enable --now` is not enough on a re-run: on an already-active
+#    unit it is a no-op, so the new binary and unit file would sit on disk
+#    while the old process kept executing the old inode, indefinitely - and
+#    `spoloh update` execs the on-disk binary to learn its version, so the
+#    device would report itself up to date forever while running old code.
+#    `restart` starts a stopped unit too, so this is also correct on a first
+#    install.
 systemctl daemon-reload
-systemctl enable --now spoloh
+systemctl enable spoloh
+systemctl restart spoloh
 
 # 9. The access point password. The daemon generates it on first start, so it
 #    is read back rather than generated here: a second implementation of the

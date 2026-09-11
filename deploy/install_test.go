@@ -159,7 +159,14 @@ func TestInstallerPlacesEveryFileAndStartsTheUnit(t *testing.T) {
 	}
 	for _, want := range []string{
 		"systemd-tmpfiles --create", // without this the daemon crash-loops on a read-only /etc
-		"systemctl enable --now spoloh",
+		"systemctl enable spoloh",
+		// enable alone is not enough: on a re-run against an already-active
+		// unit `enable --now` is a no-op, so the replaced binary on disk
+		// would never become the running process - and `spoloh update`
+		// execs the on-disk binary to learn its version, so the device
+		// would then report itself up to date forever while running the old
+		// code. restart is what makes a re-install actually take effect.
+		"systemctl restart spoloh",
 		"hostnamectl set-hostname spoloh",
 		"apt-get install",
 	} {
