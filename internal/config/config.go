@@ -4,6 +4,7 @@ package config
 import (
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"slices"
 	"strings"
 	"time"
@@ -76,6 +77,11 @@ type Config struct {
 	Events     []Event    `json:"events"`
 	Auth       Auth       `json:"auth"`
 	Network    Network    `json:"network"`
+	// Webhooks are HTTP requests this device makes when it announces
+	// something, so the operator's own hardware — a relay board, a PA
+	// controller, a light — acts at the same moment the speaker does. See
+	// Webhook and ValidateWebhook.
+	Webhooks []Webhook `json:"webhooks,omitempty"`
 }
 
 type Device struct {
@@ -206,6 +212,221 @@ type Network struct {
 	APSSID          string   `json:"ap_ssid"`
 	APPassword      string   `json:"ap_password"`
 	APFallbackAfter Duration `json:"ap_fallback_after"`
+}
+
+// Webhook is one HTTP request the device makes when Trigger fires. The
+// operator who asked for this drives a relay board on the local network with
+// a request their own vendor documented, credentials and all:
+//
+//	curl -H 'Authorization: Basic ...' 'http://192.168.X.X/Sendkey?key=8'
+//
+// so every part of it — the method, the URL, the headers, the body — is
+// theirs to write, and none of it is guessed from a template.
+//
+// Headers are an ordered slice rather than a map for two reasons: a map
+// renders in a different order on every load, which makes an edit form
+// shuffle itself under the operator's hands, and http.Header's canonical
+// casing would quietly rewrite a name some appliance firmware compares
+// literally.
+//
+// A header value is a credential — the example above is a password in
+// base64. It is shown on this webhook's own edit form and nowhere else: not
+// in a log line, not in an error, not in the event log. See
+// internal/webhook for the firing side of that rule and
+// internal/web/webhooks_test.go for the walk that enforces it.
+type Webhook struct {
+	ID   string `json:"id"`
+	Name string `json:"name,omitempty"`
+	// Trigger is one of TriggerAlertStart, TriggerAlertEnd or
+	// TriggerScheduled — the same vocabulary Event uses, so "when this
+	// fires" means the same thing on both screens.
+	Trigger string          `json:"trigger"`
+	Method  string          `json:"method"`
+	URL     string          `json:"url"`
+	Headers []WebhookHeader `json:"headers,omitempty"`
+	Body    string          `json:"body,omitempty"`
+	Enabled bool            `json:"enabled"`
+}
+
+// WebhookHeader is one request header, exactly as the operator typed it.
+type WebhookHeader struct {
+	Name  string `json:"name"`
+	Value string `json:"value"`
+}
+
+// The bounds a webhook is held to. They are typo guards, not policy: this
+// configuration lives on an SD card and is typed on a phone, and a pasted
+// page of text in a URL field should be refused where it is typed rather
+// than discovered later by a device that cannot make the request.
+const (
+	MaxWebhooks        = 20
+	MaxWebhookHeaders  = 20
+	MaxWebhookURLLen   = 2000
+	MaxWebhookBodyLen  = 4096
+	MaxWebhookNameLen  = 100
+	MaxHeaderNameLen   = 100
+	MaxHeaderValueLen  = 1000
+	MaxWebhookIDLength = 64
+)
+
+// WebhookMethods is what a webhook may be. The list is an allow-list of the
+// standard methods rather than a check for dangerous ones: this string is
+// written verbatim into a request line, and a method nobody thought about —
+// one containing a space, say — is a second request line.
+var WebhookMethods = []string{"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD"}
+
+// WebhookSchemes is every scheme a webhook may name.
+//
+// Only these two, and not because of what is on the other end: this device
+// sits on a private network and 192.168.x.x is the intended target, so there
+// is deliberately no address blocklist here — one would forbid precisely the
+// relay board this feature exists for. What is refused is what is not an
+// HTTP request at all. "file:" would have the daemon read its own disk and
+// call it a webhook; "gopher:" is the classic way to turn a fetcher into a
+// writer of arbitrary bytes on an arbitrary port. Neither is something an
+// operator asked this device to do.
+var WebhookSchemes = []string{"http", "https"}
+
+// Webhook field names, as WebhookError.Field reports them. They exist so a
+// dashboard can say which field is wrong in the operator's language without
+// re-implementing any of the checks below.
+const (
+	WebhookFieldID      = "id"
+	WebhookFieldName    = "name"
+	WebhookFieldTrigger = "trigger"
+	WebhookFieldMethod  = "method"
+	WebhookFieldURL     = "url"
+	WebhookFieldHeaders = "headers"
+	WebhookFieldBody    = "body"
+	WebhookFieldCount   = "count"
+)
+
+// WebhookError names the part of a webhook that was refused. The message is
+// English like every other error in this package; Field is what lets
+// internal/web answer in Ukrainian, and internal/webhook log which part of a
+// hand-edited configuration it will not fire.
+type WebhookError struct {
+	Field string
+	Err   error
+}
+
+func (e *WebhookError) Error() string { return e.Field + ": " + e.Err.Error() }
+func (e *WebhookError) Unwrap() error { return e.Err }
+
+func webhookErr(field, format string, args ...any) *WebhookError {
+	return &WebhookError{Field: field, Err: fmt.Errorf(format, args...)}
+}
+
+// ValidateWebhook reports whether w is one this device can actually make.
+//
+// It is exported, and Config.Validate deliberately does not call it — see
+// the comment on Webhooks in Validate. The two callers are the /webhooks
+// form, which refuses a submission and tells the operator why, and
+// internal/webhook, which refuses to fire a stored webhook that would not
+// pass and writes that refusal to the event log. Between them, a webhook
+// this build cannot make is always either rejected as it is typed or
+// reported as it fails to fire — never silently dropped, and never a reason
+// the daemon will not start.
+func ValidateWebhook(w Webhook) error {
+	if w.ID == "" {
+		return webhookErr(WebhookFieldID, "id is required")
+	}
+	if len(w.ID) > MaxWebhookIDLength {
+		return webhookErr(WebhookFieldID, "id is %d characters, the maximum is %d", len(w.ID), MaxWebhookIDLength)
+	}
+	if len(w.Name) > MaxWebhookNameLen {
+		return webhookErr(WebhookFieldName, "name is %d characters, the maximum is %d", len(w.Name), MaxWebhookNameLen)
+	}
+	switch w.Trigger {
+	case TriggerAlertStart, TriggerAlertEnd, TriggerScheduled:
+	default:
+		return webhookErr(WebhookFieldTrigger, "unknown trigger %q", w.Trigger)
+	}
+	if !slices.Contains(WebhookMethods, w.Method) {
+		return webhookErr(WebhookFieldMethod, "method %q is not one of %v", w.Method, WebhookMethods)
+	}
+	if err := validateWebhookURL(w.URL); err != nil {
+		return err
+	}
+	if len(w.Headers) > MaxWebhookHeaders {
+		return webhookErr(WebhookFieldHeaders, "%d headers, the maximum is %d", len(w.Headers), MaxWebhookHeaders)
+	}
+	for _, h := range w.Headers {
+		if err := validateHeader(h); err != nil {
+			return err
+		}
+	}
+	if len(w.Body) > MaxWebhookBodyLen {
+		return webhookErr(WebhookFieldBody, "body is %d bytes, the maximum is %d", len(w.Body), MaxWebhookBodyLen)
+	}
+	return nil
+}
+
+func validateWebhookURL(raw string) error {
+	if raw == "" {
+		return webhookErr(WebhookFieldURL, "url is required")
+	}
+	if len(raw) > MaxWebhookURLLen {
+		return webhookErr(WebhookFieldURL, "url is %d characters, the maximum is %d", len(raw), MaxWebhookURLLen)
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return webhookErr(WebhookFieldURL, "url is not an address")
+	}
+	if !slices.Contains(WebhookSchemes, u.Scheme) {
+		return webhookErr(WebhookFieldURL, "scheme %q is not one of %v", u.Scheme, WebhookSchemes)
+	}
+	if u.Host == "" {
+		return webhookErr(WebhookFieldURL, "url names no host")
+	}
+	return nil
+}
+
+// validateHeader refuses a name that is not an HTTP token and a value
+// carrying a control character.
+//
+// The value check is the one that matters: a CR or an LF in a value ends the
+// header and starts whatever the operator typed next, which is header
+// injection into a request this device signs with its own credentials. Go's
+// own net/http would refuse to send it, but by then the refusal is an error
+// on a device with no screen rather than a sentence under the field that is
+// wrong.
+func validateHeader(h WebhookHeader) error {
+	if h.Name == "" {
+		return webhookErr(WebhookFieldHeaders, "a header with no name")
+	}
+	if len(h.Name) > MaxHeaderNameLen {
+		return webhookErr(WebhookFieldHeaders, "a header name is %d characters, the maximum is %d", len(h.Name), MaxHeaderNameLen)
+	}
+	if len(h.Value) > MaxHeaderValueLen {
+		// The value itself is never quoted into an error: it is a
+		// credential, and an error string travels into logs and onto pages.
+		// The name is not, and is what the operator needs to find the field.
+		return webhookErr(WebhookFieldHeaders, "the value of header %q is %d characters, the maximum is %d",
+			h.Name, len(h.Value), MaxHeaderValueLen)
+	}
+	for i := 0; i < len(h.Name); i++ {
+		if !isTokenByte(h.Name[i]) {
+			return webhookErr(WebhookFieldHeaders, "header name %q contains %q", h.Name, string(h.Name[i]))
+		}
+	}
+	for i := 0; i < len(h.Value); i++ {
+		if c := h.Value[i]; c < 0x20 || c == 0x7f {
+			return webhookErr(WebhookFieldHeaders, "the value of header %q contains a control character", h.Name)
+		}
+	}
+	return nil
+}
+
+// isTokenByte reports whether c may appear in an HTTP field name (RFC 9110's
+// "token"). Written out rather than pulled from a dependency: the module
+// graph does not grow, and the set is fifteen punctuation marks long.
+func isTokenByte(c byte) bool {
+	switch {
+	case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9':
+		return true
+	}
+	return strings.IndexByte("!#$%&'*+-.^_`|~", c) >= 0
 }
 
 // Default returns a config that is valid and immediately useful: alerts for
@@ -352,6 +573,18 @@ func (c *Config) Validate() error {
 		}
 		seen[e.ID] = true
 	}
+	// webhooks are deliberately not checked here, for any value, and this
+	// must not start — the same ruling quiet_hours.applies_to has above,
+	// reached the same way. A webhook is the operator's own hardware, and
+	// the device announcing air raid alerts must never refuse to start
+	// because a hand-edited request to a relay board names a scheme this
+	// build does not make. What replaces the check is not a weaker check
+	// but two loud ones: /webhooks refuses the submission that would
+	// create such a webhook (ValidateWebhook, with the field named in
+	// Ukrainian), and internal/webhook refuses to fire one that is already
+	// stored and writes that refusal to the event log, where an operator
+	// looking for "why did my relay not click" will find it.
+
 	// Empty is the "not generated yet" state: config.Default() ships it
 	// empty, and netmgr.EnsureAPPassword fills it in on first run. Only a
 	// non-empty value gets checked against WPA2's floor, so a hand-edited

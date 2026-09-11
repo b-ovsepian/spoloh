@@ -2,6 +2,8 @@ package config_test
 
 import (
 	"encoding/json"
+	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -280,5 +282,221 @@ func TestQuietHoursCoversAndSilencesAlerts(t *testing.T) {
 				t.Errorf("SilencesAlerts() = %v, want %v", got, tc.wantSilences)
 			}
 		})
+	}
+}
+
+// A webhook carries an operator's credentials to hardware on their own
+// network, so what is refused and what is accepted both matter. The address
+// in every legal case below is a private one on purpose: 192.168.x.x is the
+// intended target of this feature, not something to be defended against.
+func TestValidateWebhook(t *testing.T) {
+	// base is the operator's own example, translated into stored form.
+	base := func() config.Webhook {
+		return config.Webhook{
+			ID:      "webhook-1",
+			Name:    "Реле",
+			Trigger: config.TriggerAlertStart,
+			Method:  "GET",
+			URL:     "http://192.168.1.50/Sendkey?key=8",
+			Headers: []config.WebhookHeader{{Name: "Authorization", Value: "Basic c3UzZzRnbzZzazc6amkzOTQ1NHh1L14="}},
+			Enabled: true,
+		}
+	}
+
+	tests := []struct {
+		name      string
+		mutate    func(*config.Webhook)
+		wantField string // "" means the webhook must be accepted
+	}{
+		{name: "the operator's own relay request"},
+		{
+			name:   "https to a name",
+			mutate: func(w *config.Webhook) { w.URL = "https://relay.example/on" },
+		},
+		{
+			name:   "a POST with a body",
+			mutate: func(w *config.Webhook) { w.Method = "POST"; w.Body = `{"relay":1}` },
+		},
+		{
+			name:      "no address at all",
+			mutate:    func(w *config.Webhook) { w.URL = "" },
+			wantField: config.WebhookFieldURL,
+		},
+		{
+			// Not a request this device makes; it would read its own disk
+			// and call the result a webhook.
+			name:      "a file url",
+			mutate:    func(w *config.Webhook) { w.URL = "file:///etc/spoloh/config.json" },
+			wantField: config.WebhookFieldURL,
+		},
+		{
+			name:      "a gopher url",
+			mutate:    func(w *config.Webhook) { w.URL = "gopher://192.168.1.50:25/_MAIL" },
+			wantField: config.WebhookFieldURL,
+		},
+		{
+			name:      "an address naming no host",
+			mutate:    func(w *config.Webhook) { w.URL = "http:///Sendkey" },
+			wantField: config.WebhookFieldURL,
+		},
+		{
+			name:      "not an address at all",
+			mutate:    func(w *config.Webhook) { w.URL = "192.168.1.50/Sendkey" },
+			wantField: config.WebhookFieldURL,
+		},
+		{
+			name:      "a method nobody defined",
+			mutate:    func(w *config.Webhook) { w.Method = "FETCH" },
+			wantField: config.WebhookFieldMethod,
+		},
+		{
+			// A method with a space in it is a second request line.
+			name:      "a method carrying a space",
+			mutate:    func(w *config.Webhook) { w.Method = "GET /x HTTP/1.1" },
+			wantField: config.WebhookFieldMethod,
+		},
+		{
+			name:      "an unknown trigger",
+			mutate:    func(w *config.Webhook) { w.Trigger = "sunrise" },
+			wantField: config.WebhookFieldTrigger,
+		},
+		{
+			// Header injection: the value ends the header and starts one the
+			// operator never audited, on a request this device signs.
+			name: "a newline inside a header value",
+			mutate: func(w *config.Webhook) {
+				w.Headers = []config.WebhookHeader{{Name: "X-Key", Value: "8\r\nX-Admin: 1"}}
+			},
+			wantField: config.WebhookFieldHeaders,
+		},
+		{
+			name: "a header name that is not a token",
+			mutate: func(w *config.Webhook) {
+				w.Headers = []config.WebhookHeader{{Name: "X Key", Value: "8"}}
+			},
+			wantField: config.WebhookFieldHeaders,
+		},
+		{
+			name: "a header with no name",
+			mutate: func(w *config.Webhook) {
+				w.Headers = []config.WebhookHeader{{Name: "", Value: "8"}}
+			},
+			wantField: config.WebhookFieldHeaders,
+		},
+		{
+			name:      "no id",
+			mutate:    func(w *config.Webhook) { w.ID = "" },
+			wantField: config.WebhookFieldID,
+		},
+		{
+			name:      "a body longer than the cap",
+			mutate:    func(w *config.Webhook) { w.Body = strings.Repeat("x", config.MaxWebhookBodyLen+1) },
+			wantField: config.WebhookFieldBody,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			w := base()
+			if tc.mutate != nil {
+				tc.mutate(&w)
+			}
+			err := config.ValidateWebhook(w)
+			if tc.wantField == "" {
+				if err != nil {
+					t.Fatalf("ValidateWebhook rejected a webhook this device can make: %v", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("ValidateWebhook accepted a webhook this device must not make")
+			}
+			var werr *config.WebhookError
+			if !errors.As(err, &werr) {
+				t.Fatalf("error %v is not a *config.WebhookError; the dashboard could not name the field", err)
+			}
+			if werr.Field != tc.wantField {
+				t.Errorf("refused field %q, want %q", werr.Field, tc.wantField)
+			}
+		})
+	}
+}
+
+// A header value is a credential. It must never be quoted into an error,
+// because an error travels into the journal and onto a page.
+func TestARejectedHeaderDoesNotQuoteItsValue(t *testing.T) {
+	const secret = "Basic c3UzZzRnbzZzazc6amkzOTQ1NHh1L14="
+	w := config.Webhook{
+		ID: "webhook-1", Trigger: config.TriggerAlertStart, Method: "GET",
+		URL:     "http://192.168.1.50/Sendkey?key=8",
+		Headers: []config.WebhookHeader{{Name: "Authorization", Value: secret + strings.Repeat("x", config.MaxHeaderValueLen)}},
+	}
+	err := config.ValidateWebhook(w)
+	if err == nil {
+		t.Fatal("an over-long header value was accepted")
+	}
+	if strings.Contains(err.Error(), secret) {
+		t.Errorf("the rejection quotes the header value: %v", err)
+	}
+}
+
+// config.Validate must not judge webhooks, for any value a stored file can
+// hold. A device that refuses to start because a hand-edited request to a
+// relay board names a scheme this build does not make is a device that
+// announces no air raid alerts — which is the worse of the two outcomes by
+// the only measure this project has. The refusal happens where it costs
+// nothing: on the form, and at the moment the webhook would have fired.
+func TestValidateAcceptsAStoredWebhookItWouldNeverFire(t *testing.T) {
+	c := config.Default()
+	c.Webhooks = []config.Webhook{{
+		ID:      "",
+		Trigger: "sunrise",
+		Method:  "FETCH",
+		URL:     "gopher://192.168.1.50/_x",
+		Headers: []config.WebhookHeader{{Name: "X Key", Value: "8\r\nX-Admin: 1"}},
+		Enabled: true,
+	}}
+	if err := c.Validate(); err != nil {
+		t.Fatalf("a stored webhook stopped the configuration loading: %v", err)
+	}
+	if err := config.ValidateWebhook(c.Webhooks[0]); err == nil {
+		t.Fatal("ValidateWebhook accepted it too, so this test proves nothing")
+	}
+}
+
+// Clone has to copy the header slice, not share it: the store hands one
+// configuration to the engine's goroutine and another to an HTTP handler,
+// and a shared backing array is a write from the dashboard landing in the
+// engine's copy mid-announcement.
+func TestCloneCopiesWebhookHeaders(t *testing.T) {
+	c := config.Default()
+	c.Webhooks = []config.Webhook{{
+		ID: "webhook-1", Trigger: config.TriggerAlertStart, Method: "GET",
+		URL:     "http://192.168.1.50/Sendkey?key=8",
+		Headers: []config.WebhookHeader{{Name: "Authorization", Value: "Basic one"}},
+	}}
+
+	clone := c.Clone()
+	clone.Webhooks[0].Headers[0].Value = "Basic two"
+
+	if got := c.Webhooks[0].Headers[0].Value; got != "Basic one" {
+		t.Errorf("the original's header value is now %q; the clone shares its headers", got)
+	}
+}
+
+// A configuration with no webhooks must round-trip with no webhooks key at
+// all, so saving an unrelated setting on a device that has none does not
+// start writing "webhooks": [] into every config.json in the field.
+func TestACloneOfAConfigWithNoWebhooksStaysEmpty(t *testing.T) {
+	clone := config.Default().Clone()
+	if clone.Webhooks != nil {
+		t.Fatalf("Webhooks = %v, want nil", clone.Webhooks)
+	}
+	out, err := json.Marshal(clone)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if strings.Contains(string(out), "webhooks") {
+		t.Errorf("a device with no webhooks writes a webhooks key: %s", out)
 	}
 }
