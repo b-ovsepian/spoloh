@@ -35,6 +35,15 @@ type Deps struct {
 	Sync      clock.SyncChecker
 	Logger    *slog.Logger
 
+	// Webhooks, when non-nil, is called with the trigger of an
+	// announcement this device is making, so an operator's own hardware —
+	// a relay board, a PA controller — acts along with the speaker. It is
+	// filled by internal/webhook.Dispatcher.Dispatch, and it must return
+	// without waiting on a network: it is called a few statements before
+	// the sound is queued, and the siren does not wait for a box that may
+	// be unplugged.
+	Webhooks func(trigger string)
+
 	// Watchdog, when non-nil, is pinged at the end of every completed tick.
 	// Pinging from the loop rather than from a timer is the point: a stalled
 	// loop stops pinging and systemd restarts the daemon.
@@ -435,6 +444,22 @@ func (e *Engine) StopManual() {
 
 func (e *Engine) announce(trigger, kind string, at time.Time) {
 	cfg := e.d.Config()
+	// Fired on the transition itself, before the event list or quiet hours
+	// get a say in whether anything is played — and deliberately so for
+	// TriggerAlertEnd. A webhook usually drives something that latches: the
+	// relay the operator asked for closes when the raid starts. If the
+	// end-of-alert webhook fired only when the all-clear was announced,
+	// then an alert-end event switched off, or a quiet-hours window
+	// covering alerts, would leave that relay closed after the raid was
+	// over, with nothing left to open it. Quiet hours are about what the
+	// device makes people hear at night; they are not an instruction to
+	// leave somebody else's hardware latched on.
+	//
+	// This is the transition, not a poll: announce is reached only from
+	// alertstate.Started and alertstate.Ended, and Ended already waits for
+	// EndConfirmations consecutive calm readings. A webhook therefore never
+	// says the raid is over on the strength of one source blinking.
+	e.fireWebhooks(trigger)
 	// Quiet hours can be configured to cover alerts, and then this is a
 	// trigger that produces no decisions, no playback and — without the
 	// loop below — no trace of any kind. That is the one outcome this
@@ -466,7 +491,21 @@ func (e *Engine) fireScheduled(ev config.Event, at time.Time) {
 	if !ok {
 		return
 	}
+	// After the decision, unlike announce above: a scheduled announcement
+	// latches nothing, so a webhook for one that quiet hours silenced would
+	// be the device acting at a moment when it deliberately did not. The
+	// two rules differ because what they protect differs, not by oversight.
+	e.fireWebhooks(config.TriggerScheduled)
 	e.play(d, eventlog.KindScheduled, at)
+}
+
+// fireWebhooks hands a trigger to the operator's own hardware, if any is
+// configured. Nil-tolerant like every other optional dependency here, and
+// non-blocking by contract — see Deps.Webhooks.
+func (e *Engine) fireWebhooks(trigger string) {
+	if e.d.Webhooks != nil {
+		e.d.Webhooks(trigger)
+	}
 }
 
 func (e *Engine) play(d rules.Decision, kind string, at time.Time) {

@@ -33,6 +33,7 @@ import (
 	"github.com/b-ovsepian/spoloh/internal/timedate"
 	"github.com/b-ovsepian/spoloh/internal/watchdog"
 	"github.com/b-ovsepian/spoloh/internal/web"
+	"github.com/b-ovsepian/spoloh/internal/webhook"
 )
 
 // version is overwritten at build time with -ldflags.
@@ -241,6 +242,13 @@ func run(configPath, dataDir, listen, socket string) error {
 	}
 	defer wd.Close()
 
+	// The dispatcher reads its webhooks from the live configuration on every
+	// trigger, so one edited on the dashboard takes effect at the next
+	// announcement rather than at the next restart. It writes its outcomes to
+	// the same event log everything else here does; a nil log swallows them,
+	// exactly as it does for the engine.
+	hooks := webhook.New(cfgFn, lg, logger)
+
 	eng := engine.New(engine.Deps{
 		Config:    cfgFn,
 		StatePath: statePath,
@@ -253,6 +261,10 @@ func run(configPath, dataDir, listen, socket string) error {
 		Sync:      &clock.Timedatectl{},
 		Logger:    logger,
 		Watchdog:  wd,
+		// Dispatch returns before a connection is made — see
+		// internal/webhook. Nothing on the announcement path waits for a
+		// box that may be unplugged.
+		Webhooks: hooks.Dispatch,
 	})
 
 	// netManager drives NetworkManager through nmcli. A value type: see
