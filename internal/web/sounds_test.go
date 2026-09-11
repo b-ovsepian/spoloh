@@ -2,14 +2,21 @@ package web_test
 
 import (
 	"bytes"
+	"context"
 	"encoding/binary"
+	"errors"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
+
+	"github.com/b-ovsepian/spoloh/internal/configstore"
+	"github.com/b-ovsepian/spoloh/internal/library"
+	"github.com/b-ovsepian/spoloh/internal/web"
 )
 
 // makeWAV builds a minimal, structurally valid WAV file with the given
@@ -168,17 +175,20 @@ func TestSoundsUploadStoresFileAndItAppearsInList(t *testing.T) {
 	}
 }
 
-// A file that is not audio, or that ffmpeg cannot convert, must re-render
-// with the library's own rejection and must not add anything — the same
-// contract network.go's handleNetworkConnect gives Network.Connect's own
-// error text.
-func TestSoundsUploadWithBadAudioRerendersLibraryError(t *testing.T) {
+// A file that is not audio at all must re-render with a generic Ukrainian
+// message, not library.Add's own error text: for the "everything else"
+// case (anything that is not one of the two named sentinels), that text can
+// be developer English or, on a failed conversion, a full ffmpeg stderr
+// transcript — meaningless to someone who just tried to upload a recording
+// of a school bell. Nothing must be added either way.
+func TestSoundsUploadWithBadAudioGivesAGenericUkrainianMessage(t *testing.T) {
 	srv, _ := newServerWithLibrary(t, "siren.wav")
 	setPassword(t, srv, "correct horse battery staple")
 	cookie := login(t, srv, "correct horse battery staple")
 
 	// A .wav file that is not a real WAV at all: parseWAV rejects it before
-	// any converter would ever run.
+	// any converter would ever run, with an error that is neither
+	// ErrConversionUnavailable nor ErrBadName.
 	req := uploadRequest(t, "bad.wav", []byte("this is not a wav file"))
 	req.AddCookie(cookie)
 	rec := httptest.NewRecorder()
@@ -187,8 +197,12 @@ func TestSoundsUploadWithBadAudioRerendersLibraryError(t *testing.T) {
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400; body:\n%s", rec.Code, rec.Body.String())
 	}
-	if !strings.Contains(rec.Body.String(), "not a WAV file") {
-		t.Errorf("the rejection does not carry the library's own error; body:\n%s", rec.Body.String())
+	body := rec.Body.String()
+	if !strings.Contains(body, "аудіо") {
+		t.Errorf("the rejection is not the generic Ukrainian message; body:\n%s", body)
+	}
+	if strings.Contains(body, "RIFF/WAVE") {
+		t.Errorf("the rejection leaked the library's own developer-English error; body:\n%s", body)
 	}
 
 	req2 := httptest.NewRequest(http.MethodGet, "/sounds", nil)
@@ -197,6 +211,71 @@ func TestSoundsUploadWithBadAudioRerendersLibraryError(t *testing.T) {
 	srv.Handler().ServeHTTP(rec2, req2)
 	if strings.Contains(rec2.Body.String(), "bad.wav") {
 		t.Error("a rejected upload was added to the library anyway")
+	}
+}
+
+// An unsafe filename (library.ErrBadName) is specific and actionable enough
+// to translate on its own, and sanitise() is checked before Add ever reads
+// the body or asks a converter whether it is available — so this needs no
+// real audio content and never risks touching ffmpeg.
+func TestSoundsUploadWithAnUnsafeFilenameNamesTheProblem(t *testing.T) {
+	srv, _ := newServerWithLibrary(t, "siren.wav")
+	setPassword(t, srv, "correct horse battery staple")
+	cookie := login(t, srv, "correct horse battery staple")
+
+	req := uploadRequest(t, "bad name.mp3", []byte("irrelevant"))
+	req.AddCookie(cookie)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body:\n%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "назв") {
+		t.Errorf("the rejection does not mention the filename; body:\n%s", rec.Body.String())
+	}
+}
+
+// fakeUnavailableConverter simulates a device with no ffmpeg installed, so
+// the ErrConversionUnavailable mapping can be exercised without the real
+// ffmpeg binary this suite must never run.
+type fakeUnavailableConverter struct{}
+
+func (fakeUnavailableConverter) Available() bool { return false }
+func (fakeUnavailableConverter) ToWAV(context.Context, string, string) error {
+	return errors.New("must not be called: Available reported false")
+}
+
+// ErrConversionUnavailable is the one case worth naming the required format
+// for: an operator with no ffmpeg on the device can still fix this, by
+// converting the file elsewhere, if the message says what to convert it to.
+func TestSoundsUploadWhenConversionIsUnavailableNamesTheRequiredFormat(t *testing.T) {
+	store, err := configstore.Open(filepath.Join(t.TempDir(), "config.json"))
+	if err != nil {
+		t.Fatalf("configstore.Open: %v", err)
+	}
+	lib := library.New(t.TempDir(), fakeUnavailableConverter{})
+	srv, err := web.New(web.Deps{Config: store, Library: lib})
+	if err != nil {
+		t.Fatalf("web.New: %v", err)
+	}
+	setPassword(t, srv, "correct horse battery staple")
+	cookie := login(t, srv, "correct horse battery staple")
+
+	req := uploadRequest(t, "clip.mp3", []byte("not really mp3 audio"))
+	req.AddCookie(cookie)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body:\n%s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "WAV") {
+		t.Errorf("the rejection does not name the required format; body:\n%s", body)
+	}
+	if strings.Contains(body, "ErrConversionUnavailable") || strings.Contains(body, "ffmpeg is not installed") {
+		t.Errorf("the rejection leaked the Go error rather than a Ukrainian sentence; body:\n%s", body)
 	}
 }
 

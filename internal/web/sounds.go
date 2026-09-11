@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/b-ovsepian/spoloh/internal/config"
+	"github.com/b-ovsepian/spoloh/internal/library"
 )
 
 // This is the screen the events page assumes exists: /events lets an
@@ -93,6 +94,25 @@ func humanSize(n int64) string {
 		return fmt.Sprintf("%.1f КБ", float64(n)/(1<<10))
 	default:
 		return fmt.Sprintf("%d Б", n)
+	}
+}
+
+// uploadRejectionMessage turns library.Add's own error into one sentence an
+// operator can act on. Only library.go's two named sentinels are specific
+// enough to translate — everything else collapses to one generic sentence
+// rather than being mapped string by string, which would be a treadmill the
+// next ffmpeg version resets, and would risk leaking exactly the kind of
+// text (an ffmpeg stderr transcript, in the worst case) this function
+// exists to keep off the page. The caller logs the real err at Warn, so
+// nothing is actually lost — it just does not reach the browser.
+func uploadRejectionMessage(err error) string {
+	switch {
+	case errors.Is(err, library.ErrConversionUnavailable):
+		return "Перетворення файлів на цьому пристрої недоступне: приймаються лише WAV-файли у форматі PCM 16-біт, 44100 Гц, стерео."
+	case errors.Is(err, library.ErrBadName):
+		return "Некоректна назва файлу: використовуйте лише літери, цифри, крапку, дефіс або підкреслення."
+	default:
+		return "Не вдалося розпізнати файл як аудіо. Спробуйте WAV або MP3."
 	}
 }
 
@@ -197,15 +217,22 @@ func (s *Server) handleSoundsUpload(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), uploadTimeout)
 	defer cancel()
 
-	// library.Add's own error is echoed as-is, the same contract
-	// handleNetworkConnect gives Network.Connect's own error: it is the one
-	// place that says exactly why an upload was not audio, or was audio
-	// ffmpeg could not convert, and no curated Ukrainian message here could
-	// say that as precisely without duplicating the library's own logic.
+	// library.Add's own error is NOT echoed to the page — unlike
+	// handleNetworkConnect, which does pass Network.Connect's error text
+	// straight through. That precedent does not transfer here: nmcli's
+	// errors are one short line and the only diagnostic a headless board
+	// offers to someone already doing something technical (joining Wi-Fi);
+	// library.Add's errors are developer English at best (see
+	// uploadRejectionMessage) and, on a failed conversion, a full ffmpeg
+	// stderr transcript at worst (see Add's "ffmpeg: %w: %s" wrapping) —
+	// meaningless to someone who just tried to upload a recording of a
+	// school bell. The real error is still logged at Warn, for whoever
+	// reads the device's log.
 	if _, err := s.deps.Library.Add(ctx, header.Filename, file); err != nil {
 		s.deps.Logger.Warn("sounds: upload rejected", "filename", header.Filename, "err", err)
+		message := uploadRejectionMessage(err)
 		s.renderSoundsPage(w, http.StatusBadRequest, func(v *soundsView) {
-			v.Error = fmt.Sprintf("Не вдалося завантажити «%s»: %s", header.Filename, err.Error())
+			v.Error = fmt.Sprintf("Не вдалося завантажити «%s»: %s", header.Filename, message)
 		})
 		return
 	}
@@ -236,6 +263,12 @@ func (s *Server) handleSoundsDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Deliberately checked after the in-use rule above, not before: the rule
+	// is correct whether or not a library is wired up at all, and
+	// TestSoundsRefusesToDeleteASoundAnEventUses runs against a server with
+	// no library and still expects the refusal. Swapping this ahead of the
+	// in-use check would make that test fail for a reason that has nothing
+	// to do with the rule it is testing.
 	if s.deps.Library == nil {
 		s.renderSoundsPage(w, http.StatusServiceUnavailable, func(v *soundsView) {
 			v.Error = "Бібліотека звуків недоступна на цьому пристрої."
