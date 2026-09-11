@@ -26,8 +26,14 @@ Concretely, and each of these is real code here:
   mixer control at all; that is normal, not a fault.
 - A dashboard that fails to bind retries with back-off. It does not take the
   daemon down, and it does not give up either.
-- Quiet hours may silence a scheduled event. They may never silence an
-  alert.
+- Quiet hours may silence a scheduled event. They may silence an alert too,
+  but only because the operator typed a word to say so, and never without
+  writing the suppression to the event log — a device that chooses silence
+  during a raid and cannot say afterwards that it chose it is
+  indistinguishable from a broken one.
+- A preview is not an announcement. Listening to a sound, or testing an
+  output, plays below everything real: the single voice must never be held
+  by someone finding out what a file sounds like while a siren waits.
 
 ## Constraints
 
