@@ -43,6 +43,14 @@ type Sound struct {
 	Name    string
 	Size    int64
 	ModTime time.Time
+	// Duration is how long the sound plays. It is only meaningful when
+	// DurationKnown is true: a header that will not parse, or one with a
+	// byte rate of zero to divide by, leaves Duration at its zero value on
+	// purpose, so that a caller who forgets to check DurationKnown renders
+	// something obviously wrong (0:00) rather than something plausible and
+	// false.
+	Duration      time.Duration
+	DurationKnown bool
 }
 
 // Converter turns an arbitrary audio file into a WAV. The contract is "write
@@ -166,7 +174,17 @@ func (l *Library) List() ([]Sound, error) {
 		if err != nil {
 			continue
 		}
-		out = append(out, Sound{Name: e.Name(), Size: info.Size(), ModTime: info.ModTime()})
+		snd := Sound{Name: e.Name(), Size: info.Size(), ModTime: info.ModTime()}
+		// A file that will not parse (mid-transcode wreckage that dodged
+		// isStagingName, an operator's own recording that is not really a
+		// WAV) still belongs in the list — Name/Size/ModTime came straight
+		// from the directory entry and owe parseWAV nothing. It only loses
+		// its duration, which renders as unknown rather than sinking the
+		// whole row.
+		if format, err := parseWAV(filepath.Join(l.dir, e.Name())); err == nil {
+			snd.Duration, snd.DurationKnown = format.Duration()
+		}
+		out = append(out, snd)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out, nil
@@ -321,12 +339,32 @@ func checkStoredWAV(path string) error {
 	return nil
 }
 
-// wavFormat is the audio format declared by a WAV file's fmt chunk.
+// wavFormat is the audio format declared by a WAV file's fmt chunk, plus
+// enough of the data chunk's own shape for Duration to compute playback
+// length by arithmetic rather than a decode.
 type wavFormat struct {
 	FormatTag     uint16
 	Channels      uint16
 	SampleRate    uint32
 	BitsPerSample uint16
+	// ByteRate is the fmt chunk's own declared average bytes per second. It
+	// is read from the file rather than recomputed from the fields above so
+	// that a file whose header lies about it is a duration-unknown case
+	// (see Duration), not a silently different number than what the header
+	// says.
+	ByteRate uint32
+
+	// dataBytes is how much audio is actually there to play: the smaller of
+	// what the data chunk's header declares and what is actually left on
+	// disk after it. A power cut partway through writing a file leaves a
+	// header that still claims the original size — see checkStoredWAV's own
+	// comment on the same failure — so trusting the declared size here would
+	// report a duration longer than the audio that exists to play it.
+	dataBytes int64
+	// hasData reports whether a "data" chunk was found at all. Its absence
+	// is as good a reason to call the duration unknown as a header that does
+	// not parse — see Duration.
+	hasData bool
 }
 
 // requiredFormat is the only format the playback pipeline is guaranteed to
@@ -336,7 +374,36 @@ type wavFormat struct {
 var requiredFormat = wavFormat{FormatTag: 1, Channels: 2, SampleRate: 44100, BitsPerSample: 16}
 
 func (f wavFormat) conforms() bool {
-	return f == requiredFormat
+	// Field by field, not "f == requiredFormat": wavFormat also carries the
+	// data chunk's own shape (ByteRate, dataBytes, hasData), which varies
+	// with every real file and has nothing to do with whether the codec is
+	// the one the playback pipeline requires. A whole-struct comparison
+	// would make every conforming upload fail this check.
+	return f.FormatTag == requiredFormat.FormatTag &&
+		f.Channels == requiredFormat.Channels &&
+		f.SampleRate == requiredFormat.SampleRate &&
+		f.BitsPerSample == requiredFormat.BitsPerSample
+}
+
+// Duration reports how long this WAV plays, and whether that could be
+// determined at all. Playback never decodes anything — uploads are
+// normalised to PCM on arrival — so this is arithmetic on how many bytes of
+// audio there are and how fast the format plays them, using dataBytes
+// exactly as parseWAV clamped it: never more than what the file on disk
+// actually holds.
+//
+// The division is integer, deliberately: a byte rate of zero (a malformed
+// or hand-crafted header) must be caught here and reported as unknown, not
+// fed to a division that panics the page listing every sound in the
+// library.
+func (f wavFormat) Duration() (time.Duration, bool) {
+	if !f.hasData {
+		return 0, false
+	}
+	if f.ByteRate == 0 {
+		return 0, false
+	}
+	return time.Duration(f.dataBytes) * time.Second / time.Duration(f.ByteRate), true
 }
 
 // describe renders the format for an operator-facing error message.
@@ -378,6 +445,11 @@ func formatTagName(tag uint16) string {
 // "fmt ", from which it reports the declared audio format. This is also the
 // package's WAV-validity check: a file whose header or chunk structure does
 // not hold together is rejected here, before it is ever trusted as playable.
+//
+// It keeps walking past "fmt " to look for "data" too, on the same open
+// file, so that Duration has what it needs without a second pass over the
+// file: this is the one place the whole package reads a WAV's header, and
+// List calls it once per sound on every page load.
 func parseWAV(path string) (wavFormat, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -393,15 +465,25 @@ func parseWAV(path string) (wavFormat, error) {
 		return wavFormat{}, errors.New("not a WAV file: missing RIFF/WAVE header")
 	}
 
+	var format wavFormat
+	haveFormat := false
+
 	for {
 		var head [8]byte
 		if _, err := io.ReadFull(f, head[:]); err != nil {
-			return wavFormat{}, errors.New("not a WAV file: missing fmt chunk")
+			if !haveFormat {
+				return wavFormat{}, errors.New("not a WAV file: missing fmt chunk")
+			}
+			// EOF with the format already in hand and no "data" chunk ever
+			// seen: the file is a valid WAV, it just has nothing to compute
+			// a duration from. hasData stays false and Duration reports
+			// unknown — that is not this function's error to raise.
+			return format, nil
 		}
 		id := string(head[0:4])
 		size := binary.LittleEndian.Uint32(head[4:8])
 
-		if id == "fmt " {
+		if id == "fmt " && !haveFormat {
 			// A real fmt chunk is 16 (PCM), 18 (extensible with a zero
 			// extension) or 40 bytes (WAVE_FORMAT_EXTENSIBLE). Cap well
 			// above that, before allocating: a malformed or hostile upload
@@ -420,12 +502,50 @@ func parseWAV(path string) (wavFormat, error) {
 			if _, err := io.ReadFull(f, body); err != nil {
 				return wavFormat{}, fmt.Errorf("not a WAV file: truncated fmt chunk: %w", err)
 			}
-			return wavFormat{
+			format = wavFormat{
 				FormatTag:     binary.LittleEndian.Uint16(body[0:2]),
 				Channels:      binary.LittleEndian.Uint16(body[2:4]),
 				SampleRate:    binary.LittleEndian.Uint32(body[4:8]),
+				ByteRate:      binary.LittleEndian.Uint32(body[8:12]),
 				BitsPerSample: binary.LittleEndian.Uint16(body[14:16]),
-			}, nil
+			}
+			haveFormat = true
+			if size%2 == 1 {
+				if _, err := f.Seek(1, io.SeekCurrent); err != nil {
+					return wavFormat{}, fmt.Errorf("not a WAV file: malformed %q chunk: %w", id, err)
+				}
+			}
+			continue
+		}
+
+		if id == "data" && haveFormat {
+			// The offset here is the first byte of audio: what is actually
+			// left on disk from this point is info.Size()-pos, and Duration
+			// must never be handed more than that, truncated-default-file
+			// or not. Any error from here on leaves the format itself
+			// intact and simply gives up on a duration — that is a detail
+			// this function reports as "unknown", not a reason to fail
+			// something that has already proven itself a valid WAV.
+			pos, err := f.Seek(0, io.SeekCurrent)
+			if err != nil {
+				return format, nil
+			}
+			info, err := f.Stat()
+			if err != nil {
+				return format, nil
+			}
+			available := info.Size() - pos
+			if available < 0 {
+				available = 0
+			}
+			declared := int64(size)
+			if available < declared {
+				format.dataBytes = available
+			} else {
+				format.dataBytes = declared
+			}
+			format.hasData = true
+			return format, nil
 		}
 
 		skip := int64(size)
@@ -433,7 +553,10 @@ func parseWAV(path string) (wavFormat, error) {
 			skip++ // RIFF chunks are padded to an even number of bytes.
 		}
 		if _, err := f.Seek(skip, io.SeekCurrent); err != nil {
-			return wavFormat{}, fmt.Errorf("not a WAV file: malformed %q chunk: %w", id, err)
+			if !haveFormat {
+				return wavFormat{}, fmt.Errorf("not a WAV file: malformed %q chunk: %w", id, err)
+			}
+			return format, nil
 		}
 	}
 }

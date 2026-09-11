@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/b-ovsepian/spoloh/internal/library"
 )
@@ -287,6 +288,165 @@ func TestListAndRemove(t *testing.T) {
 	}
 }
 
+// wavAt is byteRate * seconds worth of data, at the format library.Add
+// accepts as-is: PCM 16-bit 44100 Hz stereo. Building the fixture from a
+// duration rather than a byte count keeps the tests below readable as "5
+// seconds of audio" instead of an opaque length.
+func wavOf(seconds int) []byte {
+	const byteRate = 44100 * 2 * 2 // sampleRate * channels * bytesPerSample
+	return makeWAV(1, 2, 44100, 16, make([]byte, byteRate*seconds))
+}
+
+// A known-length WAV must report exactly the length its data chunk and
+// format imply — the arithmetic the whole feature rests on.
+//
+// Mutation to prove this test: compute duration from the file's total size
+// (os.Stat's Size()) instead of the data chunk's own declared length. A WAV
+// carries 44 bytes of RIFF/fmt/data-header overhead ahead of the audio, so
+// that mutation reports a few hundred microseconds more than this test's
+// exact expectation and fails it.
+func TestListReportsDurationOfAKnownLengthWAV(t *testing.T) {
+	dir := t.TempDir()
+	lib := library.New(dir, &fakeConv{available: false})
+
+	if _, err := lib.Add(context.Background(), "five-seconds.wav", bytes.NewReader(wavOf(5))); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+
+	sounds, err := lib.List()
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(sounds) != 1 {
+		t.Fatalf("List = %+v, want one sound", sounds)
+	}
+	if !sounds[0].DurationKnown {
+		t.Fatal("DurationKnown = false for a well-formed WAV")
+	}
+	if sounds[0].Duration != 5*time.Second {
+		t.Fatalf("Duration = %v, want exactly 5s", sounds[0].Duration)
+	}
+}
+
+// A file whose header is intact but whose bytes stop partway through — a
+// power cut mid-write, exactly the scenario checkStoredWAV documents — must
+// report what is actually on disk, never the longer length the header still
+// claims.
+func TestListDurationOfATruncatedFileDoesNotOverReport(t *testing.T) {
+	dir := t.TempDir()
+	full := wavOf(10)
+
+	// Cut the file to roughly half its declared audio, mid-payload. The RIFF
+	// and fmt headers survive intact; only the tail of the data chunk is
+	// gone, which is what a sequential write interrupted partway actually
+	// leaves.
+	truncated := full[:len(full)/2]
+	path := filepath.Join(dir, "cut.wav")
+	if err := os.WriteFile(path, truncated, 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	lib := library.New(dir, &fakeConv{available: false})
+
+	sounds, err := lib.List()
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(sounds) != 1 {
+		t.Fatalf("List = %+v, want one sound", sounds)
+	}
+	if !sounds[0].DurationKnown {
+		t.Fatal("DurationKnown = false for a file whose header still parses")
+	}
+	if sounds[0].Duration >= 10*time.Second {
+		t.Fatalf("Duration = %v, want less than the declared 10s for a file truncated to half its data", sounds[0].Duration)
+	}
+	if sounds[0].Duration <= 0 {
+		t.Fatalf("Duration = %v, want a positive length for a file that still has audio in it", sounds[0].Duration)
+	}
+}
+
+// makeWAVWithByteRate builds a fixture like makeWAV, except the fmt chunk's
+// own ByteRate field is whatever the caller passes rather than the value a
+// real encoder would compute — the only way to construct the malformed
+// header this test needs, since library.Add's own upload path never lets a
+// caller lie about it.
+func makeWAVWithByteRate(channels uint16, sampleRate uint32, bitsPerSample, byteRate uint16, data []byte) []byte {
+	blockAlign := channels * (bitsPerSample / 8)
+
+	var buf bytes.Buffer
+	buf.WriteString("RIFF")
+	binary.Write(&buf, binary.LittleEndian, uint32(36+len(data)))
+	buf.WriteString("WAVE")
+
+	buf.WriteString("fmt ")
+	binary.Write(&buf, binary.LittleEndian, uint32(16))
+	binary.Write(&buf, binary.LittleEndian, uint16(1)) // PCM
+	binary.Write(&buf, binary.LittleEndian, channels)
+	binary.Write(&buf, binary.LittleEndian, sampleRate)
+	binary.Write(&buf, binary.LittleEndian, uint32(byteRate))
+	binary.Write(&buf, binary.LittleEndian, blockAlign)
+	binary.Write(&buf, binary.LittleEndian, bitsPerSample)
+
+	buf.WriteString("data")
+	binary.Write(&buf, binary.LittleEndian, uint32(len(data)))
+	buf.Write(data)
+
+	return buf.Bytes()
+}
+
+// A byte rate of zero is a malformed header, not a hypothetical one: nothing
+// stops a hand-edited or corrupted file from declaring it. Dividing by it
+// must not panic the page that lists every sound in the library — it must
+// report the duration as unknown instead.
+//
+// Mutation to prove this test: delete the "if f.ByteRate == 0" guard in
+// wavFormat.Duration. That turns this test's fixture into an integer
+// division by zero, which panics the test itself rather than merely failing
+// an assertion — as real as failures get.
+func TestListZeroByteRateReportsUnknownDurationWithoutPanicking(t *testing.T) {
+	dir := t.TempDir()
+	bad := makeWAVWithByteRate(2, 44100, 16, 0, []byte("some audio payload"))
+	if err := os.WriteFile(filepath.Join(dir, "zero-rate.wav"), bad, 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	lib := library.New(dir, &fakeConv{available: false})
+
+	sounds, err := lib.List()
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(sounds) != 1 {
+		t.Fatalf("List = %+v, want one sound", sounds)
+	}
+	if sounds[0].DurationKnown {
+		t.Fatalf("DurationKnown = true for a zero byte rate; Duration = %v", sounds[0].Duration)
+	}
+}
+
+// A file that will not parse at all — an operator's non-WAV recording that
+// somehow landed with a .wav name, or transcode wreckage — must still be
+// listed by name, size and modification time: only its duration is
+// unknown. Hiding the whole row would be a worse answer than an honest
+// "duration unknown" next to it.
+func TestListOfAnUnparsableFileStillListsTheFileWithUnknownDuration(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "not-really-audio.wav"), []byte("not a wav file at all"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	lib := library.New(dir, &fakeConv{available: false})
+
+	sounds, err := lib.List()
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(sounds) != 1 || sounds[0].Name != "not-really-audio.wav" {
+		t.Fatalf("List = %+v, want the file listed by name", sounds)
+	}
+	if sounds[0].DurationKnown {
+		t.Fatal("DurationKnown = true for a file that is not a WAV at all")
+	}
+}
+
 func TestRemoveRejectsEscape(t *testing.T) {
 	lib := library.New(t.TempDir(), &fakeConv{available: false})
 	if err := lib.Remove("../config.json"); err == nil {
@@ -543,5 +703,31 @@ func TestListSkipsAConversionInProgress(t *testing.T) {
 	}
 	if len(sounds) != 1 || sounds[0].Name != "bell.wav" {
 		t.Fatalf("List = %+v, want only bell.wav", sounds)
+	}
+}
+
+// BenchmarkListWithDurations answers the task brief's own question: does
+// reading a header per file on every /sounds load and every /events dropdown
+// cost enough to matter on a slow SD card? parseWAV never reads a file's
+// audio payload — it reads a handful of chunk headers and the small fmt
+// body, then seeks (not reads) past anything larger — so the cost should
+// scale with the number of sounds, not their size. 20 fifteen-second WAVs is
+// already more than a real device's library holds (three defaults plus
+// whatever an operator has recorded).
+func BenchmarkListWithDurations(b *testing.B) {
+	dir := b.TempDir()
+	lib := library.New(dir, &fakeConv{available: false})
+	for i := 0; i < 20; i++ {
+		name := fmt.Sprintf("sound-%02d.wav", i)
+		if _, err := lib.Add(context.Background(), name, bytes.NewReader(wavOf(15))); err != nil {
+			b.Fatalf("Add: %v", err)
+		}
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := lib.List(); err != nil {
+			b.Fatalf("List: %v", err)
+		}
 	}
 }
