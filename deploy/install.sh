@@ -2,7 +2,7 @@
 # Install Spoloh on a Raspberry Pi or similar ARM board running Raspberry Pi
 # OS Lite or Armbian. Run as root:
 #
-#   curl -fsSL https://raw.githubusercontent.com/b-ovsepian/spoloh/main/deploy/install.sh | sh
+#   curl -fsSL https://raw.githubusercontent.com/b-ovsepian/spoloh/main/deploy/install.sh | sudo sh
 #
 # Everything it fetches is verified against the SHA256SUMS published with the
 # release. The variables below exist so the test can run this with fakes; an
@@ -112,6 +112,19 @@ main() {
     # spoloh.local that does not resolve. try-restart does nothing at all if
     # avahi is not installed, so it costs nothing to always run it.
     systemctl try-restart avahi-daemon
+    # Raspberry Pi OS ships `127.0.1.1 raspberrypi`, and a rename that leaves
+    # it there makes every later sudo print "unable to resolve host spoloh".
+    # Harmless to the daemon, alarming to a volunteer who has just set the
+    # device up and has no way to tell a cosmetic warning from a real one.
+    #
+    # Written by copying over the existing file rather than renaming a new
+    # one into place, so /etc/hosts keeps the mode and owner it already has
+    # instead of whatever this shell's umask would have given it.
+    HOSTS="$PREFIX/etc/hosts"
+    if [ -f "$HOSTS" ]; then
+      { grep -v '^127\.0\.1\.1[[:space:]]' "$HOSTS" || true; printf '127.0.1.1\tspoloh\n'; } > "$TMP/hosts"
+      cat "$TMP/hosts" > "$HOSTS"
+    fi
   fi
 
   # 8. Start it. `enable --now` is not enough on a re-run: on an already-active
@@ -151,6 +164,10 @@ main() {
   if [ -n "$AP" ]; then
     say " Wi-Fi access point:  Spoloh-Setup"
     say " Password:            $AP"
+    # nmcli device wifi hotspot uses NetworkManager's shared mode, whose
+    # gateway is 10.42.0.1. Without this the banner names a network to join
+    # and no address to open once you are on it.
+    say " Then open:           http://10.42.0.1/"
     say ""
     say " Write this down. If the device cannot reach a network it raises"
     say " this access point, and it is the only way back in."

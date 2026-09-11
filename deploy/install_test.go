@@ -256,6 +256,57 @@ func TestInstallerPrintsTheAccessPointPassword(t *testing.T) {
 	if !strings.Contains(report, "http://spoloh.local/") {
 		t.Errorf("the dashboard address was never printed\n%s", report)
 	}
+	// The SSID and the password on their own name a network to join and no
+	// address to open once you are on it. 10.42.0.1 is the gateway
+	// NetworkManager's shared mode hands out, which is what
+	// `nmcli device wifi hotspot` raises.
+	if !strings.Contains(report, "http://10.42.0.1/") {
+		t.Errorf("the access point's address was never printed\n%s", report)
+	}
+}
+
+func TestInstallerPointsTheLoopbackHostEntryAtTheNewHostname(t *testing.T) {
+	// Raspberry Pi OS ships `127.0.1.1 raspberrypi`. Renaming the host and
+	// leaving that line makes every later sudo print "unable to resolve host
+	// spoloh" — harmless to the daemon, alarming to a volunteer who has just
+	// set the device up and cannot tell a cosmetic warning from a real one.
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "etc"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	hosts := filepath.Join(dir, "etc", "hosts")
+	if err := os.WriteFile(hosts, []byte("127.0.0.1\tlocalhost\n127.0.1.1\traspberrypi\n::1\tip6-localhost\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	report, err := runInstaller(t, downloadDir(t, ""), "armv7l", "SPOLOH_PREFIX="+dir)
+	if err != nil {
+		t.Fatalf("installer failed: %v\n%s", err, report)
+	}
+
+	got := readFile(hosts)
+	if !strings.Contains(got, "127.0.1.1\tspoloh") {
+		t.Errorf("/etc/hosts has no loopback entry for the new hostname:\n%s", got)
+	}
+	if strings.Contains(got, "raspberrypi") {
+		t.Errorf("the old hostname is still in /etc/hosts:\n%s", got)
+	}
+	// Everything else in the file is somebody's else's business and must
+	// survive untouched.
+	for _, keep := range []string{"127.0.0.1\tlocalhost", "::1\tip6-localhost"} {
+		if !strings.Contains(got, keep) {
+			t.Errorf("the installer dropped %q from /etc/hosts:\n%s", keep, got)
+		}
+	}
+	// Written by copying over the file in place, so its mode is the one it
+	// already had rather than whatever this shell's umask allows.
+	info, err := os.Stat(hosts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mode := info.Mode().Perm(); mode != 0o644 {
+		t.Errorf("/etc/hosts is %v, want -rw-r--r--", mode)
+	}
 }
 
 func TestInstallerSkipsHostnameChangeWhenAlreadySpoloh(t *testing.T) {
