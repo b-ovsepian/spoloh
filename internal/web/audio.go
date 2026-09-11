@@ -129,6 +129,16 @@ type cardGroup struct {
 	// every other kind of output rather than left in aplay's own
 	// card-index order — which, on the real board, puts the one output
 	// that does not work first.
+	//
+	// Known gap, not an oversight: this is a string match on "hdmi" in the
+	// card id or description, because aplay -L is the only thing this
+	// package asks ALSA and it has no dependency-free way to ask whether a
+	// display is actually attached. A card whose id and description do not
+	// happen to say "hdmi" falls back to aplay's own card-index order —
+	// which, on this exact board, is the order that put the broken output
+	// first. Fixing that for real needs a signal this package does not
+	// have; until then, the ordering is a heuristic that helps the common
+	// case and does no harm in the uncommon one.
 	HDMI bool
 }
 
@@ -291,12 +301,17 @@ func deviceKnown(name string, devices []player.Device) bool {
 //
 // A PCM this board does not have silences the device while the dashboard
 // shows a configured output — the same shape of failure as an unmatchable
-// oblast (network.go's isKnownRegion), arrived at from the audio side. When
-// the lister itself could not be asked at all — nil, its call failed, it
-// timed out, or it reported nothing — nothing can be confirmed as real, so
-// nothing is accepted either: the notice from listDevices doubles as the
-// rejection reason, and this is checked before the volume so a broken
-// lister is what the operator is told about, not an unrelated typo.
+// oblast (network.go's isKnownRegion), arrived at from the audio side. But
+// the lister is only consulted for a device that is actually changing: a
+// submission whose device equals what is already stored needs no fresh
+// confirmation, because it passed this exact check the moment it was first
+// saved. That is what keeps a volume-only change working on a board whose
+// ALSA is misbehaving right now — precisely the board whose settings most
+// need changing, and the one a stricter rule would otherwise strand. Only a
+// genuinely new device asks the lister to vouch for it, and if the lister
+// could not be asked at all — nil, its call failed, it timed out, or it
+// reported nothing — that new device is refused, using the notice from
+// listDevices as the reason.
 func (s *Server) handleAudioSave(w http.ResponseWriter, r *http.Request) {
 	if !sameOrigin(r) {
 		http.Error(w, "cross-origin request rejected", http.StatusForbidden)
@@ -306,6 +321,7 @@ func (s *Server) handleAudioSave(w http.ResponseWriter, r *http.Request) {
 	device := r.FormValue("device")
 	volume, volumeErr := parseMasterVolume(r.FormValue("master_volume"))
 	devices, notice := s.listDevices(r.Context())
+	current := s.deps.Config.Get().Audio.Device
 
 	reject := func(status int, message string) {
 		s.renderAudioPage(w, status, devices, notice, device, func(v *audioView) {
@@ -313,17 +329,19 @@ func (s *Server) handleAudioSave(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
-	if notice != "" {
-		reject(http.StatusServiceUnavailable, notice)
-		return
-	}
 	if volumeErr != "" {
 		reject(http.StatusBadRequest, volumeErr)
 		return
 	}
-	if !deviceKnown(device, devices) {
-		reject(http.StatusBadRequest, fmt.Sprintf("Пристрій «%s» не знайдено серед доступних виходів.", device))
-		return
+	if device != current {
+		if notice != "" {
+			reject(http.StatusServiceUnavailable, notice)
+			return
+		}
+		if !deviceKnown(device, devices) {
+			reject(http.StatusBadRequest, fmt.Sprintf("Пристрій «%s» не знайдено серед доступних виходів.", device))
+			return
+		}
 	}
 
 	err := s.deps.Config.Update(func(c *config.Config) error {

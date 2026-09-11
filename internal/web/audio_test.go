@@ -179,6 +179,78 @@ func TestAudioSaveRejectsMasterVolumeOutsideRange(t *testing.T) {
 	}
 }
 
+// A broken lister must not strand a volume-only change: the stored device
+// already passed the "ALSA reported it" check the moment it was first
+// saved, and refusing to re-confirm it now would bite hardest on exactly
+// the board whose ALSA is misbehaving — the board whose settings most need
+// changing.
+func TestAudioSaveWithBrokenListerSavesAVolumeOnlyChange(t *testing.T) {
+	store, err := configstore.Open(t.TempDir() + "/config.json")
+	if err != nil {
+		t.Fatalf("configstore.Open: %v", err)
+	}
+	lister := deviceListerFunc(func(context.Context) ([]player.Device, error) {
+		return nil, errors.New("aplay -L: exit status 127: aplay: not found")
+	})
+	srv, err := web.New(web.Deps{Config: store, Devices: lister})
+	if err != nil {
+		t.Fatalf("web.New: %v", err)
+	}
+	setPassword(t, srv, "correct horse battery staple")
+	cookie := login(t, srv, "correct horse battery staple")
+
+	current := store.Get().Audio.Device // config.Default's "default"
+
+	rec := audioPostForm(t, srv, cookie, url.Values{"device": {current}, "master_volume": {"42"}})
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body:\n%s", rec.Code, rec.Body.String())
+	}
+	cfg := store.Get()
+	if cfg.Audio.Device != current {
+		t.Errorf("Audio.Device = %q, want it unchanged at %q", cfg.Audio.Device, current)
+	}
+	if cfg.Audio.MasterVolume != 42 {
+		t.Errorf("Audio.MasterVolume = %d, want 42", cfg.Audio.MasterVolume)
+	}
+}
+
+// The narrower rule still refuses what it exists to refuse: a *new* device
+// cannot be confirmed real when the lister that would confirm it is broken,
+// so it must not be written to config.
+func TestAudioSaveWithBrokenListerStillRefusesANewDevice(t *testing.T) {
+	store, err := configstore.Open(t.TempDir() + "/config.json")
+	if err != nil {
+		t.Fatalf("configstore.Open: %v", err)
+	}
+	lister := deviceListerFunc(func(context.Context) ([]player.Device, error) {
+		return nil, errors.New("aplay -L: exit status 127: aplay: not found")
+	})
+	srv, err := web.New(web.Deps{Config: store, Devices: lister})
+	if err != nil {
+		t.Fatalf("web.New: %v", err)
+	}
+	setPassword(t, srv, "correct horse battery staple")
+	cookie := login(t, srv, "correct horse battery staple")
+
+	before := store.Get().Audio.Device
+
+	rec := audioPostForm(t, srv, cookie, url.Values{
+		"device": {"plughw:CARD=Headphones,DEV=0"}, "master_volume": {"50"},
+	})
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503; body:\n%s", rec.Code, rec.Body.String())
+	}
+	cfg := store.Get()
+	if cfg.Audio.Device != before {
+		t.Errorf("Audio.Device = %q, want it unchanged at %q", cfg.Audio.Device, before)
+	}
+	if cfg.Audio.MasterVolume == 50 {
+		t.Error("the volume was saved alongside a device change that should have been refused")
+	}
+}
+
 // A board whose ALSA is broken must still show the rest of the page, not
 // error outright — an operator on a device with no lister wired up at all
 // still needs to see this screen exists.

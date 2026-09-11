@@ -38,7 +38,7 @@
       <p class="font-medium">{{.Kind}}{{if .EventID}} · {{.EventID}}{{end}}</p>
       {{if .Sound}}<p class="text-sm text-muted-foreground">{{.Sound}}</p>{{end}}
       {{if .Err}}<p class="text-sm wrap-break-word">{{.Err}}</p>{{end}}
-      {{if .PlaybackError}}<p class="text-sm">Перевірте вихідний пристрій на сторінці «<a href="/audio" class="underline">Звук</a>».</p>{{end}}
+      {{if .PlaybackError}}<p class="text-sm">Перевірте вихідний пристрій на сторінці «<a href="/audio" class="underline">Аудіовихід</a>».</p>{{end}}
     </li>
     {{end}}
   </ul>
@@ -62,7 +62,7 @@
           <td>{{.EventID}}</td>
           <td>{{.Sound}}</td>
           <td>{{if .OK}}<span class="text-sm">✓ ОК</span>{{else}}<span class="font-semibold text-destructive">✕ Помилка</span>{{end}}</td>
-          <td class="text-sm text-muted-foreground whitespace-normal wrap-break-word">{{.Err}}{{if .PlaybackError}} Перевірте вихідний пристрій на сторінці «<a href="/audio" class="underline">Звук</a>».{{end}}</td>
+          <td class="text-sm text-muted-foreground whitespace-normal wrap-break-word">{{.Err}}{{if .PlaybackError}} Перевірте вихідний пристрій на сторінці «<a href="/audio" class="underline">Аудіовихід</a>».{{end}}</td>
         </tr>
         {{end}}
       </tbody>

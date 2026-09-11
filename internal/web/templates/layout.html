@@ -65,7 +65,14 @@ phone that adds it to the home screen otherwise stores a screenshot.
       <a href="/" class="rounded-md px-3 py-2 text-sm hover:bg-accent aria-[current=page]:bg-accent aria-[current=page]:font-semibold" :aria-current="location.pathname === '/' ? 'page' : null">Головна</a>
       <a href="/events" class="rounded-md px-3 py-2 text-sm hover:bg-accent aria-[current=page]:bg-accent aria-[current=page]:font-semibold" :aria-current="location.pathname === '/events' ? 'page' : null">Події</a>
       <a href="/sounds" class="rounded-md px-3 py-2 text-sm hover:bg-accent aria-[current=page]:bg-accent aria-[current=page]:font-semibold" :aria-current="location.pathname === '/sounds' ? 'page' : null">Звуки</a>
-      <a href="/audio" class="rounded-md px-3 py-2 text-sm hover:bg-accent aria-[current=page]:bg-accent aria-[current=page]:font-semibold" :aria-current="location.pathname === '/audio' ? 'page' : null">Звук</a>
+      {{/*
+      "Аудіовихід" rather than "Звук": that reads one root away from "Звуки"
+      (the sound library) right next to it, and someone scanning this nav
+      under pressure — the whole reason this screen exists is a fresh device
+      that cannot make a sound at all — needs to tell them apart at a glance,
+      not by reading past the first four letters.
+      */}}
+      <a href="/audio" class="rounded-md px-3 py-2 text-sm hover:bg-accent aria-[current=page]:bg-accent aria-[current=page]:font-semibold" :aria-current="location.pathname === '/audio' ? 'page' : null">Аудіовихід</a>
       <a href="/log" class="rounded-md px-3 py-2 text-sm hover:bg-accent aria-[current=page]:bg-accent aria-[current=page]:font-semibold" :aria-current="location.pathname === '/log' ? 'page' : null">Журнал</a>
       <a href="/network" class="rounded-md px-3 py-2 text-sm hover:bg-accent aria-[current=page]:bg-accent aria-[current=page]:font-semibold" :aria-current="location.pathname === '/network' ? 'page' : null">Мережа</a>
     </nav>
