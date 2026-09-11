@@ -128,6 +128,72 @@ func TestValidateAcceptsRepeatAtBothBoundaries(t *testing.T) {
 	}
 }
 
+// The operator's instruction after every source in the cascade rate-limited
+// at once was "no more often than every 10 seconds", and the 429 that caused
+// it asked for 15. Default() therefore sits above the floor rather than
+// exactly on it, so a fresh device does not poll at the fastest rate the
+// upstream tolerates.
+func TestPollIntervalFloorAndDefault(t *testing.T) {
+	if config.MinPollInterval != 10*time.Second {
+		t.Errorf("MinPollInterval = %v, want 10s", config.MinPollInterval)
+	}
+	got := config.Default().Alerts.PollInterval.Std()
+	if got != 15*time.Second {
+		t.Errorf("Default().Alerts.PollInterval = %v, want 15s", got)
+	}
+	if got <= config.MinPollInterval {
+		t.Errorf("Default().Alerts.PollInterval = %v, want it above the %v floor", got, config.MinPollInterval)
+	}
+}
+
+// Validate is the path a form submission is checked on, so an operator asking
+// for an interval the upstream will rate-limit must be told no. That is not
+// in conflict with Load repairing a file written by an older build: a human
+// asking for something impossible gets an error, a stored config gets
+// repaired (see store.go's raisePollIntervalToMinimum).
+func TestValidateRejectsAPollIntervalBelowTheMinimum(t *testing.T) {
+	c := config.Default()
+	c.Alerts.PollInterval = config.Duration(2 * time.Second)
+	if err := c.Validate(); err == nil {
+		t.Fatalf("Validate accepted a 2s poll interval, below the %v minimum", config.MinPollInterval)
+	}
+}
+
+func TestValidateAcceptsAPollIntervalAtTheMinimum(t *testing.T) {
+	c := config.Default()
+	c.Alerts.PollInterval = config.Duration(config.MinPollInterval)
+	if err := c.Validate(); err != nil {
+		t.Fatalf("Validate rejected the %v minimum itself: %v", config.MinPollInterval, err)
+	}
+}
+
+// Validate must not change the config it is handed. It runs from Save, from
+// every dashboard form handler and from Load, so a mutation hiding inside it
+// would reach all three and be invisible at each — which is exactly why
+// Load's repairs (restoreMissingAlertEvents, restoreMissingRepeat,
+// raisePollIntervalToMinimum) live in Load and not here. The config below
+// carries one of each repair's input so that moving any of them into Validate
+// is caught.
+func TestValidateDoesNotMutateTheConfig(t *testing.T) {
+	c := config.Default()
+	c.Alerts.PollInterval = config.Duration(2 * time.Second)
+	c.Events[0].Repeat = 0
+	c.Events = c.Events[:1]
+
+	before, err := json.Marshal(c)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	_ = c.Validate()
+	after, err := json.Marshal(c)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if string(before) != string(after) {
+		t.Fatalf("Validate mutated the config it was given:\nbefore %s\nafter  %s", before, after)
+	}
+}
+
 func TestEventCategory(t *testing.T) {
 	alert := config.Event{Trigger: config.TriggerAlertStart}
 	if got := alert.Category(); got != config.CategoryAlerts {

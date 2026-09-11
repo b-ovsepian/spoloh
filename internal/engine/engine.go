@@ -43,8 +43,8 @@ type Deps struct {
 // heartbeatInterval bounds how often the liveness line is written. Without
 // it, a daemon that is wedged — no transitions, no errors, just silently not
 // polling — looks byte-identical in the journal to a healthy one; logging
-// every poll at the default 5s cadence, on the other hand, would write
-// roughly 17,000 lines a day to an SD card and bury the handful that matter.
+// every poll at the default 15s cadence, on the other hand, would write
+// roughly 5,700 lines a day to an SD card and bury the handful that matter.
 const heartbeatInterval = 15 * time.Minute
 
 // fetchDeadline caps one poll's entire source cascade, however many sources

@@ -460,10 +460,45 @@ func TestTickPollsWhenDueNotBefore(t *testing.T) {
 		t.Fatalf("hits after an immediate second tick = %d, want 1 (not due yet)", got)
 	}
 
-	clk.Set(base.Add(7 * time.Second)) // past the max jittered 5s+1s interval
+	clk.Set(base.Add(17 * time.Second)) // past the max jittered 15s+1s interval
 	h.eng.Tick(ctx)
 	if got := h.hits(); got != 2 {
 		t.Fatalf("hits after advancing past the interval = %d, want 2", got)
+	}
+}
+
+// The configured interval is jittered by up to a second either way and then
+// clamped to config.MinPollInterval, and the clamp is the second line of
+// defence behind config.Load's repair: whatever a live config says — a
+// hand-edited file, a build older than the current floor — the engine must
+// not poll faster than the rate that had every source in the cascade
+// rate-limiting at once.
+func TestTickNeverPollsFasterThanTheMinimumInterval(t *testing.T) {
+	base := time.Date(2026, 1, 5, 12, 0, 0, 0, time.UTC)
+	clk := clock.NewFake(base)
+	h := newHarnessWithClock(t, clk)
+	ctx := context.Background()
+
+	h.cfg.Alerts.PollInterval = config.Duration(time.Second)
+
+	h.eng.Tick(ctx) // nextPoll starts at the zero time: always due
+	if got := h.hits(); got != 1 {
+		t.Fatalf("hits after the first tick = %d, want 1", got)
+	}
+
+	// Well past the 1s the config asks for (jitter and all), and short of
+	// the minimum the clamp must hold the device to.
+	clk.Set(base.Add(config.MinPollInterval - time.Second))
+	h.eng.Tick(ctx)
+	if got := h.hits(); got != 1 {
+		t.Fatalf("hits at just under the %v minimum = %d, want 1 — a config below the "+
+			"floor was polled at its own rate", config.MinPollInterval, got)
+	}
+
+	clk.Set(base.Add(config.MinPollInterval + time.Second))
+	h.eng.Tick(ctx)
+	if got := h.hits(); got != 2 {
+		t.Fatalf("hits past the %v minimum = %d, want 2", config.MinPollInterval, got)
 	}
 }
 
@@ -483,7 +518,7 @@ func TestTickAttemptResetsAfterRecovery(t *testing.T) {
 	}
 
 	h.fail(true)
-	firstFailAt := base.Add(7 * time.Second)
+	firstFailAt := base.Add(17 * time.Second)
 	clk.Set(firstFailAt)
 	h.eng.Tick(ctx) // first failure: attempt=1, backoff=Backoff(1)=15s (deterministic, no jitter)
 	if got := h.hits(); got != 2 {
@@ -506,9 +541,9 @@ func TestTickAttemptResetsAfterRecovery(t *testing.T) {
 
 	// A second failure right after recovery must restart the backoff at 15s,
 	// not continue from the first streak's attempt count (which would give
-	// 30s). Fire it well past any jittered poll interval (max 6s).
+	// 30s). Fire it well past any jittered poll interval (max 16s).
 	h.fail(true)
-	secondFailAt := recoverAt.Add(7 * time.Second)
+	secondFailAt := recoverAt.Add(17 * time.Second)
 	clk.Set(secondFailAt)
 	h.eng.Tick(ctx)
 	if got := h.hits(); got != 4 {
@@ -544,7 +579,7 @@ func TestTickRetryAfterOverridesBackoff(t *testing.T) {
 	}
 
 	h.rate(40 * time.Second) // Retry-After well past Backoff(1) = 15s
-	failAt := base.Add(7 * time.Second)
+	failAt := base.Add(17 * time.Second)
 	clk.Set(failAt)
 	h.eng.Tick(ctx) // rate limited
 	if got := h.hits(); got != 2 {

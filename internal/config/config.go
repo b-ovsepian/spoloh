@@ -27,7 +27,20 @@ const (
 
 // MinPollInterval keeps us clear of the upstream rate limit, which returns 429
 // for two requests roughly a second apart.
-const MinPollInterval = 3 * time.Second
+//
+// It was 3s until a device polling every 5 seconds had every source in its
+// cascade answer 429 at once. A device throttled by all of its sources is one
+// that may not learn about an air raid, which is the only thing it exists to
+// do: polling faster made it less reliable, not more. Ten seconds is the floor
+// the operator asked for.
+//
+// Raising this floor must not strand a device already in the field, every one
+// of which stores a value this now refuses. A stored interval below the
+// minimum is repaired on load, not rejected — see raisePollIntervalToMinimum
+// in store.go. Validate goes on rejecting it, because Validate is also how a
+// form submission is checked, and an operator typing two seconds should be
+// told no rather than silently corrected.
+const MinPollInterval = 10 * time.Second
 
 // Duration serialises as a Go duration string such as "5s".
 type Duration time.Duration
@@ -158,9 +171,13 @@ func Default() *Config {
 		Schema: Schema,
 		Device: Device{Name: "spoloh", Timezone: "Europe/Kyiv"},
 		Alerts: Alerts{
-			Region:       "м. Київ",
-			Sources:      []string{"default", "skog", "aiu"},
-			PollInterval: Duration(5 * time.Second),
+			Region:  "м. Київ",
+			Sources: []string{"default", "skog", "aiu"},
+			// 15s rather than the 10s floor: the 429 that forced the floor
+			// up asked for 15 seconds by name in its Retry-After, so take
+			// the upstream at its word rather than sitting exactly on the
+			// fastest rate it tolerates.
+			PollInterval: Duration(15 * time.Second),
 		},
 		Audio: Audio{Device: "default", MasterVolume: 80},
 		QuietHours: QuietHours{

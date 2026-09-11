@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/b-ovsepian/spoloh/internal/config"
 )
@@ -276,5 +277,128 @@ func TestLoadPreservesAnExplicitRepeatAboveOne(t *testing.T) {
 	}
 	if loaded.Events[0].Repeat != 5 {
 		t.Fatalf("repeat = %d, want the saved value of 5 to survive Load unchanged", loaded.Events[0].Repeat)
+	}
+}
+
+// storeConfigWithPollInterval writes a config.json whose alerts.poll_interval
+// is exactly the given duration string. It edits the JSON rather than going
+// through config.Save because Save validates, and the whole point of the
+// cases below is a stored value Validate refuses — which is the only shape a
+// config written by a build with the older 3s floor can have.
+func storeConfigWithPollInterval(t *testing.T, path, interval string) {
+	t.Helper()
+	if err := config.Save(path, config.Default()); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	var generic map[string]any
+	if err := json.Unmarshal(raw, &generic); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	alerts, ok := generic["alerts"].(map[string]any)
+	if !ok {
+		t.Fatalf("alerts is not an object: %v", generic["alerts"])
+	}
+	alerts["poll_interval"] = interval
+	edited, err := json.Marshal(generic)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if err := os.WriteFile(path, edited, 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+}
+
+// config.MinPollInterval was raised from 3s to 10s after every source in the
+// cascade rate-limited a device polling every 5 seconds. Every config.json
+// already in the field holds a value Validate now refuses, so rejecting it
+// would stop the daemon starting on exactly the devices that were already
+// announcing. Load raises it to the minimum and says so loudly instead — the
+// same repair it makes for a missing alert event, for the same reason.
+func TestLoadRaisesABelowMinimumPollIntervalToTheMinimum(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	storeConfigWithPollInterval(t, path, "5s")
+
+	var logs bytes.Buffer
+	restoreLogger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+	defer slog.SetDefault(restoreLogger)
+
+	loaded, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load refused a stored 5s poll interval instead of repairing it: %v", err)
+	}
+	if got := loaded.Alerts.PollInterval.Std(); got != config.MinPollInterval {
+		t.Fatalf("poll interval = %v, want it raised to the %v minimum exactly", got, config.MinPollInterval)
+	}
+	if !strings.Contains(logs.String(), "poll_interval") {
+		t.Errorf("Load did not log the repair; log = %q", logs.String())
+	}
+	if !strings.Contains(logs.String(), "stored=5s") {
+		t.Errorf("the log line does not name the value that was repaired; log = %q", logs.String())
+	}
+	if !strings.Contains(logs.String(), "level=ERROR") {
+		t.Errorf("the repair was not logged at Error; log = %q", logs.String())
+	}
+}
+
+// A config.json written before alerts.poll_interval existed has no such key,
+// so json.Unmarshal leaves it at Go's zero value — which is below the floor
+// and would otherwise refuse to load rather than polling at all.
+func TestLoadRepairsAnAbsentPollInterval(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	if err := config.Save(path, config.Default()); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	var generic map[string]any
+	if err := json.Unmarshal(raw, &generic); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	alerts, ok := generic["alerts"].(map[string]any)
+	if !ok {
+		t.Fatalf("alerts is not an object: %v", generic["alerts"])
+	}
+	delete(alerts, "poll_interval")
+	stripped, err := json.Marshal(generic)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if err := os.WriteFile(path, stripped, 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	loaded, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := loaded.Alerts.PollInterval.Std(); got != config.MinPollInterval {
+		t.Fatalf("poll interval = %v, want the %v minimum for a config that never carried one", got, config.MinPollInterval)
+	}
+}
+
+// The repair only ever raises an interval that is actually below the floor.
+// One stored above it is the operator's own choice and must come back exactly
+// as saved, not reset to the minimum or to Default().
+func TestLoadPreservesAPollIntervalAboveTheMinimum(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	cfg := config.Default()
+	cfg.Alerts.PollInterval = config.Duration(45 * time.Second)
+	if err := config.Save(path, cfg); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	loaded, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := loaded.Alerts.PollInterval.Std(); got != 45*time.Second {
+		t.Fatalf("poll interval = %v, want the saved 45s to survive Load unchanged", got)
 	}
 }

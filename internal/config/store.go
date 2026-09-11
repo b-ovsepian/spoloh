@@ -28,6 +28,7 @@ func Load(path string) (*Config, error) {
 	// without having to remember to ask for it separately.
 	restoreMissingAlertEvents(&c)
 	restoreMissingRepeat(&c)
+	raisePollIntervalToMinimum(&c)
 	if err := c.Validate(); err != nil {
 		return nil, fmt.Errorf("validate %s: %w", path, err)
 	}
@@ -85,6 +86,40 @@ func restoreMissingRepeat(c *Config) {
 			c.Events[i].Repeat = 1
 		}
 	}
+}
+
+// raisePollIntervalToMinimum raises an alerts.poll_interval below
+// MinPollInterval to exactly that minimum, and logs at Error that it did. It
+// is the same repair the two above make, run at the same point in Load and
+// for the same reason.
+//
+// MinPollInterval has already been raised once — 3s to 10s, after every
+// source in the cascade rate-limited a device polling every 5 seconds — so
+// every config.json written before that holds a value Validate now refuses.
+// Rejecting them means the daemon will not start, which is to say it would
+// silence precisely the devices that were already announcing, over a number
+// the dashboard could have corrected in one field. Refusing to start is the
+// worse outcome: degrade to working, never to silent, and say so loudly.
+//
+// It clamps to the minimum, not to Default()'s interval. The minimum is the
+// smallest change that makes the stored config legal, and an operator who
+// deliberately chose a fast poll is left with the fastest one still allowed
+// rather than a number nobody asked for. A poll_interval missing from the
+// file entirely unmarshals as 0 and lands on the same floor.
+//
+// Only ever raises. An interval at or above the minimum is left exactly as
+// loaded — this repairs "no longer allowed", never "different from the
+// default", exactly like its precedents.
+func raisePollIntervalToMinimum(c *Config) {
+	stored := c.Alerts.PollInterval.Std()
+	if stored >= MinPollInterval {
+		return
+	}
+	c.Alerts.PollInterval = Duration(MinPollInterval)
+	slog.Default().Error(
+		"raised alerts.poll_interval to the minimum: the stored value would rate-limit every alert source",
+		"stored", stored, "using", MinPollInterval,
+	)
 }
 
 func hasEventTrigger(events []Event, trigger string) bool {
