@@ -82,6 +82,23 @@ None of this reaches the network — a unix socket cannot be connected to from
 another machine — and none of it works if the daemon is not running, which
 `systemctl status spoloh` will say.
 
+## Licence
+
+[PolyForm Noncommercial 1.0.0](LICENSE.md). Use it, change it, run it,
+redistribute it — for any noncommercial purpose.
+
+"Noncommercial" is meant the way the licence spells it out, which is broader
+than it first sounds: personal and hobby use, and use by any charity, school,
+public research body, public safety or health organisation, environmental
+group or government institution — regardless of how any of them are funded.
+Selling this software, or selling a device or service built on it, is what it
+does not allow.
+
+A word on the label: this licence restricts the field of use, so it is not
+"open source" as the OSI defines the term, and GitHub will not badge it as
+such. The source is public, readable and modifiable; it is source-available
+rather than OSI open source. If you want to use Spoloh commercially, ask.
+
 ## Stand with Ukraine
 
 [![StandWithUkraine](https://raw.githubusercontent.com/vshymanskyy/StandWithUkraine/main/badges/StandWithUkraine.svg)](https://stand-with-ukraine.pp.ua/)
