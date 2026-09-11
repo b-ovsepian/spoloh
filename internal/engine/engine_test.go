@@ -30,18 +30,47 @@ type recorder struct {
 	mu     sync.Mutex
 	played []string
 	ch     chan string
+
+	// hold lets a test park one Play call mid-flight, the way a real siren
+	// takes real seconds to finish, so a preemption arriving "mid-sequence"
+	// has something to actually interrupt. Closed by default, so every
+	// existing test — which never touches hold — sees Play return
+	// immediately, exactly as before this field existed.
+	hold chan struct{}
 }
 
-func newRecorder() *recorder { return &recorder{ch: make(chan string, 8)} }
+func newRecorder() *recorder {
+	closed := make(chan struct{})
+	close(closed)
+	return &recorder{ch: make(chan string, 8), hold: closed}
+}
 
 func (r *recorder) SetVolume(context.Context, string, int) error { return nil }
 
-func (r *recorder) Play(_ context.Context, _, path string) error {
+func (r *recorder) Play(ctx context.Context, _, path string) error {
 	r.mu.Lock()
 	r.played = append(r.played, filepath.Base(path))
+	hold := r.hold
+	closed := make(chan struct{})
+	close(closed)
+	r.hold = closed // only the call that grabbed `hold` blocks; see block()
 	r.mu.Unlock()
 	r.ch <- filepath.Base(path)
+	select {
+	case <-ctx.Done():
+	case <-hold:
+	}
 	return nil
+}
+
+// block makes the next Play call park until it is preempted (its context is
+// cancelled) rather than returning immediately. It must be armed before the
+// request that should be held is submitted; the model for it is
+// player_test.go's fakeBackend.blockVolume.
+func (r *recorder) block() {
+	r.mu.Lock()
+	r.hold = make(chan struct{})
+	r.mu.Unlock()
 }
 
 func (r *recorder) Played() []string {
@@ -670,6 +699,94 @@ func TestScheduledEventPlaysAtItsConfiguredTime(t *testing.T) {
 
 	if got := waitPlayed(t, h.rec); got != "metronome.wav" {
 		t.Fatalf("played %q at 09:00, want metronome.wav", got)
+	}
+}
+
+// A siren that sounds once may not carry across a corridor — the operator
+// complaint this field exists to answer. Repeat must reach the player as
+// that many separate queued requests, not one request played however many
+// times the ALSA backend feels like.
+func TestEventRepeatQueuesThatManySeparatePlays(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	for i := range h.cfg.Events {
+		if h.cfg.Events[i].Trigger == config.TriggerAlertStart {
+			h.cfg.Events[i].Repeat = 3
+		}
+	}
+
+	h.eng.PollOnce(ctx) // quiet baseline
+	h.set(true)
+	h.eng.PollOnce(ctx)
+
+	for i := 0; i < 3; i++ {
+		if got := waitPlayed(t, h.rec); got != "siren.wav" {
+			t.Fatalf("play %d = %q, want siren.wav", i, got)
+		}
+	}
+	time.Sleep(200 * time.Millisecond)
+	if got := h.rec.Played(); len(got) != 3 {
+		t.Fatalf("played %v, want exactly 3 sirens and nothing else", got)
+	}
+}
+
+// The player's priority queue, not the engine, is what makes an alert cut a
+// repeat sequence short — proved here by holding the first repetition
+// "playing" (Play has not returned) and confirming the alert is the very
+// next thing played, ahead of the sequence's own remaining repeats, exactly
+// as it would preempt any other single scheduled sound. If engine.play ever
+// stopped expanding Repeat into one Player.Play call per repetition — a
+// single longer-running request instead, say — this is what would catch it:
+// the player has nothing to preempt until the next repetition until it is
+// separately queued.
+func TestAlertPreemptsARunningRepeatSequence(t *testing.T) {
+	clk := clock.NewFake(time.Date(2026, 9, 7, 9, 0, 0, 0, time.UTC)) // Monday, the default schedule's day and time
+	h := newHarnessWithClock(t, clk)
+	for i := range h.cfg.Events {
+		if h.cfg.Events[i].ID == "silence" {
+			h.cfg.Events[i].Repeat = 3
+		}
+	}
+
+	h.rec.block()
+	h.eng.Tick(context.Background())
+	if got := waitPlayed(t, h.rec); got != "metronome.wav" {
+		t.Fatalf("first play = %q, want the first repetition of metronome.wav", got)
+	}
+
+	// The alert arrives while that first repetition is still "playing".
+	h.set(true)
+	if err := h.eng.PollOnce(context.Background()); err != nil {
+		t.Fatalf("PollOnce: %v", err)
+	}
+	if got := waitPlayed(t, h.rec); got != "siren.wav" {
+		t.Fatalf("second play = %q, want the siren to preempt the repeat sequence immediately", got)
+	}
+
+	// The sequence's other two repetitions must still be sitting in the
+	// queue, behind the siren, and play once it is done — proving they were
+	// genuinely queued as three separate requests instead of the alert
+	// simply stopping a shorter sequence outright. Preemption of a single
+	// already-playing sound is player's job and is proved on its own in
+	// player_test.go; what only this test can prove is that expanding
+	// Repeat into multiple requests did not also give the sequence a way to
+	// survive behind the alert as one un-interruptible unit.
+	if got := waitPlayed(t, h.rec); got != "metronome.wav" {
+		t.Fatalf("third play = %q, want the sequence's second repetition to resume after the siren", got)
+	}
+	if got := waitPlayed(t, h.rec); got != "metronome.wav" {
+		t.Fatalf("fourth play = %q, want the sequence's third repetition", got)
+	}
+
+	played := h.rec.Played()
+	want := []string{"metronome.wav", "siren.wav", "metronome.wav", "metronome.wav"}
+	if len(played) != len(want) {
+		t.Fatalf("played = %v, want %v", played, want)
+	}
+	for i := range want {
+		if played[i] != want[i] {
+			t.Fatalf("played = %v, want %v", played, want)
+		}
 	}
 }
 

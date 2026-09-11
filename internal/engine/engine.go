@@ -396,13 +396,27 @@ func (e *Engine) play(d rules.Decision, kind string, at time.Time) {
 		})
 		return
 	}
-	e.d.Player.Play(player.Request{
-		EventID:  d.EventID,
-		Path:     path,
-		Volume:   d.Volume,
-		Priority: d.Priority,
-	})
-	e.d.Logger.Info("announcing", "kind", kind, "event", d.EventID, "sound", d.Sound, "volume", d.Volume)
+	// d.Repeat is one Player.Play call repeated, not a single request the
+	// player somehow plays more than once: each repetition is its own
+	// queued Request, so an alert arriving mid-sequence preempts it exactly
+	// as it would preempt any other single scheduled sound (see
+	// player.Player.Play's priority ordering). rules.ForEvent already floors
+	// Repeat at 1, but the same floor is repeated here rather than trusted
+	// blindly, so a Decision built by anything other than ForEvent cannot
+	// silently skip the announcement.
+	repeat := d.Repeat
+	if repeat < 1 {
+		repeat = 1
+	}
+	for i := 0; i < repeat; i++ {
+		e.d.Player.Play(player.Request{
+			EventID:  d.EventID,
+			Path:     path,
+			Volume:   d.Volume,
+			Priority: d.Priority,
+		})
+	}
+	e.d.Logger.Info("announcing", "kind", kind, "event", d.EventID, "sound", d.Sound, "volume", d.Volume, "repeat", repeat)
 	e.record(eventlog.Entry{At: at, Kind: kind, EventID: d.EventID, Sound: d.Sound, OK: true})
 }
 

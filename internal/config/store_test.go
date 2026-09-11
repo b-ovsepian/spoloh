@@ -2,6 +2,7 @@ package config_test
 
 import (
 	"bytes"
+	"encoding/json"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -202,4 +203,78 @@ func TestLoadDoesNotTouchAPresentAlertStartEvent(t *testing.T) {
 		return
 	}
 	t.Fatal("alert-start event disappeared entirely")
+}
+
+// A config.json written before Event.Repeat existed has no "repeat" key at
+// all, so json.Unmarshal leaves every event at Go's zero value for it. Load
+// must repair that to 1, the same way it repairs a missing alert event,
+// because 0 would mean the device stops announcing that event entirely — on
+// an upgrade an operator never asked for and has no way to notice happened.
+func TestLoadDefaultsAMissingRepeatToOne(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	if err := config.Save(path, config.Default()); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+
+	// Strip "repeat" from every event, simulating bytes written by a build
+	// that predates the field — config.Save itself always writes it, so this
+	// is the one way to produce that shape from inside the test.
+	var generic map[string]any
+	if err := json.Unmarshal(raw, &generic); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	events, ok := generic["events"].([]any)
+	if !ok || len(events) == 0 {
+		t.Fatalf("events is not a non-empty list: %v", generic["events"])
+	}
+	for _, e := range events {
+		ev, ok := e.(map[string]any)
+		if !ok {
+			t.Fatalf("event is not an object: %T", e)
+		}
+		delete(ev, "repeat")
+	}
+	stripped, err := json.Marshal(generic)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if err := os.WriteFile(path, stripped, 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	loaded, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(loaded.Events) == 0 {
+		t.Fatal("test assumption broken: Load returned no events")
+	}
+	for _, ev := range loaded.Events {
+		if ev.Repeat != 1 {
+			t.Errorf("event %q: repeat = %d after loading a pre-repeat config, want 1", ev.ID, ev.Repeat)
+		}
+	}
+}
+
+// Load's repair only ever raises a 0; an event that was actually saved with
+// a repeat above 1 must come back exactly as stored, not reset.
+func TestLoadPreservesAnExplicitRepeatAboveOne(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	cfg := config.Default()
+	cfg.Events[0].Repeat = 5
+	if err := config.Save(path, cfg); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	loaded, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if loaded.Events[0].Repeat != 5 {
+		t.Fatalf("repeat = %d, want the saved value of 5 to survive Load unchanged", loaded.Events[0].Repeat)
+	}
 }

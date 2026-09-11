@@ -78,6 +78,7 @@ type eventRowView struct {
 	Weekdays     []int
 	Sound        string
 	Volume       int
+	Repeat       int
 	Enabled      bool
 	Scheduled    bool
 }
@@ -201,6 +202,29 @@ func parseVolume(s string) (int, string) {
 	return v, ""
 }
 
+// The two ways parseRepeat refuses a submission, the model for both being
+// parseVolume above. Unlike volume, repeat has no legal zero to give its own
+// message: config.Event.Repeat's floor is 1 (see its doc comment and
+// config.Validate), so an operator who clears the field or types 0 gets the
+// same out-of-range message as one who types 11.
+const (
+	repeatInvalidMessage    = "Вкажіть кількість повторів числом від 1 до 10."
+	repeatOutOfRangeMessage = "Кількість повторів має бути від 1 до 10."
+)
+
+// parseRepeat parses and range-checks the "repeat" form field. An empty
+// return value means repeat is valid.
+func parseRepeat(s string) (int, string) {
+	v, err := strconv.Atoi(s)
+	if err != nil {
+		return 0, repeatInvalidMessage
+	}
+	if v < 1 || v > 10 {
+		return 0, repeatOutOfRangeMessage
+	}
+	return v, ""
+}
+
 // parseWeekdays reads the (possibly empty, possibly repeated) "weekdays"
 // form values into ISO weekday numbers. A value that fails to parse is
 // dropped rather than rejected outright: config.Validate already refuses an
@@ -234,6 +258,7 @@ func (s *Server) eventsBaseView(cfg *config.Config) eventsView {
 			Weekdays:     ev.Weekdays,
 			Sound:        ev.Sound,
 			Volume:       ev.Volume,
+			Repeat:       ev.Repeat,
 			Enabled:      ev.Enabled,
 			Scheduled:    ev.Trigger == config.TriggerScheduled,
 		})
@@ -303,6 +328,13 @@ func (s *Server) handleEventsSave(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
+	repeat, repeatErr := parseRepeat(r.FormValue("repeat"))
+	if repeatErr != "" {
+		s.renderEventsPage(w, http.StatusBadRequest, func(v *eventsView) {
+			v.Error = repeatErr
+		})
+		return
+	}
 	if s.soundMissing(sound) {
 		s.renderEventsPage(w, http.StatusBadRequest, func(v *eventsView) {
 			v.Error = fmt.Sprintf("Звук «%s» відсутній у бібліотеці.", sound)
@@ -318,6 +350,7 @@ func (s *Server) handleEventsSave(w http.ResponseWriter, r *http.Request) {
 		ev := &c.Events[idx]
 		ev.Sound = sound
 		ev.Volume = volume
+		ev.Repeat = repeat
 		ev.Enabled = enabled
 		if ev.Trigger == config.TriggerScheduled {
 			ev.Name = name
@@ -384,7 +417,13 @@ func (s *Server) handleEventsAdd(w http.ResponseWriter, r *http.Request) {
 			Weekdays: weekdays,
 			Sound:    sound,
 			Volume:   volume,
-			Enabled:  true,
+			// A freshly added event starts at the same repeat count every
+			// device ships with, editable afterward from the row this
+			// produces — the same treatment Enabled below already gets;
+			// neither is a choice this form makes the operator commit to
+			// before the event exists.
+			Repeat:  1,
+			Enabled: true,
 		})
 		return nil
 	})

@@ -14,6 +14,7 @@ type Decision struct {
 	EventID  string
 	Sound    string
 	Volume   int
+	Repeat   int
 	Priority player.Priority
 }
 
@@ -79,10 +80,24 @@ func ForEvent(cfg *config.Config, ev config.Event, at time.Time) (Decision, bool
 		}
 	}
 
+	// config.Load (via restoreMissingRepeat) and config.Validate both keep a
+	// stored Event's Repeat at 1 or above, but ForEvent takes whatever
+	// *config.Config a caller hands it — a config built directly by a test,
+	// or by code that has not gone through either of those — and a stray
+	// zero reaching engine.play would mean the event never plays at all
+	// rather than playing once. The floor belongs here too, not only on
+	// disk, for the same reason the brief gives it: a missing repeat count
+	// must never mean silence.
+	repeat := ev.Repeat
+	if repeat < 1 {
+		repeat = 1
+	}
+
 	return Decision{
 		EventID:  ev.ID,
 		Sound:    ev.Sound,
 		Volume:   volume,
+		Repeat:   repeat,
 		Priority: priority,
 	}, true
 }

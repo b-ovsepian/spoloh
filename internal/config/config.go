@@ -94,7 +94,17 @@ type Event struct {
 	Weekdays []int  `json:"weekdays,omitempty"`
 	Sound    string `json:"sound"`
 	Volume   int    `json:"volume"`
-	Enabled  bool   `json:"enabled"`
+	// Repeat is how many times the sound plays, back to back, for this one
+	// trigger — an operator's answer to a siren that does not carry across a
+	// corridor on a single pass. It defaults to 1 and is capped at 10 by
+	// validate. The zero value is not a legal repeat count: a config.json
+	// written before this field existed has no "repeat" key, and
+	// json.Unmarshal would otherwise leave this at 0, silently turning
+	// "play once" into "play never" on a device where a missing setting must
+	// never mean silence. store.go's Load repairs that case the same way it
+	// already repairs a missing alert event, before validate ever sees it.
+	Repeat  int  `json:"repeat"`
+	Enabled bool `json:"enabled"`
 }
 
 // Category maps a trigger onto the quiet-hours vocabulary.
@@ -146,12 +156,12 @@ func Default() *Config {
 			AppliesTo: []string{CategoryScheduled},
 		},
 		Events: []Event{
-			{ID: "alert-start", Trigger: TriggerAlertStart, Sound: "siren.wav", Volume: 100, Enabled: true},
-			{ID: "alert-end", Trigger: TriggerAlertEnd, Sound: "all-clear.wav", Volume: 90, Enabled: true},
+			{ID: "alert-start", Trigger: TriggerAlertStart, Sound: "siren.wav", Volume: 100, Repeat: 1, Enabled: true},
+			{ID: "alert-end", Trigger: TriggerAlertEnd, Sound: "all-clear.wav", Volume: 90, Repeat: 1, Enabled: true},
 			{
 				ID: "silence", Trigger: TriggerScheduled, Name: "Хвилина мовчання",
 				Time: "09:00", Weekdays: []int{1, 2, 3, 4, 5, 6, 7},
-				Sound: "metronome.wav", Volume: 85, Enabled: true,
+				Sound: "metronome.wav", Volume: 85, Repeat: 1, Enabled: true,
 			},
 		},
 		Network: Network{
@@ -246,6 +256,13 @@ func (e Event) validate() error {
 	}
 	if e.Volume < 0 || e.Volume > 100 {
 		return fmt.Errorf("event %q: volume %d is outside 0..100", e.ID, e.Volume)
+	}
+	// 1..10, not 0..10: unlike volume, repeat has no zero state to protect —
+	// see Event.Repeat's doc comment for why 0 must never reach here. The
+	// upper bound is the typo guard the brief asks for: a mistyped repeat
+	// count must not occupy the single playback queue for an hour.
+	if e.Repeat < 1 || e.Repeat > 10 {
+		return fmt.Errorf("event %q: repeat %d is outside 1..10", e.ID, e.Repeat)
 	}
 	return nil
 }

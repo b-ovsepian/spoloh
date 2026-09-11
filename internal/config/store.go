@@ -27,6 +27,7 @@ func Load(path string) (*Config, error) {
 	// exactly the guarantee a config import (or any future loader) needs
 	// without having to remember to ask for it separately.
 	restoreMissingAlertEvents(&c)
+	restoreMissingRepeat(&c)
 	if err := c.Validate(); err != nil {
 		return nil, fmt.Errorf("validate %s: %w", path, err)
 	}
@@ -64,6 +65,25 @@ func restoreMissingAlertEvents(c *Config) {
 			"restored a missing alert event: the device could not have announced without it",
 			"trigger", trigger, "id", restored.ID,
 		)
+	}
+}
+
+// restoreMissingRepeat sets Repeat to 1 wherever it loaded as the Go zero
+// value. It is the same repair restoreMissingAlertEvents makes for a missing
+// alert event, run for the same reason and at the same point in Load, just
+// before Validate: a config.json written before Event.Repeat existed has no
+// "repeat" key at all, so json.Unmarshal leaves it at 0, and Event.Repeat's
+// doc comment is explicit that 0 must never be allowed to mean "never play
+// this" on a device where a missing setting must never mean silence.
+//
+// Only ever raises a 0 to 1. An event whose repeat was actually saved as
+// something else is left exactly as loaded — this repairs "missing", not
+// "different from the default", exactly like its precedent.
+func restoreMissingRepeat(c *Config) {
+	for i := range c.Events {
+		if c.Events[i].Repeat == 0 {
+			c.Events[i].Repeat = 1
+		}
 	}
 }
 

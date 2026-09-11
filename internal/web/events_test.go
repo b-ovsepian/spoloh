@@ -101,6 +101,40 @@ func TestEventsPageListsEveryEvent(t *testing.T) {
 	}
 }
 
+// Each row's repeat field must render the event's own stored value, wired to
+// its own row by id — not a shared default that happens to look right on a
+// freshly shipped config where every event's repeat is 1.
+func TestEventsPageShowsEachEventsRepeatCount(t *testing.T) {
+	srv, store := newServerWithLibrary(t, "siren.wav", "all-clear.wav", "metronome.wav")
+	setPassword(t, srv, "correct horse battery staple")
+	cookie := login(t, srv, "correct horse battery staple")
+
+	if err := store.Update(func(c *config.Config) error {
+		for i := range c.Events {
+			if c.Events[i].ID == "alert-start" {
+				c.Events[i].Repeat = 4
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/events", nil)
+	req.AddCookie(cookie)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	body := rec.Body.String()
+	want := `id="repeat-alert-start" name="repeat" value="4"`
+	if !strings.Contains(body, want) {
+		t.Errorf("page does not contain %q; alert-start's repeat count must be in its own row's markup", want)
+	}
+}
+
 func TestEventsSaveRejectsCrossOrigin(t *testing.T) {
 	srv, store := newServerWithStore(t)
 	setPassword(t, srv, "correct horse battery staple")
@@ -131,7 +165,7 @@ func TestEventsSaveWritesSoundVolumeAndEnabled(t *testing.T) {
 	cookie := login(t, srv, "correct horse battery staple")
 
 	rec := eventsPostForm(t, srv, cookie, "/events/save", url.Values{
-		"id": {"alert-start"}, "sound": {"klaxon.wav"}, "volume": {"42"}, "enabled": {"on"},
+		"id": {"alert-start"}, "sound": {"klaxon.wav"}, "volume": {"42"}, "repeat": {"3"}, "enabled": {"on"},
 	})
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
@@ -147,8 +181,8 @@ func TestEventsSaveWritesSoundVolumeAndEnabled(t *testing.T) {
 		t.Fatal("alert-start disappeared")
 	}
 	ev := store.Get().Events[idx]
-	if ev.Sound != "klaxon.wav" || ev.Volume != 42 || !ev.Enabled {
-		t.Fatalf("alert-start = %+v, want sound klaxon.wav, volume 42, enabled true", ev)
+	if ev.Sound != "klaxon.wav" || ev.Volume != 42 || ev.Repeat != 3 || !ev.Enabled {
+		t.Fatalf("alert-start = %+v, want sound klaxon.wav, volume 42, repeat 3, enabled true", ev)
 	}
 
 	body := rec.Body.String()
@@ -168,7 +202,7 @@ func TestEventsSaveRejectsASoundNotInTheLibrary(t *testing.T) {
 	before := store.Get().Events
 
 	rec := eventsPostForm(t, srv, cookie, "/events/save", url.Values{
-		"id": {"alert-start"}, "sound": {"nonexistent.wav"}, "volume": {"100"}, "enabled": {"on"},
+		"id": {"alert-start"}, "sound": {"nonexistent.wav"}, "volume": {"100"}, "repeat": {"1"}, "enabled": {"on"},
 	})
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400", rec.Code)
@@ -219,6 +253,47 @@ func TestEventsSaveRejectsZeroVolume(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), "Увімкнено") {
 		t.Error("the rejection does not point to disabling the event as the way to silence it")
+	}
+	if got := store.Get().Events; !eventsEqual(got, before) {
+		t.Errorf("events changed despite the rejection: %+v -> %+v", before, got)
+	}
+}
+
+// Repeat is validated the same way volume is — see parseRepeat — and out of
+// range means outside 1..10, not merely non-numeric.
+func TestEventsSaveRejectsAnOutOfRangeRepeat(t *testing.T) {
+	srv, store := newServerWithLibrary(t, "siren.wav", "all-clear.wav", "metronome.wav")
+	setPassword(t, srv, "correct horse battery staple")
+	cookie := login(t, srv, "correct horse battery staple")
+
+	before := store.Get().Events
+
+	rec := eventsPostForm(t, srv, cookie, "/events/save", url.Values{
+		"id": {"alert-start"}, "sound": {"siren.wav"}, "volume": {"100"}, "repeat": {"11"}, "enabled": {"on"},
+	})
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", rec.Code)
+	}
+	if got := store.Get().Events; !eventsEqual(got, before) {
+		t.Errorf("events changed despite the rejection: %+v -> %+v", before, got)
+	}
+}
+
+// Unlike volume, repeat has no legal zero: config.Event.Repeat's floor is 1,
+// so a submitted 0 is refused as out of range rather than accepted or given
+// a meaning of its own the way parseVolume's zero has.
+func TestEventsSaveRejectsAZeroRepeat(t *testing.T) {
+	srv, store := newServerWithLibrary(t, "siren.wav", "all-clear.wav", "metronome.wav")
+	setPassword(t, srv, "correct horse battery staple")
+	cookie := login(t, srv, "correct horse battery staple")
+
+	before := store.Get().Events
+
+	rec := eventsPostForm(t, srv, cookie, "/events/save", url.Values{
+		"id": {"alert-start"}, "sound": {"siren.wav"}, "volume": {"100"}, "repeat": {"0"}, "enabled": {"on"},
+	})
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", rec.Code)
 	}
 	if got := store.Get().Events; !eventsEqual(got, before) {
 		t.Errorf("events changed despite the rejection: %+v -> %+v", before, got)
@@ -278,6 +353,37 @@ func TestEventsAddCreatesAScheduledEvent(t *testing.T) {
 
 	if !strings.Contains(rec.Body.String(), "Дзвінок на урок") {
 		t.Error("the re-rendered page does not list the new event")
+	}
+}
+
+// The add form has no repeat field of its own — like Enabled, a freshly
+// added event starts at the shipped default and is edited afterward from the
+// row it produces, rather than asking the operator to commit to it before
+// the event exists.
+func TestEventsAddCreatesAnEventWithDefaultRepeatOfOne(t *testing.T) {
+	srv, store := newServerWithLibrary(t, "siren.wav", "all-clear.wav", "metronome.wav", "bell.wav")
+	setPassword(t, srv, "correct horse battery staple")
+	cookie := login(t, srv, "correct horse battery staple")
+
+	rec := eventsPostForm(t, srv, cookie, "/events/add", url.Values{
+		"name": {"Збір"}, "time": {"08:30"}, "weekdays": {"1"}, "sound": {"bell.wav"}, "volume": {"70"},
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+
+	events := store.Get().Events
+	var added *config.Event
+	for i := range events {
+		if events[i].Name == "Збір" {
+			added = &events[i]
+		}
+	}
+	if added == nil {
+		t.Fatal("the new event is not in the stored config")
+	}
+	if added.Repeat != 1 {
+		t.Errorf("repeat = %d, want 1", added.Repeat)
 	}
 }
 
@@ -374,7 +480,7 @@ func TestEventsSaveCanDisableAlertStart(t *testing.T) {
 
 	// No "enabled" field at all: an unchecked checkbox submits nothing.
 	rec := eventsPostForm(t, srv, cookie, "/events/save", url.Values{
-		"id": {"alert-start"}, "sound": {"siren.wav"}, "volume": {"100"},
+		"id": {"alert-start"}, "sound": {"siren.wav"}, "volume": {"100"}, "repeat": {"1"},
 	})
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)

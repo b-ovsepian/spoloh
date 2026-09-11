@@ -395,3 +395,27 @@ func TestDefaultRegionIsAKnownRegion(t *testing.T) {
 	}
 	t.Fatalf("config.Default().Alerts.Region = %q, want one of alertsource.Regions()", def.Alerts.Region)
 }
+
+// The label is pinned in a test because a rename that nothing tests can be
+// reverted by the next edit without anything noticing — the exact failure
+// Task 5's «Аудіовихід» rename ran into. "Джерела" says what the screen is
+// for: choosing where alert data comes from. "Тривоги" read as though the
+// screen showed the alerts themselves, which is the home page's job.
+func TestAlertsPageHeadingAndNavLabelReadDzherela(t *testing.T) {
+	srv := newServer(t)
+	setPassword(t, srv, "correct horse battery staple")
+	cookie := login(t, srv, "correct horse battery staple")
+
+	req := httptest.NewRequest(http.MethodGet, "/alerts", nil)
+	req.AddCookie(cookie)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+
+	body := rec.Body.String()
+	if !strings.Contains(body, `<h1 class="text-lg font-semibold">Джерела</h1>`) {
+		t.Errorf("the page heading is not \"Джерела\"; body:\n%s", body)
+	}
+	if !strings.Contains(body, `'/alerts' ? 'page' : null">Джерела</a>`) {
+		t.Errorf("the nav link to /alerts is not labelled \"Джерела\"; body:\n%s", body)
+	}
+}

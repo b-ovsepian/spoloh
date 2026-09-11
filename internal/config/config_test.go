@@ -69,6 +69,8 @@ func TestValidate(t *testing.T) {
 		}},
 		{"volume out of range", func(c *config.Config) { c.Events[0].Volume = 300 }},
 		{"empty sound", func(c *config.Config) { c.Events[0].Sound = "" }},
+		{"repeat zero", func(c *config.Config) { c.Events[0].Repeat = 0 }},
+		{"repeat above ten", func(c *config.Config) { c.Events[0].Repeat = 11 }},
 		{"ap password shorter than WPA2's minimum", func(c *config.Config) {
 			c.Network.APPassword = "short1"
 		}},
@@ -101,6 +103,28 @@ func TestValidateAllowsAnAPPasswordAtTheWPA2Minimum(t *testing.T) {
 	c.Network.APPassword = "eightchr"
 	if err := c.Validate(); err != nil {
 		t.Fatalf("Validate rejected an 8-character ap_password: %v", err)
+	}
+}
+
+// A shipped device must announce each alert on the first pass, not silence
+// itself because a corridor swallowed a single siren: config.Default()'s
+// events must all carry the field's default explicitly rather than relying
+// on Go's zero value to happen to be right.
+func TestDefaultEventsRepeatOnce(t *testing.T) {
+	for _, ev := range config.Default().Events {
+		if ev.Repeat != 1 {
+			t.Errorf("event %q: repeat = %d, want 1", ev.ID, ev.Repeat)
+		}
+	}
+}
+
+func TestValidateAcceptsRepeatAtBothBoundaries(t *testing.T) {
+	for _, n := range []int{1, 10} {
+		c := config.Default()
+		c.Events[0].Repeat = n
+		if err := c.Validate(); err != nil {
+			t.Errorf("Validate rejected repeat %d: %v", n, err)
+		}
 	}
 }
 

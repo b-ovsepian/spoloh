@@ -254,3 +254,42 @@ func TestInQuietHoursEqualFromAndToIsNotQuiet(t *testing.T) {
 		}
 	}
 }
+
+// A Decision carries the event's own repeat count through unchanged, so the
+// engine knows how many times to queue the sound.
+func TestDecisionCarriesEventRepeat(t *testing.T) {
+	cfg := config.Default()
+	cfg.Events = []config.Event{
+		{ID: "test", Trigger: config.TriggerAlertStart, Sound: "test.wav", Volume: 90, Repeat: 4, Enabled: true},
+	}
+
+	got := rules.Resolve(cfg, config.TriggerAlertStart, at(12, 0))
+	if len(got) != 1 {
+		t.Fatalf("decisions = %d, want 1", len(got))
+	}
+	if got[0].Repeat != 4 {
+		t.Fatalf("repeat = %d, want 4", got[0].Repeat)
+	}
+}
+
+// ForEvent must never let a zero repeat through, whatever produced the
+// config.Config it was handed. config.Load and config.Validate keep a stored
+// event's Repeat at 1 or above (see store.go's restoreMissingRepeat and
+// Event.validate), but this Event is built directly, bypassing both — the
+// same way a config assembled by future code, not only a test, could reach
+// ForEvent without ever having gone through either guard. Silence here would
+// be indistinguishable from the event never firing at all.
+func TestForEventFloorsAZeroRepeatToOne(t *testing.T) {
+	cfg := config.Default()
+	cfg.Events = []config.Event{
+		{ID: "test", Trigger: config.TriggerAlertStart, Sound: "test.wav", Volume: 90, Enabled: true}, // Repeat left at the zero value
+	}
+
+	got, ok := rules.ForEvent(cfg, cfg.Events[0], at(12, 0))
+	if !ok {
+		t.Fatal("ForEvent refused an enabled event")
+	}
+	if got.Repeat != 1 {
+		t.Fatalf("repeat = %d, want 1 (a zero repeat must never reach the player)", got.Repeat)
+	}
+}
