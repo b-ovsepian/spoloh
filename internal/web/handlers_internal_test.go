@@ -35,9 +35,22 @@ func TestHomeViewMDNSFieldReachesTheTemplate(t *testing.T) {
 			rec := httptest.NewRecorder()
 			srv.render(rec, http.StatusOK, "home.html", view)
 
-			got := strings.Contains(rec.Body.String(), `<p class="font-mono text-2xl">spoloh.local</p>`)
+			// The name now shares one line with the addresses —
+			// "IP адреса: 10.0.0.5 (spoloh.local)" — so what is asserted is
+			// that it reaches the page in parentheses after them, and that
+			// an empty name leaves no stray parentheses behind.
+			body := rec.Body.String()
+			got := strings.Contains(body, `10.0.0.5 (spoloh.local)`)
 			if got != tc.want {
 				t.Errorf("homeView.MDNS = %q: page contains the rendered name = %v, want %v", tc.mdns, got, tc.want)
+			}
+			// An absent name must leave no parentheses behind. Asserting
+			// only the presence of the full string would pass against a
+			// template that renders "10.0.0.5 ()" — which is the mistake
+			// this guards, since .MDNS is empty whenever nothing publishes
+			// a name or the device holds no address for one to resolve to.
+			if tc.mdns == "" && strings.Contains(body, "10.0.0.5 (") {
+				t.Errorf("an empty MDNS still rendered parentheses; body:\n%s", body)
 			}
 		})
 	}
