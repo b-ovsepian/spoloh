@@ -18,6 +18,10 @@ Raspberry Pi OS Lite or Armbian:
 curl -fsSL https://github.com/b-ovsepian/spoloh/releases/latest/download/install.sh | sudo sh
 ```
 
+This needs a published release: the script and every file it installs are
+release assets, so until the first `v*` tag is pushed the command has nothing
+to fetch and will fail with a 404.
+
 The installer downloads the release for your board, verifies it, installs the
 service, and prints the Wi-Fi access point password. **Write that password
 down** — if the device ever cannot reach a network it raises an access point
