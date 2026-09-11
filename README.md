@@ -43,6 +43,45 @@ An update is verified against the checksum published with the release and is
 proven to run on the board before it replaces anything. If the new version
 will not start, the previous one is put back automatically.
 
+## Command line
+
+The daemon listens on a unix socket at `/run/spoloh/control.sock`, so the
+device can be driven from a shell without the dashboard and without a second
+password:
+
+```sh
+spoloh status                # alert, region, source, clock, output, what is playing
+spoloh sounds                # the library, one name per line
+spoloh play siren.wav        # through the real output, same queue an alert uses
+spoloh stop                  # silence whatever is playing
+spoloh log -n 50             # the last N event log entries, newest first
+spoloh version               # what the running daemon is, not what is on disk
+```
+
+The socket's permissions are the whole authorisation: it is `0660`, owned
+`spoloh:spoloh`, so **an account has to be in the `spoloh` group** to use any
+of this.
+
+```sh
+sudo usermod -aG spoloh $USER
+```
+
+Log out and back in afterwards — group membership is read at login, so the
+shell you typed that in still cannot reach the socket.
+
+Output is plain lines with no colour, meant for `grep`, `cut` and `awk` as
+much as for reading. `spoloh status` always prints every field, with `-` for
+one that is empty, and `spoloh log` separates its columns with tabs.
+
+`spoloh play` is not a shortcut past anything: it goes through the same engine,
+the same single voice and the same event log as an announcement, so a real
+alert is queued exactly as it would be against a preview started from the
+dashboard.
+
+None of this reaches the network — a unix socket cannot be connected to from
+another machine — and none of it works if the daemon is not running, which
+`systemctl status spoloh` will say.
+
 ## Stand with Ukraine
 
 [![StandWithUkraine](https://raw.githubusercontent.com/vshymanskyy/StandWithUkraine/main/badges/StandWithUkraine.svg)](https://stand-with-ukraine.pp.ua/)
