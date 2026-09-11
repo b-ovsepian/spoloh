@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/b-ovsepian/spoloh/internal/config"
+	"github.com/b-ovsepian/spoloh/internal/web"
 )
 
 func TestHomeShowsTheRegionAndState(t *testing.T) {
@@ -368,5 +369,41 @@ func TestHomeWarnsWhenAlertStartVolumeIsZero(t *testing.T) {
 
 	if !strings.Contains(rec.Body.String(), "Оповіщення про тривогу вимкнено") {
 		t.Error("the home page does not warn when alert-start's volume is 0, even though it is still enabled")
+	}
+}
+
+// homeBody logs in and returns the rendered dashboard. Every check below
+// reads the same page, and repeating the four-line request dance once per
+// assertion buried what each test was actually about.
+func homeBody(t *testing.T, srv *web.Server) string {
+	t.Helper()
+	setPassword(t, srv, "correct horse battery staple")
+	cookie := login(t, srv, "correct horse battery staple")
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.AddCookie(cookie)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	return rec.Body.String()
+}
+
+// The operator asked for this wording by name: "останній успіх" described the
+// poll, not the reading, and read as though something had succeeded rather
+// than as when the device last heard anything. A rename nothing pins is a
+// rename the next edit silently reverts — which has already happened twice on
+// this project — so both halves are checked: the new words are there and the
+// old ones are gone.
+func TestHomeSaysWhenTheSourceLastUpdated(t *testing.T) {
+	srv, _ := newServerWithStore(t)
+	body := homeBody(t, srv)
+
+	if !strings.Contains(body, "останнє оновлення") {
+		t.Error("the source line does not say «останнє оновлення»")
+	}
+	if strings.Contains(body, "останній успіх") {
+		t.Error("the source line still carries the old «останній успіх» wording")
 	}
 }
