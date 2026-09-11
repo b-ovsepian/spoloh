@@ -438,15 +438,130 @@ func newServerInAlert(t *testing.T) *web.Server {
 // rename the next edit silently reverts — which has already happened twice on
 // this project — so both halves are checked: the new words are there and the
 // old ones are gone.
+//
+// Capitalised because the same words now open a line of their own rather than
+// sitting mid-sentence after the source name — see
+// TestHomePutsTheLastUpdateOnItsOwnLine.
 func TestHomeSaysWhenTheSourceLastUpdated(t *testing.T) {
 	srv, _ := newServerWithStore(t)
 	body := homeBody(t, srv)
 
-	if !strings.Contains(body, "останнє оновлення") {
+	if !strings.Contains(body, "Останнє оновлення") {
 		t.Error("the source line does not say «останнє оновлення»")
 	}
 	if strings.Contains(body, "останній успіх") {
 		t.Error("the source line still carries the old «останній успіх» wording")
+	}
+}
+
+// stateCard returns the markup of the Стан card alone.
+//
+// Every assertion about that card has to be anchored inside it. The addresses
+// in particular would satisfy a whole-page check from anywhere on the page —
+// including the separate card this change removed, which is the exact
+// regression worth catching.
+func stateCard(t *testing.T, body string) string {
+	t.Helper()
+	start := strings.Index(body, ">Стан</h2>")
+	if start < 0 {
+		t.Fatal("the page has no Стан card")
+	}
+	end := strings.Index(body[start:], "</section>")
+	if end < 0 {
+		t.Fatal("the Стан card is never closed")
+	}
+	return body[start : start+end]
+}
+
+// The dashboard used to carry a separate «Адреса пристрою» card and, in Стан,
+// a «Мережа: ✓ є IP-адреса» line — the same fact told twice, the weaker half
+// first. The addresses are now the network line's own content, and they keep
+// both jobs they had: the size they are read at off a screen across a room,
+// and their standing as the page's network-health signal.
+//
+// What this can check from outside the package is bounded by
+// web.LocalAddresses() reading the real machine. On a host holding addresses
+// it pins that each one is rendered inside the Стан card; on a host holding
+// none it pins the other half, the reading an operator gets when the device
+// is not on the network. Both are real assertions — which one runs is the
+// host's business. TestHomeViewMDNSFieldReachesTheTemplate covers the
+// hand-built view that web_test cannot construct.
+func TestHomeFoldsTheDeviceAddressesIntoTheStateCard(t *testing.T) {
+	srv, _ := newServerWithStore(t)
+	body := homeBody(t, srv)
+
+	if strings.Contains(body, "Адреса пристрою") {
+		t.Error("the separate address card is still on the page, telling the same thing twice")
+	}
+	state := stateCard(t, body)
+	if !strings.Contains(state, "Мережа:") {
+		t.Fatal("the Стан card carries no network line")
+	}
+
+	addrs := web.LocalAddresses()
+	if len(addrs) == 0 {
+		if !strings.Contains(state, "не в мережі") {
+			t.Error("holding no address at all does not read as «not on the network» in the Стан card")
+		}
+		return
+	}
+	for _, addr := range addrs {
+		if !strings.Contains(state, `<p class="font-mono text-2xl">`+addr+`</p>`) {
+			t.Errorf("the address %s is not in the Стан card, in the size it is read at across a room", addr)
+		}
+	}
+}
+
+// «Джерело: X, останнє оновлення Y» was one sentence, and the timestamp in it
+// is the one thing in this card checked against a clock rather than read.
+// Buried mid-sentence it was something to parse; on its own line it is
+// something to glance at.
+//
+// The binding comes with it. The page is driven by the SSE stream and a
+// binding dropped in a reflow stops updating with nothing failing — the page
+// keeps showing the server's first reading for ever.
+func TestHomePutsTheLastUpdateOnItsOwnLine(t *testing.T) {
+	srv, _ := newServerWithStore(t)
+	state := stateCard(t, homeBody(t, srv))
+
+	if !strings.Contains(state, `<p>Останнє оновлення: <span class="font-mono" x-text="lastSuccess">`) {
+		t.Error("the last-update time is not a line of its own with its live binding intact")
+	}
+
+	start := strings.Index(state, "<p>Джерело:")
+	if start < 0 {
+		t.Fatal("the Стан card no longer names the alert source")
+	}
+	end := strings.Index(state[start:], "</p>")
+	if end < 0 {
+		t.Fatal("the source line is never closed")
+	}
+	if line := state[start : start+end]; strings.Contains(line, "оновлення") {
+		t.Errorf("the source line still carries the last-update time inside it: %q", line)
+	}
+}
+
+// The layout renders the tab title on every page, at the moment that page was
+// served. This page alone also keeps it true afterwards, off the SSE stream it
+// already opens — giving the other screens the same thing would mean a second
+// EventSource on this very page.
+//
+// The sentence is therefore spelled in two places, layout.html's alertState
+// helper and this component, and both are pinned here together: a rename on
+// either side has to be deliberate, and the tab that says «Спокійно» over a
+// device in alert is not a failure anything else would catch.
+func TestHomeKeepsTheTabTitleLive(t *testing.T) {
+	srv, _ := newServerWithStore(t)
+	body := homeBody(t, srv)
+
+	if !strings.Contains(body, "this.retitle();") {
+		t.Error("the stream handler no longer retitles the tab; it will show the first reading for ever")
+	}
+	if !strings.Contains(body, `document.title = (this.alert ? 'Тривога' : 'Спокійно') + ' | Сполох — ' + this.region;`) {
+		t.Error("the live tab title is not built from the state and the region the stream carries")
+	}
+	if !strings.Contains(body, "<title>Спокійно | Сполох — ") {
+		t.Error("the server-rendered tab title is not the sentence the stream will replace it with")
 	}
 }
 

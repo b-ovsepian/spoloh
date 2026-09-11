@@ -1,3 +1,10 @@
+{{/*
+The layout puts the alert state in front of this — «Тривога | Сполох — …» —
+and on this page alone the stream below keeps it true after the render. The
+status() component rebuilds the whole string, so the two halves of that
+sentence live in two files; TestHomeKeepsTheTabTitleLive is what stops them
+drifting apart.
+*/}}
 {{define "title"}}Сполох — {{.Status.Region}}{{end}}
 {{/*
 max-w-5xl, the same measure /log and /sounds already ask for, rather than a
@@ -115,30 +122,6 @@ already widened.
   keeps a full-width row to itself.
   */}}
   <div class="grid gap-4 sm:grid-cols-2">
-    {{/*
-    Only addresses that actually resolve. The .local line only appears once
-    something on the device actually publishes it — avahi-daemon, installed by
-    a later task — and only once the device also holds an address for that name
-    to resolve to (see reachableMDNSName): a memorable name that does not
-    resolve is worse than none, since it's the first thing an operator tries,
-    read aloud over a phone. The name comes from the system hostname, never the
-    Cyrillic device name from config; it is printed as-is, on the assumption
-    that Linux hostnames stay ASCII — nothing here enforces that, so a hostname
-    provisioned otherwise is a problem for whatever sets it, not for this page.
-
-    With no address at all there is nothing to read out, which is worth saying
-    rather than leaving an empty card.
-    */}}
-    <section class="card p-4">
-      <h2 class="text-sm font-semibold text-muted-foreground">Адреса пристрою</h2>
-      {{if .MDNS}}<p class="font-mono text-2xl">{{.MDNS}}</p>{{end}}
-      {{if .Addresses}}
-      {{range .Addresses}}<p class="font-mono text-2xl">{{.}}</p>{{end}}
-      {{else}}
-      <p class="text-lg">✕ Адресу не визначено — пристрій не в мережі.</p>
-      {{end}}
-    </section>
-
     <section class="card p-4">
       <h2 class="text-sm font-semibold text-muted-foreground">Найближча подія</h2>
       <p class="text-lg"><span x-text="nextEvent">{{.Status.NextEventName}}</span> — <span class="font-mono" x-text="nextEventAt">{{.NextEventAtText}}</span></p>
@@ -171,9 +154,40 @@ already widened.
       every second would undo the work publishLoop just saved. The live
       counterpart is the staleness badge above, which is what appears when the
       connection between browser and device fails.
+
+      The addresses themselves are printed here, where this line used to say
+      "✓ є IP-адреса" and a separate card said which — the same fact told twice,
+      the weaker half first. They do two jobs at once and both are why they are
+      shaped the way they are: they are the network-health signal (holding none
+      at all is what "not on the network" looks like from inside the daemon —
+      see homeView.Addresses), and they are what somebody types into a browser,
+      so they stay large and monospaced, readable off a screen from across a
+      room and over a phone. The line above them says what they are for rather
+      than restating that they exist.
+
+      Only addresses that actually resolve. The .local name appears once
+      something on the device publishes it — avahi-daemon, installed by a later
+      task — and only once the device also holds an address for that name to
+      resolve to (see reachableMDNSName): a memorable name that does not resolve
+      is worse than none, since it is the first thing an operator tries, read
+      aloud over a phone. The name comes from the system hostname, never the
+      Cyrillic device name from config; it is printed as-is, on the assumption
+      that Linux hostnames stay ASCII — nothing here enforces that, so a
+      hostname provisioned otherwise is a problem for whatever sets it, not for
+      this page.
       */}}
-      <p>Мережа: {{if .Addresses}}✓ є IP-адреса{{else}}✕ немає IP-адреси{{end}}</p>
-      <p>Джерело: <span x-text="source">{{.Status.SourceName}}</span>, останнє оновлення <span class="font-mono" x-text="lastSuccess">{{.LastSuccessText}}</span></p>
+      <p>Мережа: {{if .Addresses}}✓ є адреса — наберіть у браузері:{{else}}✕ немає IP-адреси — пристрій не в мережі.{{end}}</p>
+      {{if .MDNS}}<p class="font-mono text-2xl">{{.MDNS}}</p>{{end}}
+      {{range .Addresses}}<p class="font-mono text-2xl">{{.}}</p>{{end}}
+      <p>Джерело: <span x-text="source">{{.Status.SourceName}}</span></p>
+      {{/*
+      Its own line, because it is the one thing here an operator checks against
+      a clock rather than reads as a sentence: buried mid-sentence after the
+      source name it was something to parse, not something to glance at. Both
+      spans keep their bindings — the page is driven by the SSE stream and a
+      binding dropped in a reflow stops updating with nothing to say so.
+      */}}
+      <p>Останнє оновлення: <span class="font-mono" x-text="lastSuccess">{{.LastSuccessText}}</span></p>
       <p class="font-semibold text-destructive" x-show="failing"{{if not .Status.Failing}} style="display:none"{{end}} x-text="lastError ? '✕ ' + lastError : ''">{{if .Status.Failing}}✕ {{.Status.LastError}}{{end}}</p>
     </section>
 
@@ -258,6 +272,21 @@ function status() {
     // stale says the frames stopped arriving, so everything above is a
     // photograph of some earlier moment rather than the state of the device.
     stale: false,
+    // The tab strip is where the dashboard is read while it sits behind
+    // other windows, so it follows the state like everything else here.
+    // The layout already renders the same sentence server-side on every
+    // page; this is what keeps it true afterwards, and only this page has a
+    // stream to do it with. A second EventSource in the layout to give the
+    // other screens the same thing would be a second stream on this very
+    // page — see layout.html.
+    //
+    // It rebuilds the whole title rather than patching the state word onto
+    // whatever is there, so a region changed in the dashboard follows too;
+    // the words mirror layout.html's alertState and this page's own "title"
+    // block, which is what TestHomeKeepsTheTabTitleLive pins.
+    retitle() {
+      document.title = (this.alert ? 'Тривога' : 'Спокійно') + ' | Сполох — ' + this.region;
+    },
     // The EventSource is kept rather than dropped on the floor: readyState is
     // the only way to tell a stream that is retrying by itself from one the
     // browser has given up on, and without a handle there is nothing to close
@@ -275,6 +304,7 @@ function status() {
         this.failing = d.failing; this.clockSynced = d.clock_synced;
         this.nextEvent = d.next_event; this.nextEventAt = d.next_event_at;
         this.playing = d.playing;
+        this.retitle();
       };
       // Every way this stream can end arrives here: the daemon restarting,
       // Wi-Fi dropping, the router rebooting, somebody unplugging the switch.
