@@ -230,6 +230,9 @@ func TestApplyNTPServerRefusesAnInjectedValueAndWritesNothing(t *testing.T) {
 
 	for _, bad := range []string{
 		"ntp.example.org\nNTP=evil.example.org",
+		// A newline and nothing else: the case that proves it is the
+		// newline being refused and not the "=" after it.
+		"ntp.example.org\nevil.example.org",
 		"ntp.example.org\r\nFallbackNTP=evil",
 		"ntp.example.org evil.example.org",
 		`ntp.example.org"`,

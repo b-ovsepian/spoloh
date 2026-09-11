@@ -17,6 +17,10 @@ import (
 func TestValidateRejectsAnInjectedNTPServer(t *testing.T) {
 	for _, bad := range []string{
 		"ntp.example.org\nNTP=evil.example.org",
+		// A newline on its own, with nothing else a stricter rule would
+		// catch: this is the case that proves the newline itself is
+		// refused, rather than the "=" that happens to follow it.
+		"ntp.example.org\nevil.example.org",
 		"ntp.example.org\r\nFallbackNTP=evil.example.org",
 		"ntp.example.org evil.example.org",
 		`ntp.example.org"`,

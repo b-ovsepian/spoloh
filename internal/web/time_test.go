@@ -96,12 +96,35 @@ func TestTimePageShowsTheClockStateAndTheZonePicker(t *testing.T) {
 			t.Errorf("the page does not carry %q; body:\n%s", want, body)
 		}
 	}
-	// Ukraine is the overwhelmingly common answer, so it must be the first
-	// option rather than buried alphabetically among six hundred zones.
-	first := strings.Index(body, `<option value="Europe/Kyiv"`)
+	if !strings.Contains(body, `<option value="Africa/Abidjan"`) {
+		t.Errorf("the picker does not offer the host's own zone list; body:\n%s", body)
+	}
+}
+
+// Ukraine is the overwhelmingly common answer, so Europe/Kyiv leads the
+// picker rather than sitting alphabetically between Europe/Kirov and
+// Europe/Lisbon in a list of six hundred. Asserted on a device configured
+// for some other zone, because that is the only case the rule is about: on a
+// device already set to Europe/Kyiv the configured zone leads the list
+// anyway and the rule would be invisible.
+func TestTheZonePickerOffersKyivFirstEvenWhenItIsNotConfigured(t *testing.T) {
+	srv, store, _ := newServerWithTimedate(t, timedate.State{Timezone: "UTC", CanNTP: true})
+	if err := store.Update(func(c *config.Config) error {
+		c.Device.Timezone = "UTC"
+		return nil
+	}); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	cookie := timeSession(t, srv)
+
+	body := timeGet(t, srv, cookie).Body.String()
+	kyiv := strings.Index(body, `<option value="Europe/Kyiv"`)
 	abidjan := strings.Index(body, `<option value="Africa/Abidjan"`)
-	if first < 0 || abidjan < 0 || first > abidjan {
-		t.Errorf("Europe/Kyiv is not the first zone offered; body:\n%s", body)
+	if kyiv < 0 || abidjan < 0 {
+		t.Fatalf("the picker is missing one of the two zones compared; body:\n%s", body)
+	}
+	if kyiv > abidjan {
+		t.Errorf("Europe/Kyiv is offered after Africa/Abidjan; it must lead the picker; body:\n%s", body)
 	}
 }
 
