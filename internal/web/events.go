@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -96,6 +97,27 @@ type eventsView struct {
 
 	QuietHours     config.QuietHours
 	WeekdayOptions []weekdayOption
+
+	// QuietScheduled and QuietAlerts are QuietHours.AppliesTo unpacked into
+	// the two checkboxes the form draws. They are precomputed rather than
+	// asked for from the template, because the helper that would answer
+	// "is this string in that slice" would have to be registered in
+	// render.go's FuncMap, and this page is the only caller there would
+	// ever be for it.
+	QuietScheduled bool
+	QuietAlerts    bool
+
+	// AlertsSilenced is config.QuietHours.SilencesAlerts: the window is on
+	// and it covers alerts, so this device will not sound an air raid alert
+	// between those hours. It is the exact condition the home page's
+	// standing warning tests, so the two screens cannot come to disagree
+	// about whether the state is on.
+	AlertsSilenced bool
+
+	// AlertConfirmation is the word an operator must type to switch alert
+	// suppression on, rendered into the form so the page and the handler
+	// quote the same string.
+	AlertConfirmation string
 
 	// Error is a rejected submission's reason; Message is a completed one's
 	// confirmation. Never both at once — every handler sets exactly one
@@ -245,8 +267,12 @@ func parseWeekdays(values []string) []int {
 // of the page a given POST did not touch.
 func (s *Server) eventsBaseView(cfg *config.Config) eventsView {
 	view := eventsView{
-		QuietHours:     cfg.QuietHours,
-		WeekdayOptions: weekdayOptions,
+		QuietHours:        cfg.QuietHours,
+		WeekdayOptions:    weekdayOptions,
+		QuietScheduled:    cfg.QuietHours.Covers(config.CategoryScheduled),
+		QuietAlerts:       cfg.QuietHours.Covers(config.CategoryAlerts),
+		AlertsSilenced:    cfg.QuietHours.SilencesAlerts(),
+		AlertConfirmation: quietHoursAlertConfirmation,
 	}
 	for _, ev := range cfg.Events {
 		view.Rows = append(view.Rows, eventRowView{
@@ -472,15 +498,76 @@ func (s *Server) handleEventsDelete(w http.ResponseWriter, r *http.Request) {
 	s.renderEventsPage(w, http.StatusOK, func(v *eventsView) { v.Message = "Подію видалено." })
 }
 
-// handleEventsQuietHours saves quiet hours. AppliesTo is never read from the
-// form: spec §5.1 says quiet hours must never silence an alert, so rather
-// than validate a submitted category list against that rule, the form never
-// offers one, and this handler always writes the one category quiet hours
-// are allowed to affect. From and To are required and validated as HH:MM
-// regardless of Enabled — config.Validate itself only checks them when
-// Enabled is true, but leaving them acceptably blank while disabled would
-// let an empty form POST (which leak_test.go sends to every route) silently
-// blank out a previously-configured schedule.
+// quietHoursAlertConfirmation is the word an operator has to type before
+// quiet hours may be extended to cover air raid alerts.
+//
+// A typed word rather than a second checkbox or a two-step submit, copying
+// /log's clear button (see logClearConfirmation) because the reasoning is
+// the same one: this device is set up from a phone held next to it, and two
+// taps in roughly the same place — or one checkbox next to four others — is
+// exactly what a mis-tap looks like. Typing seven Cyrillic letters is not
+// something a thumb does by accident. It needs nothing but an <input> and a
+// submit button, so the safeguard survives JavaScript being off, which this
+// device requires of every control it has.
+//
+// "МОВЧАТИ" and not "ТАК": the word an operator types should be the
+// thing they are agreeing to. Matched case-insensitively, with Unicode
+// folding, so «мовчати» counts — the deliberateness is in having typed
+// the word, and a phone keyboard that lowercases the first letter must not
+// turn a considered decision into a refusal nobody can explain.
+const quietHoursAlertConfirmation = "МОВЧАТИ"
+
+// quietHoursAlertConfirmationMessage is what a submission that would have
+// silenced alerts without the word gets back. It names the word and says
+// what was and was not changed, because the checkbox the operator ticked is
+// re-rendered unticked and a page that simply looked unchanged would read as
+// a bug.
+const quietHoursAlertConfirmationMessage = "Тихі години не змінено. Щоб вони поширювалися на сигнал тривоги, введіть «" +
+	quietHoursAlertConfirmation + "» у поле підтвердження."
+
+// parseCategories reads the (possibly empty, possibly repeated) "applies_to"
+// form values into a quiet-hours category list.
+//
+// It is an allow-list, and the order is this function's, not the form's, so
+// what lands in config.json is the same two-element vocabulary however a
+// browser happened to serialise the checkboxes. A value this build does not
+// recognise is dropped rather than refused: an unknown category silences
+// nothing (config.QuietHours.Covers matches on equality), and storing one
+// would put a value in config.json that no screen shows and no operator can
+// clear again.
+func parseCategories(values []string) []string {
+	var out []string
+	for _, known := range []string{config.CategoryAlerts, config.CategoryScheduled} {
+		if slices.Contains(values, known) {
+			out = append(out, known)
+		}
+	}
+	return out
+}
+
+// handleEventsQuietHours saves quiet hours, including which categories they
+// cover.
+//
+// AppliesTo used to be ignored here and overwritten with the one category
+// quiet hours were permitted to affect. The operator asked for the list to
+// mean what it says, alerts included, so this now reads it — and guards the
+// one transition that matters.
+//
+// The guard is on becoming able to silence an alert, not on the checkbox.
+// Two different submissions reach that state: ticking "alerts" on a window
+// that is already on, and switching a window on that already lists alerts
+// (which a hand-edited config.json can leave behind). Both are asked for the
+// word; neither can happen by one tap. Everything in the other direction —
+// unticking alerts, switching the window off, moving the hours while alerts
+// stay covered — goes through untouched, because a confirmation demanded for
+// making the device louder is a confirmation an operator learns to type
+// without reading.
+//
+// From and To are required and validated as HH:MM regardless of Enabled —
+// config.Validate itself only checks them when Enabled is true, but leaving
+// them acceptably blank while disabled would let an empty form POST (which
+// leak_test.go sends to every route) silently blank out a previously
+// configured schedule.
 func (s *Server) handleEventsQuietHours(w http.ResponseWriter, r *http.Request) {
 	if !sameOrigin(r) {
 		http.Error(w, "cross-origin request rejected", http.StatusForbidden)
@@ -490,6 +577,7 @@ func (s *Server) handleEventsQuietHours(w http.ResponseWriter, r *http.Request) 
 	enabled := r.FormValue("enabled") != ""
 	from := r.FormValue("from")
 	to := r.FormValue("to")
+	appliesTo := parseCategories(r.Form["applies_to"])
 
 	if _, err := config.ParseHM(from); err != nil {
 		s.renderEventsPage(w, http.StatusBadRequest, func(v *eventsView) {
@@ -504,12 +592,27 @@ func (s *Server) handleEventsQuietHours(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	// Read the stored window before the update so the transition is judged
+	// against what the device is doing now, not against what this form is
+	// asking for. Store.Update serialises writers, so the worst a racing
+	// save can do is make this handler ask for the word when the other
+	// writer had just switched alert coverage on — an extra confirmation,
+	// never a skipped one.
+	willSilenceAlerts := enabled && slices.Contains(appliesTo, config.CategoryAlerts)
+	if willSilenceAlerts && !s.deps.Config.Get().QuietHours.SilencesAlerts() &&
+		!strings.EqualFold(strings.TrimSpace(r.FormValue("confirm_alerts")), quietHoursAlertConfirmation) {
+		s.renderEventsPage(w, http.StatusBadRequest, func(v *eventsView) {
+			v.Error = quietHoursAlertConfirmationMessage
+		})
+		return
+	}
+
 	err := s.deps.Config.Update(func(c *config.Config) error {
 		c.QuietHours = config.QuietHours{
 			Enabled:   enabled,
 			From:      from,
 			To:        to,
-			AppliesTo: []string{config.CategoryScheduled},
+			AppliesTo: appliesTo,
 		}
 		return nil
 	})
@@ -520,5 +623,15 @@ func (s *Server) handleEventsQuietHours(w http.ResponseWriter, r *http.Request) 
 		})
 		return
 	}
-	s.renderEventsPage(w, http.StatusOK, func(v *eventsView) { v.Message = "Тихі години збережено." })
+
+	// The success line says which state the device is now in rather than
+	// just "saved". Turning this on is the one save on this page that
+	// changes what happens during an air raid, and the operator should read
+	// that back from the page they are already looking at.
+	message := "Тихі години збережено."
+	if willSilenceAlerts {
+		message = "Тихі години збережено. З " + from + " до " + to +
+			" цей пристрій НЕ подаватиме сигнал повітряної тривоги."
+	}
+	s.renderEventsPage(w, http.StatusOK, func(v *eventsView) { v.Message = message })
 }

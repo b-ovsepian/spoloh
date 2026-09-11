@@ -493,16 +493,14 @@ func TestEventsSaveCanDisableAlertStart(t *testing.T) {
 	}
 }
 
-func TestEventsQuietHoursSavesEnabledFromToAndAppliesToScheduledOnly(t *testing.T) {
+func TestEventsQuietHoursSavesEnabledFromToAndTheCategoryList(t *testing.T) {
 	srv, store := newServerWithStore(t)
 	setPassword(t, srv, "correct horse battery staple")
 	cookie := login(t, srv, "correct horse battery staple")
 
 	rec := eventsPostForm(t, srv, cookie, "/events/quiet-hours", url.Values{
 		"enabled": {"on"}, "from": {"23:00"}, "to": {"06:30"},
-		// A crafted or stale form might still send "alerts"; the handler
-		// must ignore it rather than let quiet hours ever silence an alert.
-		"applies_to": {"alerts", "scheduled"},
+		"applies_to": {"scheduled"},
 	})
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
@@ -513,7 +511,160 @@ func TestEventsQuietHoursSavesEnabledFromToAndAppliesToScheduledOnly(t *testing.
 		t.Fatalf("quiet hours = %+v, want enabled, 23:00-06:30", qh)
 	}
 	if len(qh.AppliesTo) != 1 || qh.AppliesTo[0] != config.CategoryScheduled {
-		t.Fatalf("quiet_hours.applies_to = %v, want only %q — quiet hours must never silence an alert", qh.AppliesTo, config.CategoryScheduled)
+		t.Fatalf("quiet_hours.applies_to = %v, want only %q", qh.AppliesTo, config.CategoryScheduled)
+	}
+	if qh.SilencesAlerts() {
+		t.Fatal("a submission that did not ask for alerts left the device silencing them")
+	}
+}
+
+// The guard the whole feature was granted under. A form that would extend
+// quiet hours over air raid alerts, without the typed word, changes nothing
+// at all \u2014 not the categories, not the hours, not the enabled flag. A phone
+// in a pocket cannot do this.
+func TestEventsQuietHoursRefusesToCoverAlertsWithoutTheTypedWord(t *testing.T) {
+	srv, store := newServerWithStore(t)
+	setPassword(t, srv, "correct horse battery staple")
+	cookie := login(t, srv, "correct horse battery staple")
+
+	before := store.Get().QuietHours
+	for _, confirm := range []string{"", "\u0442\u0430\u043a", "\u041c\u041e\u0412\u0427\u0410\u041d\u041d\u042f"} {
+		form := url.Values{
+			"enabled": {"on"}, "from": {"22:00"}, "to": {"07:00"},
+			"applies_to": {"scheduled", "alerts"},
+		}
+		if confirm != "" {
+			form.Set("confirm_alerts", confirm)
+		}
+		rec := eventsPostForm(t, srv, cookie, "/events/quiet-hours", form)
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("confirm %q: status = %d, want 400", confirm, rec.Code)
+		}
+		got := store.Get().QuietHours
+		if got.SilencesAlerts() {
+			t.Fatalf("confirm %q: the device is now silencing air raid alerts without the confirmation", confirm)
+		}
+		if !reflect.DeepEqual(got, before) {
+			t.Fatalf("confirm %q: quiet hours changed on a refused submission: %+v -> %+v", confirm, before, got)
+		}
+	}
+}
+
+// And the other side of it: an operator who does type the word gets exactly
+// what they asked for, and the page says so rather than reporting a bare
+// "saved". Lower case counts \u2014 see quietHoursAlertConfirmation for why a
+// phone keyboard must not be able to turn a considered decision into a
+// refusal nobody can explain.
+func TestEventsQuietHoursCoversAlertsWithTheTypedWord(t *testing.T) {
+	srv, store := newServerWithStore(t)
+	setPassword(t, srv, "correct horse battery staple")
+	cookie := login(t, srv, "correct horse battery staple")
+
+	rec := eventsPostForm(t, srv, cookie, "/events/quiet-hours", url.Values{
+		"enabled": {"on"}, "from": {"22:00"}, "to": {"07:00"},
+		"applies_to": {"scheduled", "alerts"}, "confirm_alerts": {" \u043c\u043e\u0432\u0447\u0430\u0442\u0438 "},
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	qh := store.Get().QuietHours
+	if !qh.SilencesAlerts() {
+		t.Fatalf("quiet hours = %+v, want a window that silences alerts", qh)
+	}
+	if !qh.Covers(config.CategoryScheduled) {
+		t.Fatalf("quiet hours = %+v, want scheduled still covered too", qh)
+	}
+	// The page an operator lands on has to state the consequence, not just
+	// acknowledge the save.
+	body := rec.Body.String()
+	if !strings.Contains(body, "\u041d\u0415 \u043f\u043e\u0434\u0430\u0432\u0430\u0442\u0438\u043c\u0435 \u0441\u0438\u0433\u043d\u0430\u043b") {
+		t.Error("the page did not say in plain words that alerts will not sound")
+	}
+	if !strings.Contains(body, "22:00") || !strings.Contains(body, "07:00") {
+		t.Error("the warning did not name the hours it applies to")
+	}
+}
+
+// Turning it back off, and moving the hours while it is on, need no word.
+// A confirmation demanded for making this device louder is a confirmation an
+// operator learns to type without reading.
+func TestEventsQuietHoursNeedsNoWordToStopCoveringAlertsOrToMoveTheHours(t *testing.T) {
+	srv, store := newServerWithStore(t)
+	setPassword(t, srv, "correct horse battery staple")
+	cookie := login(t, srv, "correct horse battery staple")
+
+	if err := store.Update(func(c *config.Config) error {
+		c.QuietHours = config.QuietHours{
+			Enabled: true, From: "22:00", To: "07:00",
+			AppliesTo: []string{config.CategoryScheduled, config.CategoryAlerts},
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+
+	rec := eventsPostForm(t, srv, cookie, "/events/quiet-hours", url.Values{
+		"enabled": {"on"}, "from": {"23:00"}, "to": {"06:00"},
+		"applies_to": {"scheduled", "alerts"},
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("moving the hours: status = %d, want 200", rec.Code)
+	}
+	if qh := store.Get().QuietHours; qh.From != "23:00" || !qh.SilencesAlerts() {
+		t.Fatalf("quiet hours = %+v, want 23:00 and alerts still covered", qh)
+	}
+
+	rec = eventsPostForm(t, srv, cookie, "/events/quiet-hours", url.Values{
+		"enabled": {"on"}, "from": {"23:00"}, "to": {"06:00"},
+		"applies_to": {"scheduled"},
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("uncovering alerts: status = %d, want 200", rec.Code)
+	}
+	if qh := store.Get().QuietHours; qh.SilencesAlerts() {
+		t.Fatalf("quiet hours = %+v, want alerts no longer covered", qh)
+	}
+}
+
+// While the state is on, the form itself has to say so on a plain GET \u2014 not
+// only in the flash message of the save that turned it on. An operator
+// opening this page a week later must read the consequence off it.
+func TestEventsPageStatesThatAlertsWillNotSound(t *testing.T) {
+	srv, store := newServerWithStore(t)
+	setPassword(t, srv, "correct horse battery staple")
+	cookie := login(t, srv, "correct horse battery staple")
+
+	req := httptest.NewRequest(http.MethodGet, "/events", nil)
+	req.AddCookie(cookie)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+	if strings.Contains(rec.Body.String(), "\u041d\u0415 \u043f\u043e\u0434\u0430\u0432\u0430\u0442\u0438\u043c\u0435 \u0441\u0438\u0433\u043d\u0430\u043b") {
+		t.Fatal("the page warns that alerts will not sound on a device that sounds them")
+	}
+
+	if err := store.Update(func(c *config.Config) error {
+		c.QuietHours = config.QuietHours{
+			Enabled: true, From: "22:00", To: "07:00",
+			AppliesTo: []string{config.CategoryAlerts},
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/events", nil)
+	req.AddCookie(cookie)
+	rec = httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+	body := rec.Body.String()
+	if !strings.Contains(body, "\u041d\u0415 \u043f\u043e\u0434\u0430\u0432\u0430\u0442\u0438\u043c\u0435 \u0441\u0438\u0433\u043d\u0430\u043b") {
+		t.Error("the page does not say that this device will not sound an air raid alert")
+	}
+	if !strings.Contains(body, "22:00") || !strings.Contains(body, "07:00") {
+		t.Error("the page does not name the hours during which it will not sound")
+	}
+	if !strings.Contains(body, `value="alerts" checked`) {
+		t.Error("the alerts category checkbox does not read back as checked")
 	}
 }
 

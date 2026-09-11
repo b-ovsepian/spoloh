@@ -137,13 +137,35 @@
   </section>
 
   {{/*
-  No category picker: spec §5.1 says quiet hours must never silence an
-  alert, so rather than offer "alerts" as a choice the rule engine would
-  ignore, the form never offers a choice at all and this sentence says why.
+  The category picker is real: quiet hours cover whatever is ticked here,
+  alerts included. That was forbidden until the operator asked for it, and
+  what replaced the old prohibition is this card — a warning that states the
+  consequence in a sentence rather than implying it, and a word that has to be
+  typed before the alerts box can take effect. See events.go's
+  quietHoursAlertConfirmation for why a typed word rather than a second tap,
+  and rules.ForEvent for the whole contract.
+
+  The warning is rendered above the form and unconditionally whenever the
+  state is on, the same treatment home.html gives AlertsDisabled: this is the
+  other way this device can be configured into saying nothing during a raid,
+  and it must be no easier to overlook than the first.
   */}}
   <section class="card p-4 grid gap-3">
     <header><h2 class="font-semibold">Тихі години</h2></header>
-    <p class="text-sm text-muted-foreground">Тихі години стосуються лише подій за розкладом — сигнал тривоги вони ніколи не вимикають.</p>
+
+    {{if .AlertsSilenced}}
+    <div class="alert" data-variant="destructive" role="alert">
+      <section>
+        <p>
+          З {{.QuietHours.From}} до {{.QuietHours.To}} цей пристрій НЕ подаватиме сигнал
+          повітряної тривоги. Якщо тривога почнеться в ці години, люди нічого не почують.
+          Кожен такий випадок записується в <a href="/log" class="underline">журнал подій</a>.
+          Щоб це скасувати, зніміть позначку «Сигнал повітряної тривоги» і збережіть.
+        </p>
+      </section>
+    </div>
+    {{end}}
+
     <form method="post" action="/events/quiet-hours" class="grid gap-3">
       <label class="flex items-center gap-2 text-sm">
         <input type="checkbox" name="enabled"{{if .QuietHours.Enabled}} checked{{end}}>
@@ -157,6 +179,45 @@
         <label for="quiet-to">До</label>
         <input class="input" type="time" id="quiet-to" name="to" value="{{.QuietHours.To}}" required>
       </div>
+
+      <fieldset class="field">
+        <legend>Що саме приглушувати</legend>
+        <label class="flex items-center gap-2 text-sm">
+          <input type="checkbox" name="applies_to" value="scheduled"{{if .QuietScheduled}} checked{{end}}>
+          Події за розкладом
+        </label>
+        <label class="flex items-center gap-2 text-sm">
+          <input type="checkbox" name="applies_to" value="alerts"{{if .QuietAlerts}} checked{{end}}
+                 aria-describedby="quiet-alerts-help">
+          Сигнал повітряної тривоги
+        </label>
+        <p id="quiet-alerts-help" class="text-sm text-muted-foreground">
+          Якщо позначити сигнал тривоги, пристрій мовчатиме під час тривоги в ці години —
+          ні сирени, ні відбою. Це стосується й ночі, коли про загрозу нізвідки більше дізнатися.
+        </p>
+      </fieldset>
+
+      {{/*
+      The confirmation field is shown only while alerts are not yet covered.
+      Once they are, the state is on and the warning above is what the page
+      has to say; demanding the word again to move the hours, or to switch
+      the whole window off, would be a confirmation an operator learns to
+      type without reading — and the direction that needs no guard at all is
+      the one that makes this device louder.
+      */}}
+      {{if not .AlertsSilenced}}
+      <div class="field">
+        <label for="quiet-confirm">Щоб тихі години поширювалися на сигнал тривоги, введіть {{.AlertConfirmation}}</label>
+        <input class="input max-w-sm" type="text" id="quiet-confirm" name="confirm_alerts"
+               autocomplete="off" autocapitalize="characters" spellcheck="false"
+               aria-describedby="quiet-confirm-help">
+        <p id="quiet-confirm-help" class="text-sm text-muted-foreground">
+          Потрібно, лише якщо позначити «Сигнал повітряної тривоги».
+          Порожнє або інше слово — тихі години не буде змінено взагалі, а сигнал тривоги залишиться увімкненим.
+        </p>
+      </div>
+      {{end}}
+
       <button class="btn w-fit" type="submit">Зберегти</button>
     </form>
   </section>
