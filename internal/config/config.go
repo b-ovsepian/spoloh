@@ -4,6 +4,7 @@ package config
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -64,6 +65,19 @@ type Config struct {
 type Device struct {
 	Name     string `json:"name"`
 	Timezone string `json:"timezone"`
+	// NTPServer is the time server the device should synchronise against,
+	// as a hostname or an IP address. Empty means "whatever the
+	// distribution configures", which is the state every device ships in
+	// and a perfectly good answer on a site with internet access; it is a
+	// site with its own local time server, or none reachable, that needs
+	// this.
+	//
+	// timedatectl cannot set it. It ends up in
+	// /etc/systemd/timesyncd.conf.d/, written by a root oneshot unit — see
+	// internal/timedate.Timedatectl.ApplyNTPServer — which is why
+	// ValidateNTPServer below is strict rather than advisory: this value
+	// crosses a privilege boundary into a file root parses.
+	NTPServer string `json:"ntp_server,omitempty"`
 }
 
 type Alerts struct {
@@ -171,6 +185,56 @@ func Default() *Config {
 	}
 }
 
+// maxNTPServerLen is the longest a DNS name may be. An IPv6 literal is far
+// shorter, so one bound covers both.
+const maxNTPServerLen = 253
+
+// ValidateNTPServer accepts an empty value, a hostname or an IP address, and
+// rejects everything else.
+//
+// This is an allow-list of bytes rather than a search for dangerous ones,
+// and that is the whole point. The value is written to a file that a root
+// unit reads and turns into an NTP= line in
+// /etc/systemd/timesyncd.conf.d/spoloh.conf: a newline in it appends a
+// second directive of the operator's choosing to a root-owned config file,
+// and a quote or an "=" lets the line be re-read as something other than the
+// key it was meant to be. Listing what may appear — letters, digits, dots,
+// hyphens and the colons of an IPv6 literal — means a character nobody
+// thought about is refused by default instead of admitted by default.
+//
+// One server, not a list: systemd-timesyncd's NTP= accepts several
+// space-separated, but a space is exactly the character that would let one
+// field become two, and a single server is what the dashboard asks for. A
+// site that needs a pool can still point this at a hostname that resolves to
+// several addresses.
+//
+// The leading and trailing checks are ordinary hostname hygiene rather than
+// safety: ".example.com" and "-example.com" are not names anything will
+// resolve, and rejecting them here beats a device that looks configured and
+// never synchronises.
+func ValidateNTPServer(s string) error {
+	if s == "" {
+		return nil
+	}
+	if len(s) > maxNTPServerLen {
+		return fmt.Errorf("%q is %d characters, the maximum is %d", s, len(s), maxNTPServerLen)
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9':
+		case c == '.' || c == '-' || c == ':':
+		default:
+			return fmt.Errorf("%q contains %q; a time server is a hostname or an IP address", s, string(c))
+		}
+	}
+	if strings.HasPrefix(s, ".") || strings.HasPrefix(s, "-") ||
+		strings.HasSuffix(s, ".") || strings.HasSuffix(s, "-") {
+		return fmt.Errorf("%q is not a hostname or an IP address", s)
+	}
+	return nil
+}
+
 // ParseHM parses an "HH:MM" wall-clock string into minutes since midnight.
 func ParseHM(s string) (int, error) {
 	t, err := time.Parse("15:04", s)
@@ -189,6 +253,9 @@ func (c *Config) Validate() error {
 	}
 	if _, err := time.LoadLocation(c.Device.Timezone); err != nil {
 		return fmt.Errorf("device.timezone %q: %w", c.Device.Timezone, err)
+	}
+	if err := ValidateNTPServer(c.Device.NTPServer); err != nil {
+		return fmt.Errorf("device.ntp_server: %w", err)
 	}
 	if c.Alerts.Region == "" {
 		return fmt.Errorf("alerts.region is required")
