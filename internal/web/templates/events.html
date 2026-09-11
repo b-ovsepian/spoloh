@@ -1,0 +1,159 @@
+{{define "title"}}Події — Сполох{{end}}
+{{define "content"}}
+<div class="grid gap-4">
+  {{if .Error}}
+  <div class="alert" data-variant="destructive" role="alert">
+    <section><p>{{.Error}}</p></section>
+  </div>
+  {{end}}
+  {{if .Message}}
+  <div class="alert" role="status"><section><p>{{.Message}}</p></section></div>
+  {{end}}
+
+  {{/*
+  One card per row, alerts and scheduled events alike — spec §5.5's "one
+  list, one editor". Scheduled gates the name/time/weekday inputs and the
+  delete button: alert-start and alert-end have no schedule of their own (a
+  raised alert plays them, not the clock) and may never be removed, only
+  disabled — see events.go's handleEventsDelete for why.
+  */}}
+  {{range .Rows}}
+  {{$id := .ID}}
+  {{$sound := .Sound}}
+  {{$days := .Weekdays}}
+  <section class="card p-4 grid gap-3" data-event="{{$id}}">
+    <header class="flex items-center justify-between gap-2">
+      <div>
+        <h2 class="font-semibold">{{if .Name}}{{.Name}}{{else}}{{.TriggerLabel}}{{end}}</h2>
+        <p class="text-sm text-muted-foreground">{{.TriggerLabel}}{{if .Scheduled}} · {{.Time}}{{end}}</p>
+      </div>
+      {{if .Scheduled}}
+      <form method="post" action="/events/delete">
+        <input type="hidden" name="id" value="{{$id}}">
+        <button class="btn" data-variant="outline" data-size="sm" type="submit">Видалити</button>
+      </form>
+      {{end}}
+    </header>
+
+    <form method="post" action="/events/save" class="grid gap-3">
+      <input type="hidden" name="id" value="{{$id}}">
+
+      {{if .Scheduled}}
+      <div class="field">
+        <label for="name-{{$id}}">Назва</label>
+        <input class="input" type="text" id="name-{{$id}}" name="name" value="{{.Name}}" required>
+      </div>
+      <div class="field">
+        <label for="time-{{$id}}">Час</label>
+        <input class="input" type="time" id="time-{{$id}}" name="time" value="{{.Time}}" required>
+      </div>
+      <fieldset class="field">
+        <legend>Дні тижня</legend>
+        <div class="flex flex-wrap gap-3">
+          {{range $.WeekdayOptions}}
+          <label class="flex items-center gap-1 text-sm">
+            <input type="checkbox" name="weekdays" value="{{.Value}}"{{if hasWeekday $days .Value}} checked{{end}}>
+            {{.Label}}
+          </label>
+          {{end}}
+        </div>
+      </fieldset>
+      {{end}}
+
+      {{if $.Sounds}}
+      <div class="field">
+        <label for="sound-{{$id}}">Звук</label>
+        <select class="select" id="sound-{{$id}}" name="sound" required>
+          {{range $.Sounds}}<option value="{{.Name}}"{{if eq .Name $sound}} selected{{end}}>{{.Name}}</option>{{end}}
+        </select>
+      </div>
+      {{else}}
+      <p class="text-muted-foreground">{{$.LibraryNotice}}</p>
+      <input type="hidden" name="sound" value="{{$sound}}">
+      {{end}}
+
+      <div class="field">
+        <label for="volume-{{$id}}">Гучність</label>
+        <input class="input" type="number" min="1" max="100" id="volume-{{$id}}" name="volume" value="{{.Volume}}" required>
+      </div>
+
+      <label class="flex items-center gap-2 text-sm">
+        <input type="checkbox" name="enabled"{{if .Enabled}} checked{{end}}>
+        Увімкнено
+      </label>
+
+      <button class="btn w-fit" type="submit">Зберегти</button>
+    </form>
+  </section>
+  {{end}}
+
+  {{/*
+  A new event is always TriggerScheduled — alert-start and alert-end are
+  created exactly once, by config.Default(), never by this form.
+  */}}
+  <section class="card p-4 grid gap-3">
+    <header><h2 class="font-semibold">Додати подію за розкладом</h2></header>
+    <form method="post" action="/events/add" class="grid gap-3">
+      <div class="field">
+        <label for="add-name">Назва</label>
+        <input class="input" type="text" id="add-name" name="name" value="{{.AddName}}" required>
+      </div>
+      <div class="field">
+        <label for="add-time">Час</label>
+        <input class="input" type="time" id="add-time" name="time" value="{{.AddTime}}" required>
+      </div>
+      <fieldset class="field">
+        <legend>Дні тижня</legend>
+        <div class="flex flex-wrap gap-3">
+          {{range .WeekdayOptions}}
+          <label class="flex items-center gap-1 text-sm">
+            <input type="checkbox" name="weekdays" value="{{.Value}}"{{if hasWeekday $.AddWeekdays .Value}} checked{{end}}>
+            {{.Label}}
+          </label>
+          {{end}}
+        </div>
+      </fieldset>
+      {{if .Sounds}}
+      <div class="field">
+        <label for="add-sound">Звук</label>
+        <select class="select" id="add-sound" name="sound" required>
+          {{range .Sounds}}<option value="{{.Name}}"{{if eq .Name $.AddSound}} selected{{end}}>{{.Name}}</option>{{end}}
+        </select>
+      </div>
+      {{else}}
+      <p class="text-muted-foreground">{{.LibraryNotice}}</p>
+      {{end}}
+      <div class="field">
+        <label for="add-volume">Гучність</label>
+        <input class="input" type="number" min="1" max="100" id="add-volume" name="volume" value="85" required>
+      </div>
+      <button class="btn w-fit" type="submit">Додати</button>
+    </form>
+  </section>
+
+  {{/*
+  No category picker: spec §5.1 says quiet hours must never silence an
+  alert, so rather than offer "alerts" as a choice the rule engine would
+  ignore, the form never offers a choice at all and this sentence says why.
+  */}}
+  <section class="card p-4 grid gap-3">
+    <header><h2 class="font-semibold">Тихі години</h2></header>
+    <p class="text-sm text-muted-foreground">Тихі години стосуються лише подій за розкладом — сигнал тривоги вони ніколи не вимикають.</p>
+    <form method="post" action="/events/quiet-hours" class="grid gap-3">
+      <label class="flex items-center gap-2 text-sm">
+        <input type="checkbox" name="enabled"{{if .QuietHours.Enabled}} checked{{end}}>
+        Увімкнено
+      </label>
+      <div class="field">
+        <label for="quiet-from">З</label>
+        <input class="input" type="time" id="quiet-from" name="from" value="{{.QuietHours.From}}" required>
+      </div>
+      <div class="field">
+        <label for="quiet-to">До</label>
+        <input class="input" type="time" id="quiet-to" name="to" value="{{.QuietHours.To}}" required>
+      </div>
+      <button class="btn w-fit" type="submit">Зберегти</button>
+    </form>
+  </section>
+</div>
+{{end}}

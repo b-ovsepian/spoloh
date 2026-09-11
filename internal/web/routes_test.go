@@ -29,12 +29,17 @@ func TestEveryRouteIsPublicOrPrivateAsIntended(t *testing.T) {
 		"/logout":  true,
 		"/static/": true,
 
-		"/":        false,
-		"/events":  false,
-		"/log":     false,
-		"/play":    false,
-		"/stop":    false,
-		"/network": false,
+		"/":                   false,
+		"/stream":             false,
+		"/log":                false,
+		"/play":               false,
+		"/stop":               false,
+		"/network":            false,
+		"/events":             false,
+		"/events/save":        false,
+		"/events/add":         false,
+		"/events/delete":      false,
+		"/events/quiet-hours": false,
 	}
 
 	seen := map[string]bool{}
@@ -70,7 +75,8 @@ func TestEveryRouteIsPublicOrPrivateAsIntended(t *testing.T) {
 			continue
 		}
 		method := http.MethodGet
-		if path == "/play" || path == "/stop" {
+		switch path {
+		case "/play", "/stop", "/events/save", "/events/add", "/events/delete", "/events/quiet-hours":
 			method = http.MethodPost
 		}
 		rec := httptest.NewRecorder()

@@ -2,6 +2,17 @@
 {{define "content"}}
 <div x-data="status()" x-init="connect()" class="grid gap-4">
   {{/*
+  A school that disables the siren for a ten-minute PA test and forgets is
+  the worst outcome this product has, so this is the one warning that must
+  be impossible not to notice: shown above the status block itself,
+  unconditionally, never behind a click.
+  */}}
+  {{if .AlertsDisabled}}
+  <div class="alert" data-variant="destructive" role="alert">
+    <section><p>Оповіщення про тривогу вимкнено. Пристрій не подасть сигнал. Увімкніть його на сторінці «Події».</p></section>
+  </div>
+  {{end}}
+  {{/*
   The one question this screen exists to answer, answered from arm's length.
   Both states are rendered and one is hidden, rather than one block whose
   classes Alpine swaps: Alpine's :class binding only removes the classes it
@@ -170,7 +181,7 @@ function status() {
     es: null,
     connect() {
       if (this.es) { this.es.close(); }
-      const es = new EventSource('/events');
+      const es = new EventSource('/stream');
       this.es = es;
       es.onmessage = (e) => {
         const d = JSON.parse(e.data);

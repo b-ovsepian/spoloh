@@ -50,7 +50,11 @@ func parseTemplates() (pageSet, error) {
 }
 
 func funcs() template.FuncMap {
-	return template.FuncMap{}
+	return template.FuncMap{
+		// hasWeekday backs events.html's weekday checkboxes: a template has
+		// no way to ask "is this int in that slice" on its own.
+		"hasWeekday": hasWeekday,
+	}
 }
 
 // render writes a page, buffering first so a template that fails half-way

@@ -5,6 +5,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/b-ovsepian/spoloh/internal/config"
 )
 
 func TestHomeShowsTheRegionAndState(t *testing.T) {
@@ -32,7 +34,7 @@ func TestHomeShowsTheRegionAndState(t *testing.T) {
 	if !strings.Contains(body, ">м. Київ<") {
 		t.Error("the page does not show the configured region in its visible markup")
 	}
-	if !strings.Contains(body, "/events") {
+	if !strings.Contains(body, "/stream") {
 		t.Error("the page does not subscribe to the status stream")
 	}
 }
@@ -197,5 +199,54 @@ func TestHomeOmitsTheMDNSNameWhenThereIsNone(t *testing.T) {
 
 	if strings.Contains(rec.Body.String(), ".local") {
 		t.Error("home page printed a .local name with nothing publishing one")
+	}
+}
+
+// A disabled alert-start means the device will not announce an air raid — the
+// worst outcome this product has, and the only defence is that it is
+// impossible not to notice. This is the default-config case: enabled, so no
+// warning.
+func TestHomeShowsNoWarningWhenAlertStartIsEnabled(t *testing.T) {
+	srv, _ := newServerWithStore(t)
+	setPassword(t, srv, "correct horse battery staple")
+	cookie := login(t, srv, "correct horse battery staple")
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.AddCookie(cookie)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+
+	if strings.Contains(rec.Body.String(), "Оповіщення про тривогу вимкнено") {
+		t.Error("the home page warns about a disabled alert-start that is not disabled")
+	}
+}
+
+func TestHomeWarnsWhenAlertStartIsDisabled(t *testing.T) {
+	srv, store := newServerWithStore(t)
+	setPassword(t, srv, "correct horse battery staple")
+	cookie := login(t, srv, "correct horse battery staple")
+
+	if err := store.Update(func(c *config.Config) error {
+		for i := range c.Events {
+			if c.Events[i].Trigger == config.TriggerAlertStart {
+				c.Events[i].Enabled = false
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.AddCookie(cookie)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+
+	body := rec.Body.String()
+	if !strings.Contains(body, "Оповіщення про тривогу вимкнено") {
+		t.Error("the home page does not warn that alert-start is disabled")
+	}
+	if !strings.Contains(body, `data-variant="destructive"`) {
+		t.Error("the warning is not rendered as a destructive alert")
 	}
 }

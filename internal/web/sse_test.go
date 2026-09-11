@@ -16,7 +16,7 @@ func TestEventsStreamRequiresAuthentication(t *testing.T) {
 	setPassword(t, srv, "correct horse battery staple")
 
 	rec := httptest.NewRecorder()
-	srv.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/events", nil))
+	srv.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/stream", nil))
 
 	if rec.Code != http.StatusSeeOther {
 		t.Fatalf("status = %d, want a redirect for an unauthenticated stream", rec.Code)
@@ -29,7 +29,7 @@ func TestEventsStreamSendsStatusAndTerminatesWithTheRequest(t *testing.T) {
 	cookie := login(t, srv, "correct horse battery staple")
 
 	ctx, cancel := context.WithCancel(context.Background())
-	req := httptest.NewRequest(http.MethodGet, "/events", nil).WithContext(ctx)
+	req := httptest.NewRequest(http.MethodGet, "/stream", nil).WithContext(ctx)
 	req.AddCookie(cookie)
 	rec := httptest.NewRecorder()
 
@@ -69,7 +69,7 @@ func TestEventsStreamCarriesRegionWithNoEngine(t *testing.T) {
 	cookie := login(t, srv, "correct horse battery staple")
 
 	ctx, cancel := context.WithCancel(context.Background())
-	req := httptest.NewRequest(http.MethodGet, "/events", nil).WithContext(ctx)
+	req := httptest.NewRequest(http.MethodGet, "/stream", nil).WithContext(ctx)
 	req.AddCookie(cookie)
 	rec := httptest.NewRecorder()
 

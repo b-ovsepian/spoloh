@@ -100,12 +100,17 @@ func New(d Deps) (*Server, error) {
 	s.handle("GET /login", http.HandlerFunc(s.handleLogin))
 	s.handle("POST /login", http.HandlerFunc(s.handleLogin))
 	s.handle("POST /logout", http.HandlerFunc(s.handleLogout))
-	s.handle("GET /events", http.HandlerFunc(s.handleEvents))
+	s.handle("GET /stream", http.HandlerFunc(s.handleEvents))
 	s.handle("GET /log", http.HandlerFunc(s.handleLog))
 	s.handle("POST /play", http.HandlerFunc(s.handlePlay))
 	s.handle("POST /stop", http.HandlerFunc(s.handleStop))
 	s.handle("GET /network", http.HandlerFunc(s.handleNetwork))
 	s.handle("POST /network", http.HandlerFunc(s.handleNetworkConnect))
+	s.handle("GET /events", http.HandlerFunc(s.handleEventsPage))
+	s.handle("POST /events/save", http.HandlerFunc(s.handleEventsSave))
+	s.handle("POST /events/add", http.HandlerFunc(s.handleEventsAdd))
+	s.handle("POST /events/delete", http.HandlerFunc(s.handleEventsDelete))
+	s.handle("POST /events/quiet-hours", http.HandlerFunc(s.handleEventsQuietHours))
 	s.handle("GET /{$}", http.HandlerFunc(s.handleHome))
 
 	return s, nil

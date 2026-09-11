@@ -250,13 +250,13 @@ func TestListenAndServeEndsLiveConnectionsPromptlyOnShutdown(t *testing.T) {
 	done := make(chan error, 1)
 	go func() { done <- srv.ListenAndServe(ctx, addr) }()
 
-	// Dial /events until the listener is actually up; retry rather than
+	// Dial /stream until the listener is actually up; retry rather than
 	// sleep a fixed amount, since how long that takes is not this test's
 	// concern.
 	var resp *http.Response
 	deadline := time.Now().Add(2 * time.Second)
 	for {
-		req, rerr := http.NewRequest(http.MethodGet, "http://"+addr+"/events", nil)
+		req, rerr := http.NewRequest(http.MethodGet, "http://"+addr+"/stream", nil)
 		if rerr != nil {
 			t.Fatalf("NewRequest: %v", rerr)
 		}
@@ -333,7 +333,7 @@ func TestPublishLoopDeliversTicksAndStopsWithTheContext(t *testing.T) {
 	done := make(chan error, 1)
 	go func() { done <- srv.ListenAndServe(ctx, "127.0.0.1:0") }()
 
-	req := httptest.NewRequest(http.MethodGet, "/events", nil)
+	req := httptest.NewRequest(http.MethodGet, "/stream", nil)
 	req.AddCookie(cookie)
 	reqCtx, reqCancel := context.WithCancel(req.Context())
 	defer reqCancel()

@@ -5,6 +5,7 @@ import (
 	"net/url"
 	"time"
 
+	"github.com/b-ovsepian/spoloh/internal/config"
 	"github.com/b-ovsepian/spoloh/internal/engine"
 	"github.com/b-ovsepian/spoloh/internal/eventlog"
 	"github.com/b-ovsepian/spoloh/internal/library"
@@ -42,6 +43,29 @@ type homeView struct {
 	// /stop, so the page an operator lands back on after pressing a button
 	// visibly says what just happened instead of looking unchanged.
 	Flash string
+	// AlertsDisabled is true when the alert-start event is disabled — the
+	// device would then never announce an air raid. It is the one warning
+	// on this whole dashboard that must be impossible not to notice: a
+	// school that disables it for a ten-minute PA test and forgets is the
+	// worst outcome this product has, and home.html renders it above
+	// everything else, unconditionally, whenever this is true.
+	AlertsDisabled bool
+}
+
+// alertStartDisabled reports whether the configured alert-start event is
+// disabled. It walks cfg.Events by Trigger rather than assuming a fixed
+// index or a fixed ID, since nothing about the events list's shape
+// guarantees either. A config with no alert-start event at all reports
+// false here — config.Default always seeds one, and nothing on the events
+// screen can remove it (see events.go's handleEventsDelete) — so this is
+// never the check standing between an operator and that fact.
+func alertStartDisabled(cfg *config.Config) bool {
+	for _, ev := range cfg.Events {
+		if ev.Trigger == config.TriggerAlertStart {
+			return !ev.Enabled
+		}
+	}
+	return false
 }
 
 // status returns the engine's live status with two fields already filled in
@@ -85,9 +109,10 @@ func (s *Server) handleHome(w http.ResponseWriter, r *http.Request) {
 
 	addrs := LocalAddresses()
 	view := homeView{
-		Status:    st,
-		Addresses: addrs,
-		MDNS:      reachableMDNSName(MDNSName(), addrs),
+		Status:         st,
+		Addresses:      addrs,
+		MDNS:           reachableMDNSName(MDNSName(), addrs),
+		AlertsDisabled: alertStartDisabled(s.deps.Config.Get()),
 	}
 	if !st.Since.IsZero() {
 		view.SinceText = st.Since.In(loc).Format("2006-01-02 15:04")
