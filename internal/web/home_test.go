@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -180,8 +181,23 @@ func TestHomeShowsStopButtonWhileSomethingIsPlaying(t *testing.T) {
 // onerror that raises it — a page whose EventSource died sat frozen on its
 // last frame, and an alert that began afterwards showed as СПОКІЙНО.
 //
-// The Go side can only assert the markup and the wiring; the browser
-// behaviour itself is verified by hand (see the fix report).
+// This test renders the template through text/template and reads the
+// resulting bytes; it cannot execute the <script> block's JavaScript. So it
+// can only pin two kinds of thing: that the badge markup exists and starts
+// hidden, and that specific snippets of the probe/back-off source are
+// present and wired into the right branch (inside the CLOSED check, not
+// merely somewhere in the file). It cannot prove any of that code actually
+// behaves correctly at runtime — an unconditional location.reload() added as
+// probe()'s first line, or a back-off that grows without bound while the
+// capped formula sits unused nearby, would both leave every assertion below
+// green, because both still contain the pinned substrings. The runtime
+// behaviour — a closed stream defers to a HEAD probe rather than reloading
+// outright, a network error retries instead of reloading, and the delay
+// widens and caps instead of hammering a booting device — was verified by
+// hand, tracing the fetch/promise branches against the daemon-restarted,
+// device-gone, and session-expired cases; see the task report for that
+// trace. Nothing here is evidence the back-off behaves; it only stops the
+// wiring from silently regressing.
 func TestHomeCarriesAStalenessBadgeAndAStreamErrorHandler(t *testing.T) {
 	srv, _ := newServerWithStore(t)
 	setPassword(t, srv, "correct horse battery staple")
@@ -225,17 +241,24 @@ func TestHomeCarriesAStalenessBadgeAndAStreamErrorHandler(t *testing.T) {
 
 	// A closed stream must not reload straight away: that would replace a
 	// readable stale reading with a browser error page the moment the device
-	// is merely gone, rather than restarted. It has to ask first.
-	if !strings.Contains(body, "EventSource.CLOSED) {\n          probe();") {
+	// is merely gone, rather than restarted. It has to ask first. Matched by
+	// regexp rather than a literal, indentation-sensitive string, so
+	// reformatting the template does not break this test for cosmetic
+	// reasons — it still requires probe() to be the statement inside the
+	// CLOSED branch, not merely present somewhere in the file.
+	closedCallsProbe := regexp.MustCompile(`EventSource\.CLOSED\)\s*\{\s*probe\(\);`)
+	if !closedCallsProbe.MatchString(body) {
 		t.Error("a closed stream reloads directly instead of probing first")
 	}
 	if !strings.Contains(body, `fetch('/', { method: 'HEAD', cache: 'no-store' })`) {
 		t.Error("nothing probes the device with a HEAD request before reloading")
 	}
 	// Reloading is what the probe is for, but only once the device actually
-	// answered — a 200 for the case the daemon is fine, or a 303 for the case
-	// it restarted and redirected the stream to /login.
-	if !strings.Contains(body, "if (r.ok || r.status === 303) location.reload();") {
+	// answered. A restarted daemon redirects this HEAD to /login with a 303;
+	// fetch's default redirect: 'follow' keeps the HEAD method and follows
+	// it, so the settled response here is /login's own 200 — r.ok is what
+	// reloads, not a check against 303, which a browser fetch never reports.
+	if !strings.Contains(body, "if (r.ok) location.reload();") {
 		t.Error("the probe does not reload once the device answers")
 	}
 	// A network error (the case this change exists for: the device is

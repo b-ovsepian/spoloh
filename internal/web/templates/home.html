@@ -181,8 +181,13 @@
 // knew until something answers.
 let probeDelay = 2000;
 const probe = () => {
+  // fetch defaults to redirect: 'follow', and a 303 keeps the HEAD method on
+  // the followed request, so a restarted daemon redirecting this probe to
+  // /login never surfaces here as a 303 — the settled response is /login's
+  // own 200, and r.ok is what reloads. Nothing here has to know a redirect
+  // happened at all.
   fetch('/', { method: 'HEAD', cache: 'no-store' })
-    .then((r) => { if (r.ok || r.status === 303) location.reload(); else retry(); })
+    .then((r) => { if (r.ok) location.reload(); else retry(); })
     .catch(retry);
 };
 const retry = () => {
