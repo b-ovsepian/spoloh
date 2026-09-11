@@ -15,6 +15,38 @@
       <h1 class="text-lg font-semibold">Аудіовихід</h1>
     </header>
 
+    {{/*
+    What the device is using right now, said in words. A `checked` radio
+    button below is not the same thing — «Аудіовихід не показується
+    поточний вихід» is what the operator reported — and this block is
+    shown even when the device list could not be fetched, because the
+    stored output and volume are known either way.
+    */}}
+    <div class="grid gap-2 rounded-md border border-border p-3 mb-4">
+      <p class="font-semibold">Поточний вихід</p>
+      <p><span class="font-mono text-sm">{{.Current.Device}}</span>{{if .Current.Description}} — {{.Current.Description}}{{end}}</p>
+      {{if .Current.DefaultCard}}
+      <p class="text-sm text-muted-foreground">«За замовчуванням» веде на першу звукову карту пристрою — {{.Current.DefaultCard}}. Якщо колонки під'єднано до іншого виходу, звуку не буде.</p>
+      {{end}}
+      <p>Гучність: {{.Current.Volume}} %{{if .Current.VolumeFixed}} — регулювання гучності недоступне для цього виходу{{else if .Current.MixerControl}} — регулятор «{{.Current.MixerControl}}»{{end}}</p>
+      {{/*
+      Its own form, beside the settings form rather than inside it: HTML
+      forms do not nest, and this button must play through the output that
+      is stored right now, not through whatever the radio buttons below
+      happen to be showing before anyone pressed Зберегти.
+      */}}
+      <form method="post" action="/audio">
+        <input type="hidden" name="action" value="test">
+        <button class="btn w-fit" data-variant="outline" type="submit">Перевірити звук</button>
+      </form>
+    </div>
+
+    {{if .Current.Missing}}
+    <div class="alert mb-4" data-variant="destructive" role="alert">
+      <section><p>Збережений вихід «{{.Current.Device}}» зараз не повідомляється системою. Можливо, звукову карту від'єднано або вимкнено. Оберіть робочий вихід нижче.</p></section>
+    </div>
+    {{end}}
+
     {{if .DevicesNotice}}
     <p class="text-muted-foreground">{{.DevicesNotice}}</p>
     {{else}}
