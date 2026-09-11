@@ -1,3 +1,5 @@
+ALSA lib confmisc.c:767:(parse_card) cannot find card '0'
+ALSA lib conf.c:4732:(_snd_config_evaluate) function snd_func_card_driver returned error: No such file or directory
 null
     Discard all samples (playback) or generate zero samples (capture)
 default
@@ -8,9 +10,66 @@ sysdefault:CARD=Headphones
 dmix:CARD=Headphones,DEV=0
     bcm2835 Headphones, bcm2835 Headphones
     Direct sample mixing device
+dsnoop:CARD=Headphones,DEV=0
+    bcm2835 Headphones, bcm2835 Headphones
+    Direct sample snooping device
+hw:CARD=Headphones,DEV=0
+    bcm2835 Headphones, bcm2835 Headphones
+    Direct hardware device without any conversions
+plughw:CARD=Headphones,DEV=0
+    bcm2835 Headphones, bcm2835 Headphones
+    Hardware device with all software conversions
+sysdefault:CARD=vc4hdmi0
+    vc4-hdmi-0, MAI PCM i2s-hifi-0
+    Default Audio Device
+dmix:CARD=vc4hdmi0,DEV=0
+    vc4-hdmi-0, MAI PCM i2s-hifi-0
+    Direct sample mixing device
+dsnoop:CARD=vc4hdmi0,DEV=0
+    vc4-hdmi-0, MAI PCM i2s-hifi-0
+    Direct sample snooping device
+hw:CARD=vc4hdmi0,DEV=0
+    vc4-hdmi-0, MAI PCM i2s-hifi-0
+    Direct hardware device without any conversions
 hdmi:CARD=vc4hdmi0,DEV=0
     vc4-hdmi-0, MAI PCM i2s-hifi-0
     HDMI Audio Output
+plughw:CARD=vc4hdmi0,DEV=0
+    vc4-hdmi-0, MAI PCM i2s-hifi-0
+    Hardware device with all software conversions
 sysdefault:CARD=Device
     USB Audio Device, USB Audio
     Default Audio Device
+front:CARD=Device,DEV=0
+    USB Audio Device, USB Audio
+    Front speakers
+surround21:CARD=Device,DEV=0
+    USB Audio Device, USB Audio
+    2.1 Surround output to Front and Subwoofer speakers
+surround40:CARD=Device,DEV=0
+    USB Audio Device, USB Audio
+    4.0 Surround output to Front and Rear speakers
+surround41:CARD=Device,DEV=0
+    USB Audio Device, USB Audio
+    4.1 Surround output to Front, Rear and Subwoofer speakers
+surround50:CARD=Device,DEV=0
+    USB Audio Device, USB Audio
+    5.0 Surround output to Front, Center and Rear speakers
+surround51:CARD=Device,DEV=0
+    USB Audio Device, USB Audio
+    5.1 Surround output to Front, Center, Rear and Subwoofer speakers
+surround71:CARD=Device,DEV=0
+    USB Audio Device, USB Audio
+    7.1 Surround output to Front, Center, Side, Rear and Woofer speakers
+dmix:CARD=Device,DEV=0
+    USB Audio Device, USB Audio
+    Direct sample mixing device
+dsnoop:CARD=Device,DEV=0
+    USB Audio Device, USB Audio
+    Direct sample snooping device
+hw:CARD=Device,DEV=0
+    USB Audio Device, USB Audio
+    Direct hardware device without any conversions
+plughw:CARD=Device,DEV=0
+    USB Audio Device, USB Audio
+    Hardware device with all software conversions

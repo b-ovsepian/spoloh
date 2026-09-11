@@ -50,11 +50,26 @@ func TestDevicesParsesRealAplayOutput(t *testing.T) {
 			t.Error("the null device was offered as an output")
 		}
 	}
+
+	// The fixture's two ALSA-lib diagnostic lines sit at column 0, same as a
+	// real device name, because a.run merges stderr into stdout. Neither may
+	// be offered as an output: no real PCM name contains whitespace, and both
+	// of these do.
+	for _, d := range got {
+		if strings.Contains(d.Name, "ALSA lib") {
+			t.Errorf("an ALSA-lib diagnostic was offered as a device: %q", d.Name)
+		}
+		if strings.ContainsAny(d.Name, " \t") {
+			t.Errorf("device name %q contains whitespace; no real ALSA PCM name does", d.Name)
+		}
+	}
 	want := map[string]string{
-		"default":                    "Playback/recording through the PLUG plugin",
-		"sysdefault:CARD=Headphones": "bcm2835 Headphones, bcm2835 Headphones",
-		"hdmi:CARD=vc4hdmi0,DEV=0":   "vc4-hdmi-0, MAI PCM i2s-hifi-0",
-		"sysdefault:CARD=Device":     "USB Audio Device, USB Audio",
+		"default":                      "Playback/recording through the PLUG plugin",
+		"sysdefault:CARD=Headphones":   "bcm2835 Headphones, bcm2835 Headphones",
+		"hdmi:CARD=vc4hdmi0,DEV=0":     "vc4-hdmi-0, MAI PCM i2s-hifi-0",
+		"sysdefault:CARD=Device":       "USB Audio Device, USB Audio",
+		"plughw:CARD=Device,DEV=0":     "USB Audio Device, USB Audio",
+		"surround71:CARD=Device,DEV=0": "USB Audio Device, USB Audio",
 	}
 	found := map[string]string{}
 	for _, d := range got {

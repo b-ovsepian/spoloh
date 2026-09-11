@@ -58,6 +58,20 @@ func parseDevices(out []byte) []Device {
 		if name == "null" {
 			continue
 		}
+		if strings.ContainsAny(name, " \t") {
+			// a.run merges stderr into stdout — Play and SetVolume need that,
+			// since it is the only diagnostic a headless board offers when
+			// aplay or amixer fails — so an ALSA-lib line like "ALSA lib
+			// confmisc.c:767:(parse_card) cannot find card '0'" lands here at
+			// column 0, indistinguishable from a device name by position
+			// alone. No real ALSA PCM name contains whitespace ("default",
+			// "sysdefault:CARD=Headphones", "surround71:CARD=Device,DEV=0"),
+			// and every such diagnostic does, so that is the property this
+			// rejects on. A false reject costs one device in the list; a
+			// false accept puts a line of C source coordinates in front of
+			// someone choosing where a siren comes out.
+			continue
+		}
 		devices = append(devices, Device{Name: name})
 	}
 	return devices
