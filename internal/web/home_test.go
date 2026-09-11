@@ -4,11 +4,17 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/b-ovsepian/spoloh/internal/alertstate"
 	"github.com/b-ovsepian/spoloh/internal/config"
+	"github.com/b-ovsepian/spoloh/internal/configstore"
+	"github.com/b-ovsepian/spoloh/internal/engine"
+	"github.com/b-ovsepian/spoloh/internal/player"
 	"github.com/b-ovsepian/spoloh/internal/web"
 )
 
@@ -390,6 +396,42 @@ func homeBody(t *testing.T, srv *web.Server) string {
 	return rec.Body.String()
 }
 
+// newServerInAlert wires a server whose engine is already in the alert state,
+// with no network, no poll loop and no real clock to wait on: engine.New
+// seeds its mirrored alert fields straight from the alertstate.Machine it is
+// handed, which is the same path a device that lost power mid-alert comes
+// back up on. It is the only way this package can render the alarmed half of
+// the banner, since handleHome reads Alert from the engine and a server with
+// no engine is calm by definition.
+//
+// The player is handed no backend and never Run: engine.Status only asks it
+// what is currently playing, which on a player that was never started is
+// nothing.
+func newServerInAlert(t *testing.T) *web.Server {
+	t.Helper()
+	store, err := configstore.Open(filepath.Join(t.TempDir(), "config.json"))
+	if err != nil {
+		t.Fatalf("configstore.Open: %v", err)
+	}
+	region := store.Get().Alerts.Region
+	machine := alertstate.New()
+	machine.Restore(alertstate.Persisted{
+		Region: region,
+		Alert:  true,
+		Since:  time.Date(2026, 9, 12, 10, 0, 0, 0, time.UTC),
+	}, region)
+	eng := engine.New(engine.Deps{
+		Config:  store.Get,
+		Machine: machine,
+		Player:  player.New(nil, "default"),
+	})
+	srv, err := web.New(web.Deps{Config: store, Engine: eng})
+	if err != nil {
+		t.Fatalf("web.New: %v", err)
+	}
+	return srv
+}
+
 // The operator asked for this wording by name: "останній успіх" described the
 // poll, not the reading, and read as though something had succeeded rather
 // than as when the device last heard anything. A rename nothing pins is a
@@ -405,5 +447,199 @@ func TestHomeSaysWhenTheSourceLastUpdated(t *testing.T) {
 	}
 	if strings.Contains(body, "останній успіх") {
 		t.Error("the source line still carries the old «останній успіх» wording")
+	}
+}
+
+// The dashboard is the one screen an operator scans rather than reads, so it
+// widens past the shell's reading measure and lays its reference cards out
+// two abreast. sm:grid-cols-2 is what does that, and it is checked as a
+// literal class name because Tailwind compiles only the class names it can
+// see in the template — a class assembled at render time would leave this
+// assertion green and the page unstyled.
+func TestHomeLaysTheReferenceCardsOutAsAGrid(t *testing.T) {
+	srv, _ := newServerWithStore(t)
+	body := homeBody(t, srv)
+
+	// Read the width off the rendered <main> rather than matching
+	// layout.html's whole tag: the shell is not this page's to own, and only
+	// the measure it applies here is.
+	start := strings.Index(body, "<main")
+	if start < 0 {
+		t.Fatal("the page has no <main> element")
+	}
+	end := strings.Index(body[start:], ">")
+	mainTag := body[start : start+end]
+	if !strings.Contains(mainTag, "max-w-5xl") {
+		t.Errorf("the dashboard does not widen its container; <main> is %q", mainTag)
+	}
+	if strings.Contains(mainTag, "max-w-3xl") {
+		t.Errorf("the dashboard still renders at the shell's default measure; <main> is %q", mainTag)
+	}
+
+	if !strings.Contains(body, "sm:grid-cols-2") {
+		t.Error("the reference cards are not laid out in a grid that widens past one column")
+	}
+	// One column on a phone is the default the sm: prefix widens from, and
+	// the device is routinely set up from a phone on its own access point.
+	// A two-column grid with no breakpoint would squeeze that layout
+	// instead.
+	// Anchored on a space or the opening quote rather than a word boundary,
+	// which "sm:grid-cols-2" would also satisfy — the very class this is
+	// meant to let through. The column count is matched as a digit rather
+	// than spelled out for two reasons: any unprefixed column count is the
+	// same mistake, and Tailwind scans this file too, so a complete class
+	// name written here would have put a rule no page uses into the
+	// compiled stylesheet.
+	if regexp.MustCompile(`class="(?:[^"]* )?grid-cols-\d`).MatchString(body) {
+		t.Error("the card grid is two columns at every width, including a phone's")
+	}
+}
+
+// The banner is the reason the device exists and the disabled-alerts warning
+// above it is the one warning that must be impossible to miss, so neither may
+// be pulled into the card grid to share a row with reference material. Both
+// stay direct children of the page's own grid, which in the rendered markup
+// means both come before the grid container opens.
+func TestHomeKeepsTheBannerAndItsWarningOutOfTheCardGrid(t *testing.T) {
+	srv, store := newServerWithStore(t)
+	if err := store.Update(func(c *config.Config) error {
+		for i := range c.Events {
+			if c.Events[i].Trigger == config.TriggerAlertStart {
+				c.Events[i].Enabled = false
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	body := homeBody(t, srv)
+
+	warning := strings.Index(body, "Оповіщення про тривогу вимкнено")
+	banner := strings.Index(body, `data-state="alert"`)
+	grid := strings.Index(body, "sm:grid-cols-2")
+	if warning < 0 || banner < 0 || grid < 0 {
+		t.Fatalf("warning at %d, banner at %d, grid at %d: all three must be on the page", warning, banner, grid)
+	}
+	if warning > banner {
+		t.Error("the disabled-alerts warning is rendered below the state banner instead of above it")
+	}
+	if banner > grid {
+		t.Error("the state banner has been pulled into the card grid, where it shares a row")
+	}
+}
+
+// Both halves of the banner are always in the markup and the server hides the
+// one that is not current, so that a browser with no JavaScript sees the
+// state the device actually holds. TestHomeSignalsStateWithMoreThanColour
+// covers the calm device; this covers the other half, which the grid rebuild
+// could have broken without any calm-device test noticing.
+func TestHomeRendersTheAlarmedBannerOnAnAlertingDevice(t *testing.T) {
+	body := homeBody(t, newServerInAlert(t))
+
+	if strings.Contains(body, `data-state="alert" x-show="alert" style="display:none"`) {
+		t.Error("an alerting device hides its own alarmed block")
+	}
+	if !strings.Contains(body, `data-state="calm" x-show="!alert" style="display:none"`) {
+		t.Error("an alerting device renders the calm block visible")
+	}
+	if !strings.Contains(body, "ТРИВОГА") {
+		t.Error("the alarmed block does not spell out the state")
+	}
+}
+
+// Every binding on this page is driven by the SSE stream at /stream, and a
+// binding dropped during a layout change stops updating silently — the page
+// keeps rendering the server's first reading for ever and nothing fails.
+// This is the inventory, pinned verbatim so a rename on either side (here or
+// in the status() object below the markup) has to be deliberate.
+func TestHomeKeepsEveryLiveBinding(t *testing.T) {
+	srv, _ := newServerWithStore(t)
+	body := homeBody(t, srv)
+
+	for _, binding := range []string{
+		`x-data="status()"`,
+		`x-init="connect()"`,
+		`x-show="alert"`,
+		`x-show="!alert"`,
+		`x-show="stale"`,
+		`x-show="playing"`,
+		`x-show="failing"`,
+		`x-text="region"`,
+		`x-text="since ? 'з ' + since : ''"`,
+		`x-text="nextEvent"`,
+		`x-text="nextEventAt"`,
+		`x-text="clockSynced ? '✓ синхронізовано' : '✕ НЕ синхронізовано'"`,
+		`x-text="source"`,
+		`x-text="lastSuccess"`,
+		`x-text="lastError ? '✕ ' + lastError : ''"`,
+	} {
+		if !strings.Contains(body, binding) {
+			t.Errorf("the live binding %s is gone from the page; it will stop updating with nothing to say so", binding)
+		}
+	}
+}
+
+// The map is a third-party embed — the single approved exception to this
+// project's no-CDN rule — and the two ways it can go wrong are both about
+// what the operator concludes, not about whether it paints.
+//
+// What this test cannot do: Go renders bytes, it does not run a browser. It
+// cannot load the iframe, cannot prove the map appears, cannot prove the
+// aspect-ratio box is the shape it claims, and cannot prove the page still
+// reads sensibly on a device serving its own access point with no internet
+// at all. That last case was checked by hand. What is pinned here is only
+// what is in the markup: the operator's own src and title, the frame being
+// fluid rather than the 500px the snippet came with, a caption naming the
+// source in words, and the map staying below the banner and shaped nothing
+// like it.
+func TestHomeEmbedsTheAlertMapAsALabelledFluidFrame(t *testing.T) {
+	srv, _ := newServerWithStore(t)
+	body := homeBody(t, srv)
+
+	iframe := strings.Index(body, "<iframe")
+	if iframe < 0 {
+		t.Fatal("the page carries no map embed")
+	}
+	if !strings.Contains(body, `src="https://alerts.in.ua/?embed"`) {
+		t.Error("the embed does not point at the source the operator asked for")
+	}
+	if !strings.Contains(body, `title="Мапа повітряних тривог"`) {
+		t.Error("the embed carries no title, so a screen reader announces an unnamed frame")
+	}
+	if !strings.Contains(body, `loading="lazy"`) {
+		t.Error("the embed is not lazy, so a device with no internet spends its page load on it")
+	}
+	// The operator's snippet fixed the frame at 500x300, which overflows a
+	// phone. The size has to come from the container instead.
+	if strings.Contains(body, "500px") {
+		t.Error("the embed still carries the snippet's fixed 500px width")
+	}
+
+	// The banner is what drives the siren; the map is what a third party
+	// believes. Reading the map as the device's state is the misreading this
+	// page cannot afford, so the map comes after the banner and is styled as
+	// an ordinary card — none of the banner's filled destructive colour.
+	banner := strings.Index(body, `data-state="alert"`)
+	if banner < 0 || banner > iframe {
+		t.Errorf("banner at %d, map at %d: the map must come below the state banner", banner, iframe)
+	}
+	start := strings.LastIndex(body[:iframe], "<section")
+	end := strings.Index(body[iframe:], "</section>")
+	if start < 0 || end < 0 {
+		t.Fatal("the map embed is not inside a section of its own")
+	}
+	card := body[start : iframe+end]
+	// With the embed URL taken out, what is left is what an operator can
+	// actually read. Searching the whole card would have been satisfied by
+	// the src attribute alone, which names the source to nobody.
+	labels := strings.Replace(card, `src="https://alerts.in.ua/?embed"`, "", 1)
+	if !strings.Contains(labels, "alerts.in.ua") {
+		t.Error("nothing an operator can read names alerts.in.ua as the source, so the map reads as the device's own status")
+	}
+	if strings.Contains(card, "destructive") {
+		t.Error("the map card is styled like the alert banner")
+	}
+	if !strings.Contains(card, "aspect-[") {
+		t.Error("the map has no aspect-ratio box, so it has no height of its own to be fluid within")
 	}
 }

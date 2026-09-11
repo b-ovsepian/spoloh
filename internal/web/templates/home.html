@@ -1,4 +1,13 @@
 {{define "title"}}Сполох — {{.Status.Region}}{{end}}
+{{/*
+max-w-5xl, the same measure /log and /sounds already ask for, rather than a
+wider one of this page's own. The shell's header is fixed at max-w-3xl and
+layout.html is not this task's to change, so every step wider is a step
+further out of line with the bar above it; 5xl is as far as the dashboard can
+go while still looking like the same application as the two screens that
+already widened.
+*/}}
+{{define "width"}}max-w-5xl{{end}}
 {{define "content"}}
 <div x-data="status()" x-init="connect()" class="grid gap-4">
   {{/*
@@ -95,81 +104,123 @@
   {{if .Flash}}<div class="alert" role="status"><section><p>{{.Flash}}</p></section></div>{{end}}
 
   {{/*
-  Only addresses that actually resolve. The .local line only appears once
-  something on the device actually publishes it — avahi-daemon, installed by
-  a later task — and only once the device also holds an address for that name
-  to resolve to (see reachableMDNSName): a memorable name that does not
-  resolve is worse than none, since it's the first thing an operator tries,
-  read aloud over a phone. The name comes from the system hostname, never the
-  Cyrillic device name from config; it is printed as-is, on the assumption
-  that Linux hostnames stay ASCII — nothing here enforces that, so a hostname
-  provisioned otherwise is a problem for whatever sets it, not for this page.
+  Below the banner everything is reference material an operator scans rather
+  than reads, so it goes two abreast on anything wider than a phone and falls
+  back to one column below that. The fallback is not an afterthought: the
+  device is routinely set up from a phone standing next to it, on its own
+  access point, and that is the narrowest this page is ever read at.
 
-  With no address at all there is nothing to read out, which is worth saying
-  rather than leaving an empty card.
+  The banner, the disabled-alerts warning, the stop button and the flash stay
+  outside this container, as direct children of the page's own grid, so each
+  keeps a full-width row to itself.
   */}}
-  <section class="card p-4">
-    <h2 class="text-sm font-semibold text-muted-foreground">Адреса пристрою</h2>
-    {{if .MDNS}}<p class="font-mono text-2xl">{{.MDNS}}</p>{{end}}
-    {{if .Addresses}}
-    {{range .Addresses}}<p class="font-mono text-2xl">{{.}}</p>{{end}}
-    {{else}}
-    <p class="text-lg">✕ Адресу не визначено — пристрій не в мережі.</p>
-    {{end}}
-  </section>
-
-  <section class="card p-4">
-    <h2 class="text-sm font-semibold text-muted-foreground">Найближча подія</h2>
-    <p class="text-lg"><span x-text="nextEvent">{{.Status.NextEventName}}</span> — <span class="font-mono" x-text="nextEventAt">{{.NextEventAtText}}</span></p>
-  </section>
-
-  {{/*
-  Where a silent device is noticed. Both lines carry a mark as well as a word,
-  for the same reason the state block does.
-  */}}
-  <section class="card p-4">
-    <h2 class="text-sm font-semibold text-muted-foreground">Стан</h2>
-    <p>Годинник:
-      <span x-text="clockSynced ? '✓ синхронізовано' : '✕ НЕ синхронізовано'">{{if .Status.ClockSynced}}✓ синхронізовано{{else}}✕ НЕ синхронізовано{{end}}</span>
-    </p>
+  <div class="grid gap-4 sm:grid-cols-2">
     {{/*
-    Spec §9 lists NTP, network and source health as three separate things, and
-    a source failure alone cannot tell "the router is down" from "Ubilling is
-    down" — which need different actions from whoever is standing there. The
-    honest, cheap signal is whether the device holds an address at all, and
-    that is exactly what the label claims — no more. Holding an address is not
-    being on that network: the device raises its own fallback access
-    point when it has no upstream, and this page is then routinely fetched
-    over that access point, with an address of its own. Saying "підключено"
-    here would tell an operator standing in front of an unreachable device
-    that its networking is fine. /network is where the upstream connection is
-    actually managed, and it does not need a new dependency plumbed in here to
-    say what this page can already see.
+    Only addresses that actually resolve. The .local line only appears once
+    something on the device actually publishes it — avahi-daemon, installed by
+    a later task — and only once the device also holds an address for that name
+    to resolve to (see reachableMDNSName): a memorable name that does not
+    resolve is worse than none, since it's the first thing an operator tries,
+    read aloud over a phone. The name comes from the system hostname, never the
+    Cyrillic device name from config; it is printed as-is, on the assumption
+    that Linux hostnames stay ASCII — nothing here enforces that, so a hostname
+    provisioned otherwise is a problem for whatever sets it, not for this page.
 
-    It is rendered once and never bound to the stream: enumerating interfaces
-    every second would undo the work publishLoop just saved. The live
-    counterpart is the staleness badge above, which is what appears when the
-    connection between browser and device fails.
+    With no address at all there is nothing to read out, which is worth saying
+    rather than leaving an empty card.
     */}}
-    <p>Мережа: {{if .Addresses}}✓ є IP-адреса{{else}}✕ немає IP-адреси{{end}}</p>
-    <p>Джерело: <span x-text="source">{{.Status.SourceName}}</span>, останнє оновлення <span class="font-mono" x-text="lastSuccess">{{.LastSuccessText}}</span></p>
-    <p class="font-semibold text-destructive" x-show="failing"{{if not .Status.Failing}} style="display:none"{{end}} x-text="lastError ? '✕ ' + lastError : ''">{{if .Status.Failing}}✕ {{.Status.LastError}}{{end}}</p>
-  </section>
+    <section class="card p-4">
+      <h2 class="text-sm font-semibold text-muted-foreground">Адреса пристрою</h2>
+      {{if .MDNS}}<p class="font-mono text-2xl">{{.MDNS}}</p>{{end}}
+      {{if .Addresses}}
+      {{range .Addresses}}<p class="font-mono text-2xl">{{.}}</p>{{end}}
+      {{else}}
+      <p class="text-lg">✕ Адресу не визначено — пристрій не в мережі.</p>
+      {{end}}
+    </section>
 
-  <section class="card p-4">
-    <h2 class="text-sm font-semibold text-muted-foreground">Ручне відтворення</h2>
-    {{if .Sounds}}
-    <form method="post" action="/play" class="field mt-2">
-      <label for="sound">Звук</label>
-      <select class="select" id="sound" name="sound" required>
-        {{range .Sounds}}<option value="{{.Name}}">{{.Name}}</option>{{end}}
-      </select>
-      <button class="btn mt-2 w-fit" data-variant="outline" type="submit">Відтворити</button>
-    </form>
-    {{else}}
-    <p class="text-muted-foreground">Бібліотека звуків порожня.</p>
-    {{end}}
-  </section>
+    <section class="card p-4">
+      <h2 class="text-sm font-semibold text-muted-foreground">Найближча подія</h2>
+      <p class="text-lg"><span x-text="nextEvent">{{.Status.NextEventName}}</span> — <span class="font-mono" x-text="nextEventAt">{{.NextEventAtText}}</span></p>
+    </section>
+
+    {{/*
+    Where a silent device is noticed. Both lines carry a mark as well as a word,
+    for the same reason the state block does.
+    */}}
+    <section class="card p-4">
+      <h2 class="text-sm font-semibold text-muted-foreground">Стан</h2>
+      <p>Годинник:
+        <span x-text="clockSynced ? '✓ синхронізовано' : '✕ НЕ синхронізовано'">{{if .Status.ClockSynced}}✓ синхронізовано{{else}}✕ НЕ синхронізовано{{end}}</span>
+      </p>
+      {{/*
+      Spec §9 lists NTP, network and source health as three separate things, and
+      a source failure alone cannot tell "the router is down" from "Ubilling is
+      down" — which need different actions from whoever is standing there. The
+      honest, cheap signal is whether the device holds an address at all, and
+      that is exactly what the label claims — no more. Holding an address is not
+      being on that network: the device raises its own fallback access
+      point when it has no upstream, and this page is then routinely fetched
+      over that access point, with an address of its own. Saying "підключено"
+      here would tell an operator standing in front of an unreachable device
+      that its networking is fine. /network is where the upstream connection is
+      actually managed, and it does not need a new dependency plumbed in here to
+      say what this page can already see.
+
+      It is rendered once and never bound to the stream: enumerating interfaces
+      every second would undo the work publishLoop just saved. The live
+      counterpart is the staleness badge above, which is what appears when the
+      connection between browser and device fails.
+      */}}
+      <p>Мережа: {{if .Addresses}}✓ є IP-адреса{{else}}✕ немає IP-адреси{{end}}</p>
+      <p>Джерело: <span x-text="source">{{.Status.SourceName}}</span>, останнє оновлення <span class="font-mono" x-text="lastSuccess">{{.LastSuccessText}}</span></p>
+      <p class="font-semibold text-destructive" x-show="failing"{{if not .Status.Failing}} style="display:none"{{end}} x-text="lastError ? '✕ ' + lastError : ''">{{if .Status.Failing}}✕ {{.Status.LastError}}{{end}}</p>
+    </section>
+
+    <section class="card p-4">
+      <h2 class="text-sm font-semibold text-muted-foreground">Ручне відтворення</h2>
+      {{if .Sounds}}
+      <form method="post" action="/play" class="field mt-2">
+        <label for="sound">Звук</label>
+        <select class="select" id="sound" name="sound" required>
+          {{range .Sounds}}<option value="{{.Name}}">{{.Name}}</option>{{end}}
+        </select>
+        <button class="btn mt-2 w-fit" data-variant="outline" type="submit">Відтворити</button>
+      </form>
+      {{else}}
+      <p class="text-muted-foreground">Бібліотека звуків порожня.</p>
+      {{end}}
+    </section>
+
+    {{/*
+    The one thing on this page that is not the device talking. It is a
+    third-party embed — the exception the operator asked for by name — and it
+    therefore fails in a way nothing else here does: it needs internet in the
+    *viewing browser*, which is exactly what is missing while the device is
+    serving its own access point, the mode it is first set up in. So it is
+    bounded, captioned and last: nothing else on the page waits on it, and a
+    frame that never paints leaves a labelled empty panel rather than a hole.
+
+    It is also not this device's alert state. The banner above is what drives
+    the siren; this shows what alerts.in.ua believes, which can disagree. The
+    heading and the caption both name the source for that reason, and it is
+    styled as an ordinary card — no border-4, no filled colour — so it can
+    never be mistaken at a glance for the state block.
+
+    The operator's snippet fixed the frame at 500x300; that would overflow a
+    phone, so the size is carried by a fluid aspect-ratio box instead and the
+    frame fills it. Both ratios are literal classes: Tailwind compiles only the
+    class names it can see in this file. loading="lazy" keeps a device with no
+    internet from spending its page load on a request that cannot finish.
+    */}}
+    <section class="card p-4 sm:col-span-2">
+      <h2 class="text-sm font-semibold text-muted-foreground">Мапа тривог (alerts.in.ua)</h2>
+      <div class="mt-2 aspect-[5/3] w-full overflow-hidden rounded-md bg-muted sm:aspect-[5/2]">
+        <iframe class="h-full w-full border-0" src="https://alerts.in.ua/?embed" title="Мапа повітряних тривог" loading="lazy"></iframe>
+      </div>
+      <p class="mt-2 text-sm text-muted-foreground">Дані alerts.in.ua, а не стан цього пристрою: те, за чим пристрій вмикає сирену, показано вгорі сторінки. Мапа завантажується з інтернету — коли пристрій роздає власну точку доступу, вона не з’явиться.</p>
+    </section>
+  </div>
 </div>
 
 <script>
