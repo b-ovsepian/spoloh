@@ -46,9 +46,20 @@ func ForEvent(cfg *config.Config, ev config.Event, at time.Time) (Decision, bool
 	if !ev.Enabled {
 		return Decision{}, false
 	}
-	// Quiet hours apply only to the categories the operator listed. The default
-	// config lists scheduled events only, so alerts sound at any hour.
-	if InQuietHours(cfg.QuietHours, at) && slices.Contains(cfg.QuietHours.AppliesTo, ev.Category()) {
+	// Quiet hours can only ever suppress a scheduled event, never an alert —
+	// spec §5.1, "quiet hours never silence an air raid alert". This is
+	// gated on ev.Category() itself, not on membership in AppliesTo: that
+	// list is operator-editable config, and a device upgrading from before
+	// this rule existed (or one hand-edited directly) could carry
+	// CategoryAlerts in it. config.Validate deliberately does not reject
+	// that value — refusing to start over it would trade a suppressed alert
+	// for a dead announcer, the worse of the two — so this is the one place
+	// the guarantee actually has to hold. main.go logs once at startup if
+	// it finds CategoryAlerts there, so a config carrying it is visible
+	// without being fatal.
+	if ev.Category() == config.CategoryScheduled &&
+		InQuietHours(cfg.QuietHours, at) &&
+		slices.Contains(cfg.QuietHours.AppliesTo, config.CategoryScheduled) {
 		return Decision{}, false
 	}
 

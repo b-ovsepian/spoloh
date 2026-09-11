@@ -161,15 +161,26 @@ func (s *Server) soundMissing(sound string) bool {
 	return sound != "" && s.deps.Library != nil && !s.deps.Library.Has(sound)
 }
 
-// parseVolume parses the "volume" form field. A blank or non-numeric value
-// (an empty form submission, most notably) is reported as invalid, rather
-// than silently becoming Atoi's zero value — a zero volume happens to satisfy
-// config.Validate's 0..100 range, and letting an empty submission slip
-// through as "volume 0" would make an empty POST here mutate stored state,
-// which leak_test.go's walk of every route assumes cannot happen.
+// volumeErrorMessage is shown for any volume this form will not accept:
+// unparseable (an empty form submission, most notably — config.Validate's
+// 0..100 range would otherwise happily accept Atoi's zero value for a blank
+// field, letting an empty POST here mutate stored state, which leak_test.go's
+// walk of every route assumes cannot happen), zero, negative, or over 100.
+// Zero gets a message of its own reason rather than "outside 1..100" alone:
+// rules.ForEvent treats event volume 0 as an explicit, silent mute — the
+// same effect as disabling the event, but invisible on the home screen's
+// AlertsDisabled warning (see alertStartDisabled in handlers.go). Refusing
+// it here keeps "disable the event" the one, visible way to silence it,
+// rather than leaving a second, hidden one.
+const volumeErrorMessage = "Гучність має бути від 1 до 100. Щоб вимкнути подію, зніміть позначку «Увімкнено» — гучність 0 для цього не призначена."
+
+// parseVolume parses and range-checks the "volume" form field. It refuses
+// anything config.Validate would not itself need to catch: a blank or
+// non-numeric value, and — stricter than config.Validate's own 0..100 range —
+// zero, for the reason volumeErrorMessage explains.
 func parseVolume(s string) (int, bool) {
 	v, err := strconv.Atoi(s)
-	if err != nil {
+	if err != nil || v < 1 || v > 100 {
 		return 0, false
 	}
 	return v, true
@@ -273,7 +284,7 @@ func (s *Server) handleEventsSave(w http.ResponseWriter, r *http.Request) {
 	volume, ok := parseVolume(r.FormValue("volume"))
 	if !ok {
 		s.renderEventsPage(w, http.StatusBadRequest, func(v *eventsView) {
-			v.Error = "Вкажіть гучність від 1 до 100."
+			v.Error = volumeErrorMessage
 		})
 		return
 	}
@@ -337,7 +348,7 @@ func (s *Server) handleEventsAdd(w http.ResponseWriter, r *http.Request) {
 
 	volume, ok := parseVolume(r.FormValue("volume"))
 	if !ok {
-		reject("Вкажіть гучність від 1 до 100.")
+		reject(volumeErrorMessage)
 		return
 	}
 	if name == "" {

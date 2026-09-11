@@ -199,6 +199,49 @@ func TestEventsSaveRejectsAnOutOfRangeVolume(t *testing.T) {
 	}
 }
 
+// rules.ForEvent treats event volume 0 as an explicit, silent mute — the
+// same effect as disabling the event, but invisible to homeView's
+// AlertsDisabled warning (see handlers.go's alertStartDisabled). The form
+// refuses it so that disabling the event stays the one, visible way to
+// silence it, and says so rather than just rejecting the number.
+func TestEventsSaveRejectsZeroVolume(t *testing.T) {
+	srv, store := newServerWithLibrary(t, "siren.wav", "all-clear.wav", "metronome.wav")
+	setPassword(t, srv, "correct horse battery staple")
+	cookie := login(t, srv, "correct horse battery staple")
+
+	before := store.Get().Events
+
+	rec := eventsPostForm(t, srv, cookie, "/events/save", url.Values{
+		"id": {"alert-start"}, "sound": {"siren.wav"}, "volume": {"0"}, "enabled": {"on"},
+	})
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "Увімкнено") {
+		t.Error("the rejection does not point to disabling the event as the way to silence it")
+	}
+	if got := store.Get().Events; !eventsEqual(got, before) {
+		t.Errorf("events changed despite the rejection: %+v -> %+v", before, got)
+	}
+}
+
+func TestEventsAddRejectsZeroVolume(t *testing.T) {
+	srv, store := newServerWithLibrary(t, "siren.wav", "all-clear.wav", "metronome.wav", "bell.wav")
+	setPassword(t, srv, "correct horse battery staple")
+	cookie := login(t, srv, "correct horse battery staple")
+
+	before := len(store.Get().Events)
+	rec := eventsPostForm(t, srv, cookie, "/events/add", url.Values{
+		"name": {"Дзвінок"}, "time": {"08:30"}, "weekdays": {"1"}, "sound": {"bell.wav"}, "volume": {"0"},
+	})
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", rec.Code)
+	}
+	if got := len(store.Get().Events); got != before {
+		t.Errorf("event count %d -> %d, want unchanged", before, got)
+	}
+}
+
 func TestEventsAddCreatesAScheduledEvent(t *testing.T) {
 	srv, store := newServerWithLibrary(t, "siren.wav", "all-clear.wav", "metronome.wav", "bell.wav")
 	setPassword(t, srv, "correct horse battery staple")

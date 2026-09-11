@@ -250,3 +250,34 @@ func TestHomeWarnsWhenAlertStartIsDisabled(t *testing.T) {
 		t.Error("the warning is not rendered as a destructive alert")
 	}
 }
+
+// Volume 0 is a second, silent way to reach the same outcome as disabling
+// alert-start: rules.ForEvent treats it as an explicit mute. The events
+// screen's own forms refuse to write it (see events_test.go), but nothing
+// stops it arriving via a hand-edited config.json, and that is exactly the
+// operator who most needs this warning.
+func TestHomeWarnsWhenAlertStartVolumeIsZero(t *testing.T) {
+	srv, store := newServerWithStore(t)
+	setPassword(t, srv, "correct horse battery staple")
+	cookie := login(t, srv, "correct horse battery staple")
+
+	if err := store.Update(func(c *config.Config) error {
+		for i := range c.Events {
+			if c.Events[i].Trigger == config.TriggerAlertStart {
+				c.Events[i].Volume = 0
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.AddCookie(cookie)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+
+	if !strings.Contains(rec.Body.String(), "Оповіщення про тривогу вимкнено") {
+		t.Error("the home page does not warn when alert-start's volume is 0, even though it is still enabled")
+	}
+}

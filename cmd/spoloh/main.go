@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"sync"
 	"syscall"
 	"time"
@@ -23,6 +24,7 @@ import (
 	"github.com/b-ovsepian/spoloh/internal/alertsource"
 	"github.com/b-ovsepian/spoloh/internal/alertstate"
 	"github.com/b-ovsepian/spoloh/internal/clock"
+	"github.com/b-ovsepian/spoloh/internal/config"
 	"github.com/b-ovsepian/spoloh/internal/configstore"
 	"github.com/b-ovsepian/spoloh/internal/engine"
 	"github.com/b-ovsepian/spoloh/internal/eventlog"
@@ -143,6 +145,18 @@ func run(configPath, dataDir, listen string) error {
 	// audio device, the startup log line).
 	cfgFn := store.Get
 	cfg := cfgFn()
+
+	// config.Validate deliberately does not reject quiet_hours.applies_to
+	// listing the alerts category — refusing to start over it would trade a
+	// suppressed alert for a dead announcer, the worse of the two — and
+	// rules.ForEvent deliberately ignores it there too, so this value can
+	// never actually silence an alert. It is still worth a startup line: a
+	// hand-edited config.json or one carried over from before that
+	// guarantee existed can carry it, and an operator relying on
+	// applies_to to mean what it says deserves to see that it does not.
+	if slices.Contains(cfg.QuietHours.AppliesTo, config.CategoryAlerts) {
+		logger.Warn("quiet_hours.applies_to lists the alerts category; this has no effect, quiet hours never silence an air raid alert")
+	}
 
 	loc, err := time.LoadLocation(cfg.Device.Timezone)
 	if err != nil {

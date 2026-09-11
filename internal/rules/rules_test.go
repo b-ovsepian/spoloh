@@ -88,17 +88,25 @@ func TestQuietHoursSuppressScheduled(t *testing.T) {
 	}
 }
 
-// An operator who explicitly lists alerts in applies_to gets what they asked
-// for; the protection is in the default, not in a veto.
-func TestQuietHoursCanSuppressAlertsWhenExplicitlyConfigured(t *testing.T) {
+// The veto is in the engine, not the default: an operator (or a hand-edited
+// config.json, or a device upgraded from before this rule existed) listing
+// the alerts category in applies_to still gets an alert. config.Validate
+// deliberately does not reject that value — refusing to start over it would
+// trade a suppressed alert for a dead announcer — so ForEvent is the one
+// place spec §5.1 actually has to hold, unconditionally.
+func TestQuietHoursNeverSuppressAlertsEvenWhenExplicitlyConfigured(t *testing.T) {
 	cfg := config.Default()
 	cfg.QuietHours.Enabled = true
 	cfg.QuietHours.From = "22:00"
 	cfg.QuietHours.To = "07:00"
 	cfg.QuietHours.AppliesTo = []string{config.CategoryScheduled, config.CategoryAlerts}
 
-	if got := rules.Resolve(cfg, config.TriggerAlertStart, at(2, 0)); len(got) != 0 {
-		t.Fatalf("decisions = %d, want 0 when alerts are explicitly listed", len(got))
+	got := rules.Resolve(cfg, config.TriggerAlertStart, at(2, 0))
+	if len(got) != 1 {
+		t.Fatalf("decisions = %d, want 1 — an alert must sound even when alerts are explicitly listed", len(got))
+	}
+	if got[0].Priority != player.PriorityAlert {
+		t.Fatalf("priority = %v, want PriorityAlert", got[0].Priority)
 	}
 }
 

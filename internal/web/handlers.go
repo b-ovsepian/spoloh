@@ -43,26 +43,34 @@ type homeView struct {
 	// /stop, so the page an operator lands back on after pressing a button
 	// visibly says what just happened instead of looking unchanged.
 	Flash string
-	// AlertsDisabled is true when the alert-start event is disabled — the
-	// device would then never announce an air raid. It is the one warning
-	// on this whole dashboard that must be impossible not to notice: a
-	// school that disables it for a ten-minute PA test and forgets is the
-	// worst outcome this product has, and home.html renders it above
-	// everything else, unconditionally, whenever this is true.
+	// AlertsDisabled is true when the alert-start event is disabled, or
+	// silenced the other way an operator (or a hand-edited config.json) can
+	// reach: volume 0. Either leaves the device unable to announce an air
+	// raid, and it is the one warning on this whole dashboard that must be
+	// impossible not to notice: a school that disables it for a ten-minute
+	// PA test and forgets is the worst outcome this product has, and
+	// home.html renders it above everything else, unconditionally, whenever
+	// this is true.
 	AlertsDisabled bool
 }
 
-// alertStartDisabled reports whether the configured alert-start event is
-// disabled. It walks cfg.Events by Trigger rather than assuming a fixed
-// index or a fixed ID, since nothing about the events list's shape
-// guarantees either. A config with no alert-start event at all reports
-// false here — config.Default always seeds one, and nothing on the events
-// screen can remove it (see events.go's handleEventsDelete) — so this is
-// never the check standing between an operator and that fact.
+// alertStartDisabled reports whether the configured alert-start event will
+// not be heard: disabled, or volume 0. events.go's /events forms refuse a
+// volume of 0 for exactly this reason — disabling the event is meant to be
+// the one, visible way to silence it — but nothing stops a volume of 0
+// reaching config.json by hand, and that is exactly the person who most
+// needs this page to say so.
+//
+// It walks cfg.Events by Trigger rather than assuming a fixed index or a
+// fixed ID, since nothing about the events list's shape guarantees either.
+// A config with no alert-start event at all reports false here —
+// config.Default always seeds one, and nothing on the events screen can
+// remove it (see events.go's handleEventsDelete) — so this is never the
+// check standing between an operator and that fact.
 func alertStartDisabled(cfg *config.Config) bool {
 	for _, ev := range cfg.Events {
 		if ev.Trigger == config.TriggerAlertStart {
-			return !ev.Enabled
+			return !ev.Enabled || ev.Volume == 0
 		}
 	}
 	return false
