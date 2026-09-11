@@ -31,9 +31,13 @@ reader announcing "loudspeaker Сполох" adds noise, not meaning.
   <path d="M25.5 8a11 11 0 0 1 0 16"/>
 </svg>{{end}}
 
+{{/*
+Everything in the head that is the same before and after a session exists.
+The <title> is not: it is written by each shell below, because only one of
+them may say what the device is currently seeing.
+*/}}
 {{define "head"}}<meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>{{block "title" .}}Сполох{{end}}</title>
 <link rel="stylesheet" href="/static/app.css">
 {{/*
 An explicit icon link, so the browser never falls back to requesting
@@ -49,6 +53,23 @@ phone that adds it to the home screen otherwise stores a screenshot.
 {{define "layout"}}<!doctype html>
 <html lang="uk">
 <head>
+{{/*
+The state first, then the page: «Тривога | Журнал подій — Сполох». The tab
+strip is where an operator with the dashboard open behind other windows reads
+the device without switching to it, and a row of tabs all reading «Сполох»
+answers nothing.
+
+"alertState" is a template func closed over the server rather than a field of
+the dot: render hands each page its own view struct and there is no shared
+base view, so the state is not reachable from this file through the data.
+
+Rendered, not live — on every page this is the state at the moment the page
+was served. The dashboard alone also keeps it true afterwards, off the SSE
+stream it already opens (see home.html); giving the rest of the screens a
+live title would mean a second EventSource in this shell, for pages an
+operator opens to change a setting rather than leaves up watching.
+*/}}
+<title>{{alertState}} | {{block "title" .}}Сполох{{end}}</title>
 {{template "head" .}}
 </head>
 <body class="min-h-screen bg-background text-foreground">
@@ -97,12 +118,36 @@ The reading measure is a block so the one dense screen can widen: the log's
 six columns wrap into ribbons at the width that suits the home screen.
 */}}
 <main class="mx-auto w-full {{block "width" .}}max-w-3xl{{end}} p-4">{{block "content" .}}{{end}}</main>
+{{/*
+Which build is on the wall, on every authenticated page. It is asked exactly
+when nobody can get a shell on the device to answer it: over the phone, by
+whoever is standing in front of it, usually while working out whether a fix
+they were told about has actually reached this one.
+
+It follows the page's measure the way the header does, so on the wide screens
+the line sits under the content instead of drifting off to the side of it.
+An unstamped build says so in words rather than leaving the label hanging —
+see versionText.
+*/}}
+<footer class="mx-auto w-full {{template "width" .}} p-4 text-sm text-muted-foreground">Версія: {{version}}</footer>
 </body>
 </html>{{end}}
 
 {{define "bare"}}<!doctype html>
 <html lang="uk">
 <head>
+{{/*
+No alert state here, and no version footer below. /setup and /login answer
+anyone who can reach the device, before any session exists — what the device
+is currently seeing, and exactly which build it is running, are answers for
+somebody who has logged in. Neither is a secret worth much, and neither is
+worth handing out for free either.
+
+"title" is invoked rather than blocked: the shell above already defines it
+with its default, and one name can only carry one block. Both pages that
+select this shell define their own.
+*/}}
+<title>{{template "title" .}}</title>
 {{template "head" .}}
 </head>
 <body class="min-h-screen bg-background text-foreground">

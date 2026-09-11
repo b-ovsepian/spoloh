@@ -52,7 +52,17 @@ type Deps struct {
 	// this. nil is tolerated like every other optional dependency here, and
 	// the page then says so instead of erroring.
 	Timedate timedate.Manager
-	Logger   *slog.Logger
+	// Version is the build the daemon is running, stamped into
+	// cmd/spoloh's main.version by the Makefile's -ldflags and passed in
+	// from there. The footer prints it, because the question "which build
+	// is on that wall" is asked exactly when nobody can get a shell on the
+	// device to answer it — over the phone, by whoever is standing in front
+	// of it.
+	//
+	// Empty is tolerated like every other optional dependency, and says so
+	// in words rather than rendering a blank: see versionText.
+	Version string
+	Logger  *slog.Logger
 }
 
 type Server struct {
@@ -86,20 +96,27 @@ func New(d Deps) (*Server, error) {
 	if d.Logger == nil {
 		d.Logger = slog.Default()
 	}
-	pages, err := parseTemplates()
-	if err != nil {
-		return nil, err
-	}
-
 	s := &Server{
 		deps:     d,
-		pages:    pages,
 		mux:      http.NewServeMux(),
 		sessions: newSessions(),
 		limiter:  newLoginLimiter(),
 		events:   NewBroadcaster(),
 		now:      time.Now,
 	}
+
+	// After s exists, not before: two of the template helpers answer from
+	// this server's own dependencies — the alert state in the tab title and
+	// the running version in the footer — and a closure cannot be taken over
+	// a value that has not been built yet. The helpers are only ever called
+	// during a render, long after this returns, so closing over a
+	// half-populated s here would be fine either way; building s first just
+	// removes the question.
+	pages, err := parseTemplates(s.funcs())
+	if err != nil {
+		return nil, err
+	}
+	s.pages = pages
 
 	static, err := fs.Sub(staticFS, "static")
 	if err != nil {

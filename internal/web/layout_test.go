@@ -3,9 +3,47 @@ package web_test
 import (
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/b-ovsepian/spoloh/internal/configstore"
+	"github.com/b-ovsepian/spoloh/internal/web"
 )
+
+// authedBody logs in and returns the rendered page at path. The shell is what
+// these tests are about, so they read several pages each and the four-line
+// request dance once per page buried what was being checked.
+func authedBody(t *testing.T, srv *web.Server, path string) string {
+	t.Helper()
+	setPassword(t, srv, "correct horse battery staple")
+	cookie := login(t, srv, "correct horse battery staple")
+
+	req := httptest.NewRequest(http.MethodGet, path, nil)
+	req.AddCookie(cookie)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("%s: status = %d, want 200", path, rec.Code)
+	}
+	return rec.Body.String()
+}
+
+// newServerAtVersion builds a server stamped with a particular build string.
+// No helper in server_test.go can: they all leave Deps.Version empty, which
+// is the one case the footer must not be checked against alone.
+func newServerAtVersion(t *testing.T, version string) *web.Server {
+	t.Helper()
+	store, err := configstore.Open(filepath.Join(t.TempDir(), "config.json"))
+	if err != nil {
+		t.Fatalf("configstore.Open: %v", err)
+	}
+	srv, err := web.New(web.Deps{Config: store, Version: version})
+	if err != nil {
+		t.Fatalf("web.New: %v", err)
+	}
+	return srv
+}
 
 // Every authenticated page must offer a way to every other one. Before this
 // task an operator who opened /log could only get back by editing the URL.
@@ -140,6 +178,131 @@ func TestHeaderWidthTracksThePageWidth(t *testing.T) {
 		header := `<div class="mx-auto flex ` + tc.width + ` items-center gap-2 p-3 sm:gap-4">`
 		if !strings.Contains(rec.Body.String(), header) {
 			t.Errorf("%s: header is not %s; body:\n%s", tc.path, tc.width, rec.Body.String())
+		}
+	}
+}
+
+// The operator asked for the alert state in the browser tab — «Тривога |
+// Сполох», «Спокійно | Сполох». The value is a dashboard that can be read off
+// the tab strip while it sits behind other windows, so the state has to lead:
+// a row of tabs all beginning «Сполох» answers nothing.
+//
+// Every page, not just the dashboard, and in both states. One page in one
+// state would pass with the word hardcoded, which is exactly the failure this
+// is here to catch.
+func TestEveryPageTitleLeadsWithTheAlertState(t *testing.T) {
+	calm := func(t *testing.T) *web.Server { t.Helper(); return newServer(t) }
+
+	for _, tc := range []struct {
+		name string
+		srv  func(*testing.T) *web.Server
+		path string
+		want string
+	}{
+		{"calm dashboard", calm, "/", "<title>Спокійно | Сполох — "},
+		{"alerting dashboard", newServerInAlert, "/", "<title>Тривога | Сполох — "},
+		{"calm sources", calm, "/alerts", "<title>Спокійно | Джерела — Сполох</title>"},
+		{"alerting sources", newServerInAlert, "/alerts", "<title>Тривога | Джерела — Сполох</title>"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body := authedBody(t, tc.srv(t), tc.path)
+			if !strings.Contains(body, tc.want) {
+				t.Errorf("%s does not carry %q in its tab title", tc.path, tc.want)
+			}
+		})
+	}
+}
+
+// /setup and /login answer anyone who can reach the device, before any
+// session exists. What the device is currently seeing, and exactly which
+// build it runs, are answers for somebody who has logged in — so the bare
+// shell carries neither. Checked against a device that is actually in the
+// alert state, where a leak would show.
+func TestUnauthenticatedPagesSayNothingAboutTheDeviceState(t *testing.T) {
+	srv := newServerInAlert(t)
+
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/setup", nil))
+	body := rec.Body.String()
+
+	if !strings.Contains(body, "<title>Налаштування — Сполох</title>") {
+		t.Errorf("/setup does not carry its own bare title")
+	}
+	for _, word := range []string{"Тривога", "Спокійно"} {
+		if strings.Contains(body, word) {
+			t.Errorf("/setup tells an unauthenticated visitor the device's alert state (%q)", word)
+		}
+	}
+	if strings.Contains(body, "<footer") {
+		t.Error("/setup tells an unauthenticated visitor which build the device runs")
+	}
+}
+
+// Which build is on the wall, on every authenticated page. The question is
+// asked exactly when nobody can get a shell on the device to answer it —
+// over the phone, by whoever is standing in front of it — so it is on the
+// screen they are already looking at rather than on one page they have to
+// find.
+func TestEveryPageCarriesTheRunningVersion(t *testing.T) {
+	for _, path := range []string{"/", "/alerts"} {
+		body := authedBody(t, newServerAtVersion(t, "v1.4.2"), path)
+		if !strings.Contains(body, "<footer") {
+			t.Errorf("%s has no footer", path)
+		}
+		if !strings.Contains(body, "Версія: v1.4.2") {
+			t.Errorf("%s does not print the running version", path)
+		}
+	}
+}
+
+// A build nobody stamped has to say so in words. A footer reading «Версія:»
+// and then nothing looks like a rendering fault rather than an answer, and
+// the operator reading it out over the phone needs to tell "there is no
+// version" from "I cannot see one".
+//
+// Both spellings of unstamped: Deps.Version left empty, and the "dev" that
+// cmd/spoloh's main.version carries when the binary is built without the
+// Makefile's -ldflags.
+func TestTheFooterSaysWhenTheBuildIsUnstamped(t *testing.T) {
+	for _, version := range []string{"", "dev"} {
+		body := authedBody(t, newServerAtVersion(t, version), "/")
+		if !strings.Contains(body, "Версія: збірка для розробки") {
+			t.Errorf("Deps.Version = %q: the footer does not say the build is unstamped", version)
+		}
+		if strings.Contains(body, "Версія: </footer>") {
+			t.Errorf("Deps.Version = %q: the footer renders an empty version", version)
+		}
+	}
+}
+
+// A local `make build` stamps `git describe --tags --always --dirty`, which
+// on a checkout with no tag is a bare commit hash. That is a real identity
+// somebody can look up, not a placeholder, so it is printed as it stands
+// rather than swallowed by the unstamped case above.
+func TestTheFooterPrintsACommitHashVersionAsItIs(t *testing.T) {
+	body := authedBody(t, newServerAtVersion(t, "2d8c163-dirty"), "/")
+	if !strings.Contains(body, "Версія: 2d8c163-dirty") {
+		t.Error("a development build's commit-hash version is not printed as it stands")
+	}
+}
+
+// The footer follows the page's measure the same way the header does, so on
+// the screens that widen it sits under the content instead of off to one side
+// of it. Both widths from one request each, for the reason
+// TestHeaderWidthTracksThePageWidth gives: either alone would pass with the
+// footer hardcoded.
+func TestFooterWidthTracksThePageWidth(t *testing.T) {
+	for _, tc := range []struct {
+		path  string
+		width string
+	}{
+		{"/", "max-w-5xl"},       // home.html defines "width"
+		{"/alerts", "max-w-3xl"}, // no override: the layout's default
+	} {
+		body := authedBody(t, newServer(t), tc.path)
+		footer := `<footer class="mx-auto w-full ` + tc.width + ` p-4 text-sm text-muted-foreground">`
+		if !strings.Contains(body, footer) {
+			t.Errorf("%s: footer is not %s", tc.path, tc.width)
 		}
 	}
 }
