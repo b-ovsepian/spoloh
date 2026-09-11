@@ -4,3 +4,4 @@
 !internal/library/assets/*.wav
 .superpowers/
 /node_modules/
+/docs/superpowers/
