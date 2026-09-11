@@ -58,6 +58,11 @@ type Updater struct {
 	// Unit is the systemd unit to restart.
 	Unit string
 
+	// HTTP is the client used for every request this package makes. Nil
+	// means a client built with downloadTimeout applied. A caller-supplied
+	// client is used exactly as given: downloadTimeout only bounds the
+	// client this package builds for itself, so a caller wiring its own
+	// client in is responsible for whatever timeout it wants applied.
 	HTTP   *http.Client
 	Run    RunFunc
 	Logger *slog.Logger
@@ -110,10 +115,25 @@ func (u Updater) Latest(ctx context.Context) (Release, error) {
 		return Release{}, fmt.Errorf("ask for the latest release: %s", resp.Status)
 	}
 	// resp.Request is the last request the client made, so this is where the
-	// redirect landed.
+	// redirect landed. GitHub always redirects /latest to .../tag/<version>,
+	// so the check is that the segment right before the last one is
+	// literally "tag" — not a blocklist of strings a landing page happens
+	// not to be. A login page, or a redirect that collapses back onto the
+	// releases root, both answer 200 and would otherwise read as a version
+	// to download; nothing they produce is unsafe (the bogus URL still 404s
+	// or fails its checksum, and Apply refuses either way), but it costs the
+	// diagnosis — the operator sees "download failed: 404" instead of the
+	// real cause, and on a headless board the error message is the entire
+	// diagnostic surface. This deliberately does not also constrain the
+	// version string's own shape: a project may tag "1.2.3" as readily as
+	// "v1.2.3", and rejecting that would be a guess about someone else's
+	// conventions.
 	tag := path.Base(resp.Request.URL.Path)
-	if tag == "" || tag == "." || tag == "/" || tag == "latest" {
+	if tag == "" || tag == "." || tag == "/" {
 		return Release{}, fmt.Errorf("could not read a version from %q", resp.Request.URL)
+	}
+	if seg := path.Base(path.Dir(resp.Request.URL.Path)); seg != "tag" {
+		return Release{}, fmt.Errorf("expected the redirect from /latest to land on a .../tag/<version> page, got %q", resp.Request.URL)
 	}
 	return Release{
 		Version:     tag,
@@ -174,11 +194,38 @@ func (u Updater) Apply(ctx context.Context, rel Release) error {
 	// Copied rather than renamed: renaming would leave an instant with no
 	// binary at BinPath at all, and this runs on a device that can lose power
 	// at any moment.
-	if err := copyFile(u.BinPath, u.BinPath+".previous"); err != nil {
+	//
+	// The snapshot is written under a side name first and only promoted to
+	// .previous — the name Rollback reads — once the new binary is actually
+	// in place. Writing straight to .previous here, before the install below
+	// is known to succeed, would let a failure on that install (os.Rename
+	// returning an error) leave BinPath correctly untouched but .previous
+	// already overwritten with the binary that is still running: Apply would
+	// report failure and change nothing at BinPath, while silently
+	// discarding whichever generation .previous used to hold and turning the
+	// next Rollback into a no-op the operator has no way to know about.
+	previousNew := u.BinPath + ".previous.new"
+	if err := copyFile(u.BinPath, previousNew); err != nil {
 		return fmt.Errorf("keep a copy to roll back to: %w; nothing was changed", err)
 	}
 	if err := os.Rename(tmpName, u.BinPath); err != nil {
-		return fmt.Errorf("install the new binary: %w", err)
+		os.Remove(previousNew)
+		return fmt.Errorf("install the new binary: %w; nothing was changed", err)
+	}
+
+	// Promoted only now, with the new binary already at BinPath. If this
+	// rename fails, BinPath holds the new binary but there is no
+	// correctly-named rollback target for it yet; restarting into that state
+	// and having the restart fail would leave Rollback with nothing to
+	// restore. previousNew still holds the binary that was running before
+	// this call, so that is restored and the install is treated as undone
+	// rather than risk a restart with no way back.
+	if err := os.Rename(previousNew, u.BinPath+".previous"); err != nil {
+		if restoreErr := copyFile(previousNew, u.BinPath); restoreErr != nil {
+			return fmt.Errorf("install the new binary but could not record a rollback target (%w), and restoring the previous binary also failed: %v", err, restoreErr)
+		}
+		os.Remove(previousNew)
+		return fmt.Errorf("install the new binary but could not record a rollback target (%w); the install was undone", err)
 	}
 
 	if out, err := u.run(ctx, "systemctl", "restart", u.Unit); err != nil {
@@ -239,8 +286,19 @@ func (u Updater) download(ctx context.Context, url string, w io.Writer) (string,
 		return "", fmt.Errorf("download %s: %s", url, resp.Status)
 	}
 	h := sha256.New()
-	if _, err := io.Copy(io.MultiWriter(w, h), io.LimitReader(resp.Body, maxDownload)); err != nil {
+	// Capped at maxDownload+1, one byte past the real limit, so a response
+	// that is actually too large can be told apart from one that merely
+	// happens to hash wrong: without the extra byte, io.Copy against a
+	// LimitReader stops silently at the cap and returns a nil error, and the
+	// resulting truncated file would only ever be caught by accident, later,
+	// when its checksum fails to match — reporting "checksum does not
+	// match" for what is really an oversized response.
+	n, err := io.Copy(io.MultiWriter(w, h), io.LimitReader(resp.Body, maxDownload+1))
+	if err != nil {
 		return "", fmt.Errorf("download %s: %w", url, err)
+	}
+	if n > maxDownload {
+		return "", fmt.Errorf("download %s: response is larger than %d bytes, more than any real release artifact; refusing to treat it as one", url, maxDownload)
 	}
 	return hex.EncodeToString(h.Sum(nil)), nil
 }

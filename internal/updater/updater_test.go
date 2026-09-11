@@ -105,6 +105,24 @@ func TestLatestReadsTheTagFromTheRedirect(t *testing.T) {
 	}
 }
 
+func TestLatestRefusesARedirectThatDoesNotLandOnATagPage(t *testing.T) {
+	// A redirect to anything else that still answers 200 — a login page is
+	// the realistic case — must not be read as a version. Accepting it would
+	// not install anything unsafe (the bogus URL still 404s or fails its
+	// checksum, and Apply refuses either way), but it would report "download
+	// failed: 404" instead of naming the real cause, and on a headless board
+	// the error message is the entire diagnostic surface.
+	pages := releasePages(binaryBody)
+	pages[base+"/latest"] = stubPage{status: 302, location: base + "/login"}
+	pages[base+"/login"] = stubPage{status: 200, body: "login page"}
+	u, _, _ := newUpdater(t, pages)
+
+	_, err := u.Latest(context.Background())
+	if err == nil {
+		t.Fatal("Latest accepted a redirect that did not land on a tag page")
+	}
+}
+
 func TestApplyInstallsAndKeepsThePreviousBinary(t *testing.T) {
 	u, binPath, ran := newUpdater(t, releasePages(binaryBody))
 	rel, err := u.Latest(context.Background())
