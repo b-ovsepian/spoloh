@@ -19,6 +19,7 @@ import (
 	"github.com/b-ovsepian/spoloh/internal/library"
 	"github.com/b-ovsepian/spoloh/internal/netmgr"
 	"github.com/b-ovsepian/spoloh/internal/player"
+	"github.com/b-ovsepian/spoloh/internal/timedate"
 )
 
 // Deps is declared in full here even though the later tasks are what use most
@@ -46,7 +47,12 @@ type Deps struct {
 	// tolerated like every other optional dependency here, and in this
 	// package's own tests that don't need one.
 	Devices DeviceLister
-	Logger  *slog.Logger
+	// Timedate drives the system clock: the /time page's zone picker, its
+	// NTP switch, the by-hand clock and the NTP server all read and write
+	// this. nil is tolerated like every other optional dependency here, and
+	// the page then says so instead of erroring.
+	Timedate timedate.Manager
+	Logger   *slog.Logger
 }
 
 type Server struct {
@@ -123,6 +129,11 @@ func New(d Deps) (*Server, error) {
 	s.handle("POST /sounds/delete", http.HandlerFunc(s.handleSoundsDelete))
 	s.handle("GET /audio", http.HandlerFunc(s.handleAudioPage))
 	s.handle("POST /audio", http.HandlerFunc(s.handleAudioSave))
+	s.handle("GET /time", http.HandlerFunc(s.handleTimePage))
+	s.handle("POST /time/timezone", http.HandlerFunc(s.handleTimeZone))
+	s.handle("POST /time/ntp", http.HandlerFunc(s.handleTimeNTP))
+	s.handle("POST /time/manual", http.HandlerFunc(s.handleTimeManual))
+	s.handle("POST /time/server", http.HandlerFunc(s.handleTimeServer))
 	s.handle("GET /{$}", http.HandlerFunc(s.handleHome))
 
 	return s, nil

@@ -1,0 +1,112 @@
+{{define "title"}}Час — Сполох{{end}}
+{{define "content"}}
+<div class="grid gap-4">
+  {{if .Message}}
+  <div class="alert" role="status"><section><p>{{.Message}}</p></section></div>
+  {{end}}
+  {{if .Error}}
+  <div class="alert" data-variant="destructive" role="alert">
+    <section><p>{{.Error}}</p></section>
+  </div>
+  {{end}}
+
+  <div class="card p-6">
+    <header class="mb-4">
+      <h1 class="text-lg font-semibold">Час</h1>
+    </header>
+
+    {{/*
+    What the device thinks the time is, said in words before anything can be
+    changed. The scheduler fires from this clock: an operator who cannot see
+    it has no way to tell a device that is an hour out from one that is
+    working.
+    */}}
+    <div class="grid gap-2 rounded-md border border-border p-3 mb-4">
+      <p class="font-semibold">Зараз на пристрої</p>
+      <p><span class="font-mono text-sm">{{.Now}}</span></p>
+      <p>Часовий пояс: <span class="font-mono text-sm">{{.ConfigTimezone}}</span></p>
+      {{if .Mismatch}}
+      {{/*
+      The one disagreement this screen exists to end: the dashboard formats
+      with the configured zone while the system runs on another, so the page
+      and the journal tell different stories about the same minute.
+      */}}
+      <p class="text-sm text-muted-foreground">Система налаштована на <span class="font-mono">{{.SystemTimezone}}</span>. Збережіть часовий пояс нижче, щоб узгодити обидва значення.</p>
+      {{end}}
+      <p>Синхронізація часу: {{if .NTP}}увімкнена{{else}}вимкнена{{end}}{{if .NTP}} — {{if .Synced}}час синхронізовано{{else}}час ще не синхронізовано{{end}}{{end}}</p>
+      <p>Сервер часу: {{if .NTPServer}}<span class="font-mono text-sm">{{.NTPServer}}</span>{{else}}системний за замовчуванням{{end}}</p>
+    </div>
+
+    {{if .StateNotice}}
+    <div class="alert mb-4" data-variant="destructive" role="alert">
+      <section><p>{{.StateNotice}}</p></section>
+    </div>
+    {{end}}
+
+    <div class="grid gap-4">
+      <form method="post" action="/time/timezone" class="grid gap-2">
+        <div class="field">
+          <label for="timezone">Часовий пояс</label>
+          <select class="select" id="timezone" name="timezone" required>
+            {{range .Zones}}<option value="{{.Value}}"{{if .Selected}} selected{{end}}>{{.Value}}</option>{{end}}
+          </select>
+        </div>
+        {{if .ZonesNotice}}
+        <p class="text-sm text-muted-foreground">{{.ZonesNotice}}</p>
+        {{end}}
+        <button class="btn w-fit" type="submit">Зберегти часовий пояс</button>
+      </form>
+
+      {{/*
+      Two buttons in one form rather than a checkbox: this switch decides
+      whether the board keeps its own idea of the time, and a form that can
+      be submitted without saying which way to go would let a stray press
+      change it by accident.
+      */}}
+      <form method="post" action="/time/ntp" class="grid gap-2 rounded-md border border-border p-3">
+        <p class="font-semibold">Синхронізація часу (NTP)</p>
+        {{if .CanNTP}}
+        {{if .NTP}}
+        <p class="text-sm text-muted-foreground">Час синхронізується автоматично. Поки це увімкнено, встановити час вручну неможливо.</p>
+        <button class="btn w-fit" data-variant="outline" type="submit" name="ntp" value="off">Вимкнути синхронізацію</button>
+        {{else}}
+        <p class="text-sm text-muted-foreground">Час не синхронізується автоматично. Без синхронізації годинник плати поступово відстає.</p>
+        <button class="btn w-fit" type="submit" name="ntp" value="on">Увімкнути синхронізацію</button>
+        {{end}}
+        {{else}}
+        <p class="text-sm text-muted-foreground">Цей пристрій не повідомляє про службу синхронізації часу.</p>
+        {{end}}
+      </form>
+
+      {{/*
+      Offered only while synchronisation is off: systemd refuses set-time
+      outright with NTP on, so a field shown here would be a field whose
+      submission is rejected by the system after the operator filled it in.
+      */}}
+      <div class="grid gap-2 rounded-md border border-border p-3">
+        <p class="font-semibold">Встановити час вручну</p>
+        {{if .ClockEditable}}
+        <form method="post" action="/time/manual" class="grid gap-2">
+          <div class="field">
+            <label for="manual_time">Дата й час</label>
+            <input class="input" type="datetime-local" step="1" id="manual_time" name="manual_time" value="{{.ManualTime}}" required>
+          </div>
+          <button class="btn w-fit" type="submit">Встановити час</button>
+        </form>
+        {{else}}
+        <p class="text-sm text-muted-foreground">Доступно лише тоді, коли синхронізацію часу вимкнено.</p>
+        {{end}}
+      </div>
+
+      <form method="post" action="/time/server" class="grid gap-2">
+        <div class="field">
+          <label for="ntp_server">Сервер часу (NTP)</label>
+          <input class="input" type="text" id="ntp_server" name="ntp_server" value="{{.NTPServer}}" placeholder="ua.pool.ntp.org">
+          <p class="text-sm text-muted-foreground">Ім'я хоста або IP-адреса. Залиште порожнім, щоб використовувати системний сервер.</p>
+        </div>
+        <button class="btn w-fit" type="submit">Зберегти сервер часу</button>
+      </form>
+    </div>
+  </div>
+</div>
+{{end}}
