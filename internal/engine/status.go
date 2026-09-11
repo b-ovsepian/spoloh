@@ -1,6 +1,10 @@
 package engine
 
-import "time"
+import (
+	"time"
+
+	"github.com/b-ovsepian/spoloh/internal/alertstate"
+)
 
 // Status is a point-in-time snapshot of what the dashboard shows. Every field
 // is a copy; nothing in it aliases engine state.
@@ -16,6 +20,22 @@ type Status struct {
 	LastError   string
 	SourceName  string
 	Failing     bool
+
+	// AllClearSeen and AllClearNeeded expose an all-clear that upstream has
+	// reported and this device is not announcing yet: how many consecutive
+	// calm readings have been seen, and how many it takes. Seen is zero
+	// unless something is actually being held back, so a template gates on
+	// it; Needed is here because a page cannot read a Go constant.
+	//
+	// It belongs on the dashboard rather than only in the journal because
+	// the screen is the operator's whole diagnostic surface on a board with
+	// no monitor, and this is the one state in which the device and upstream
+	// visibly disagree. Without it, "alerts.in.ua says it is over and my
+	// device still says тривога" looks like a device that has stopped
+	// working, which is the reading that gets it unplugged — during a raid,
+	// by someone who has concluded it is broken.
+	AllClearSeen   int
+	AllClearNeeded int
 
 	ClockSynced bool
 
@@ -45,6 +65,9 @@ func (e *Engine) Status() Status {
 		LastError:   e.lastError,
 		SourceName:  e.sourceName,
 		Failing:     e.failing,
+
+		AllClearSeen:   e.allClearSeen,
+		AllClearNeeded: alertstate.EndConfirmations,
 	}
 	e.mu.RUnlock()
 

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math/rand"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -100,6 +101,12 @@ type Engine struct {
 	lastError       string
 	lastSuccess     time.Time
 	sourceName      string
+
+	// allClearSeen mirrors alertstate.Machine.CalmRun for the dashboard, on
+	// the same terms as alert and alertSince above: the machine is
+	// single-goroutine by contract, so the value is copied here at the
+	// moment it changes rather than read across the boundary.
+	allClearSeen int
 }
 
 func New(d Deps) *Engine {
@@ -125,6 +132,15 @@ func New(d Deps) *Engine {
 	if d.Machine != nil {
 		e.alert = d.Machine.Alert()
 		e.alertSince = d.Machine.Since()
+	}
+	// The player is the only thing that sees a sound cut short, and the
+	// engine is where every other row about an announcement is written, so
+	// the correction is wired next to the claim it corrects rather than in
+	// cmd/spoloh where the two could drift apart. Set here because Player
+	// wants its callbacks in place before Run, which the daemon starts long
+	// after this.
+	if d.Player != nil {
+		d.Player.OnTruncated = e.recordTruncated
 	}
 	e.sched = scheduler.NewRunner(d.Sync, d.Config, e.fireScheduled)
 	e.sched.Logger = d.Logger
@@ -245,22 +261,14 @@ func (e *Engine) PollOnce(ctx context.Context) error {
 
 	snap, err := e.d.Source.Fetch(fetchCtx)
 	if err != nil {
-		e.mu.Lock()
-		e.failing = true
-		e.lastError = err.Error()
-		e.mu.Unlock()
-		e.record(eventlog.Entry{At: e.d.Clock.Now(), Kind: eventlog.KindSourceFailure, OK: false, Err: err.Error()})
+		e.pollFailed(err)
 		return err
 	}
 
 	st, ok := snap.Region(cfg.Alerts.Region)
 	if !ok {
 		err := fmt.Errorf("region %q is not present in the snapshot", cfg.Alerts.Region)
-		e.mu.Lock()
-		e.failing = true
-		e.lastError = err.Error()
-		e.mu.Unlock()
-		e.record(eventlog.Entry{At: e.d.Clock.Now(), Kind: eventlog.KindSourceFailure, OK: false, Err: err.Error()})
+		e.pollFailed(err)
 		return err
 	}
 
@@ -306,7 +314,17 @@ func (e *Engine) PollOnce(ctx context.Context) error {
 	e.sourceName = snap.Source
 	e.alert = e.d.Machine.Alert()
 	e.alertSince = e.d.Machine.Since()
+	e.allClearSeen = e.d.Machine.CalmRun()
 	e.mu.Unlock()
+
+	// An all-clear being held back is the state an operator debugging "the
+	// raid is over, why is this thing still red" lands in, and the journal
+	// is where they look when the screen is not in front of them. At most
+	// EndConfirmations-1 lines per raid, so it is an event, not a cadence.
+	if seen := e.d.Machine.CalmRun(); seen > 0 {
+		e.d.Logger.Info("upstream reports calm; holding the all-clear until it is confirmed",
+			"seen", seen, "need", alertstate.EndConfirmations)
+	}
 
 	switch transition {
 	case alertstate.Started:
@@ -333,6 +351,25 @@ func (e *Engine) PollOnce(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+// pollFailed records a poll that produced no usable reading, whether the
+// whole source cascade failed or the snapshot did not carry the configured
+// oblast. The two used to be written out separately and had already drifted
+// by one statement.
+//
+// It also tells the machine, which is not bookkeeping: a run of calm readings
+// only counts as confirmation of an all-clear while it is unbroken, and a
+// poll that saw nothing is exactly the break. See
+// alertstate.Machine.PollFailed.
+func (e *Engine) pollFailed(err error) {
+	e.d.Machine.PollFailed()
+	e.mu.Lock()
+	e.failing = true
+	e.lastError = err.Error()
+	e.allClearSeen = 0
+	e.mu.Unlock()
+	e.record(eventlog.Entry{At: e.d.Clock.Now(), Kind: eventlog.KindSourceFailure, OK: false, Err: err.Error()})
 }
 
 // PlayManual plays a library sound on the operator's command. It deliberately
@@ -493,6 +530,36 @@ func (e *Engine) reportHealth(cfg *config.Config, snap alertsource.Snapshot, st 
 	// The reset of failing to false is recorded once, uniformly, in
 	// PollOnce's mirror block right after this returns — not here, so there
 	// is a single place that clears a failure on success.
+}
+
+// recordTruncated writes the row that says a sound this device queued did not
+// finish. It is installed on the player by New and called from the player's
+// goroutine; eventlog.Log is safe for concurrent Append and e.record tolerates
+// a nil Log, so there is nothing here to serialise.
+//
+// play() writes its row the moment a request is queued, which is what lets a
+// power cut mid-siren still leave evidence that the siren was sounded — and
+// which also means that row cannot know how the sound ended. This is the
+// other half of the pair: without it the log says the minute of silence
+// played, to the one person reading it to find out why nobody heard it.
+func (e *Engine) recordTruncated(r player.Request, reason string) {
+	// The operator-facing wording is written here rather than in the player,
+	// which deals in English identifiers like OnError's stage names. Anything
+	// unrecognised still produces a row: a reason nobody has a phrase for is
+	// far better shown than swallowed.
+	why := reason
+	switch reason {
+	case player.CutPreempted:
+		why = "перервано важливішим сигналом"
+	case player.CutStopped:
+		why = "зупинено оператором"
+	}
+	sound := filepath.Base(r.Path)
+	e.d.Logger.Info("a sound was cut short", "event", r.EventID, "sound", sound, "reason", reason)
+	e.record(eventlog.Entry{
+		At: e.d.Clock.Now(), Kind: eventlog.KindPlaybackTruncated,
+		EventID: r.EventID, Sound: sound, OK: false, Err: why,
+	})
 }
 
 func (e *Engine) record(entry eventlog.Entry) {

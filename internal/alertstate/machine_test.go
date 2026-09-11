@@ -44,11 +44,152 @@ func TestEndAfterSilentBaseline(t *testing.T) {
 	m := alertstate.New()
 	m.Apply(state(true, now.Add(-2*time.Hour)), now)
 
+	// The all-clear waits to be confirmed; see TestAllClearNeedsConsecutive
+	// Confirmations for the reason and for what each reading in between does.
+	for i := 1; i < alertstate.EndConfirmations; i++ {
+		m.Apply(state(false, now), now)
+	}
 	if got := m.Apply(state(false, now), now); got != alertstate.Ended {
 		t.Fatalf("Apply = %v, want Ended", got)
 	}
 	if m.Alert() {
 		t.Fatal("alert should be clear")
+	}
+}
+
+// The defect this covers: alertsource.Client returns the first source that
+// answers and never compares sources, so when the usual one is throttled —
+// all three of one operator's sources returned 429 in a single poll — the
+// answer comes from a different source without anything saying so. One
+// "no alert" from a fallback that lags used to end a live raid: the device
+// announced the all-clear over the site's speakers, then sounded the siren
+// again when the first source came back still reporting it.
+func TestAllClearNeedsConsecutiveConfirmations(t *testing.T) {
+	// Everything below is written in terms of the constant, so the constant
+	// itself is what has to be pinned: one reading is the defect.
+	if alertstate.EndConfirmations < 2 {
+		t.Fatalf("EndConfirmations = %d: an all-clear announced on a single reading is exactly what ends a live raid over the site's speakers",
+			alertstate.EndConfirmations)
+	}
+
+	m := alertstate.New()
+	m.Apply(state(false, now), now)
+	if got := m.Apply(state(true, now), now); got != alertstate.Started {
+		t.Fatalf("Apply = %v, want Started", got)
+	}
+
+	for i := 1; i < alertstate.EndConfirmations; i++ {
+		if got := m.Apply(state(false, now), now); got != alertstate.NoChange {
+			t.Fatalf("calm reading %d of %d = %v, want NoChange: an all-clear announced before it is confirmed tells a building a live raid is over",
+				i, alertstate.EndConfirmations, got)
+		}
+		if !m.Alert() {
+			t.Fatalf("after calm reading %d the machine no longer reports the raid; it must keep reporting it until the all-clear is confirmed", i)
+		}
+		if m.CalmRun() != i {
+			t.Fatalf("CalmRun() = %d after %d calm readings, want %d", m.CalmRun(), i, i)
+		}
+	}
+
+	if got := m.Apply(state(false, now), now); got != alertstate.Ended {
+		t.Fatalf("the confirming reading = %v, want Ended", got)
+	}
+	if m.Alert() || m.CalmRun() != 0 {
+		t.Fatalf("after the all-clear: alert %v, CalmRun %d; want a clear machine with nothing pending", m.Alert(), m.CalmRun())
+	}
+}
+
+// A single calm reading between two that say alert is the fallback source
+// blinking, not a raid ending. It must leave nothing behind — and the run it
+// interrupted must start again from zero rather than resume, or two blinks
+// spread over an hour would add up to an all-clear.
+func TestAStrayCalmReadingAnnouncesNothing(t *testing.T) {
+	m := alertstate.New()
+	m.Apply(state(false, now), now)
+	m.Apply(state(true, now), now)
+
+	for i := 0; i < 20; i++ {
+		if got := m.Apply(state(false, now), now); got != alertstate.NoChange {
+			t.Fatalf("the stray calm reading in round %d = %v, want NoChange", i, got)
+		}
+		if got := m.Apply(state(true, now), now); got != alertstate.NoChange {
+			t.Fatalf("the alert reading in round %d = %v, want NoChange", i, got)
+		}
+		if m.CalmRun() != 0 {
+			t.Fatalf("round %d left CalmRun at %d; a reading that says alert must discard the run entirely", i, m.CalmRun())
+		}
+	}
+	if !m.Alert() {
+		t.Fatal("the raid was cancelled by readings that never agreed twice in a row")
+	}
+}
+
+// The asymmetry, stated on its own: a siren is never held back, not for one
+// poll and not for one second. Announced from a pending all-clear as well as
+// from a settled calm state, because the pending window is exactly when a
+// second opinion would look tempting.
+func TestAlertStartIsNeverHeldBack(t *testing.T) {
+	m := alertstate.New()
+	m.Apply(state(false, now.Add(-time.Hour)), now)
+
+	changed := now.Add(time.Minute)
+	if got := m.Apply(state(true, changed), now); got != alertstate.Started {
+		t.Fatalf("the first reading that says alert = %v, want Started on that reading alone", got)
+	}
+	if !m.Since().Equal(changed) {
+		t.Fatalf("Since() = %v, want %v", m.Since(), changed)
+	}
+}
+
+// A poll that produced no reading at all is a hole in the run, not a calm
+// reading. Two readings with ten minutes of blindness between them are not
+// evidence that anything calmed down. See Machine.PollFailed.
+func TestAFailedPollDiscardsThePendingAllClear(t *testing.T) {
+	m := alertstate.New()
+	m.Apply(state(false, now), now)
+	m.Apply(state(true, now), now)
+
+	for i := 1; i < alertstate.EndConfirmations; i++ {
+		m.Apply(state(false, now), now)
+	}
+	m.PollFailed()
+
+	if m.CalmRun() != 0 {
+		t.Fatalf("CalmRun() = %d after a failed poll, want 0", m.CalmRun())
+	}
+	if !m.Alert() {
+		t.Fatal("a failed poll changed what the machine reports; it is not evidence of anything")
+	}
+	if got := m.Apply(state(false, now), now); got != alertstate.NoChange {
+		t.Fatalf("the first calm reading after the gap = %v, want NoChange: it is the start of a new run, not the end of the old one", got)
+	}
+
+	// A full fresh run still announces, so the reset delays the all-clear
+	// rather than losing it.
+	var last alertstate.Transition
+	for i := 1; i < alertstate.EndConfirmations; i++ {
+		last = m.Apply(state(false, now), now)
+	}
+	if last != alertstate.Ended {
+		t.Fatalf("the completed run after the gap = %v, want Ended", last)
+	}
+}
+
+// Once announced, an all-clear is announced once: the readings that keep
+// arriving afterwards must not restart the count and fire again.
+func TestConfirmedAllClearAnnouncesExactlyOnce(t *testing.T) {
+	m := alertstate.New()
+	m.Apply(state(false, now), now)
+	m.Apply(state(true, now), now)
+
+	fires := 0
+	for i := 0; i < 50; i++ {
+		if m.Apply(state(false, now), now) == alertstate.Ended {
+			fires++
+		}
+	}
+	if fires != 1 {
+		t.Fatalf("a raid that ended announced %d all-clears, want exactly 1", fires)
 	}
 }
 

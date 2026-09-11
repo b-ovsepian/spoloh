@@ -1,6 +1,7 @@
 package web
 
 import (
+	"context"
 	"net/http"
 	"net/url"
 	"strings"
@@ -8,6 +9,7 @@ import (
 
 	"github.com/b-ovsepian/spoloh/internal/config"
 	"github.com/b-ovsepian/spoloh/internal/engine"
+	"github.com/b-ovsepian/spoloh/internal/eventlog"
 	"github.com/b-ovsepian/spoloh/internal/library"
 	"github.com/b-ovsepian/spoloh/internal/scheduler"
 )
@@ -65,6 +67,34 @@ type homeView struct {
 	// some exist.
 	QuietFrom string
 	QuietTo   string
+
+	// Recent is the last few event log entries, newest first, in log.go's
+	// own row shape. It is the one thing on this dashboard that answers
+	// "did this device actually make a sound the last time it mattered" —
+	// every other card describes how the device is configured or what it
+	// intends to do next, and a device that looks healthy in all of them
+	// and has not played anything successfully in a month is the failure
+	// this product most needs an operator to notice. Until now finding
+	// that out meant navigating away.
+	Recent []logEntryView
+	// RecentNotice explains an empty Recent in the operator's own terms,
+	// the same three cases /log separates: no log on this device, a log
+	// that would not read, and a log with nothing in it yet. All three
+	// look like "no history" and mean very different things.
+	RecentNotice string
+
+	// Audio is the stored output as /audio's own block describes it —
+	// reused wholesale rather than restated, see homeAudio.
+	Audio currentAudioView
+	// AudioNotice is listDevices' explanation for an output list that could
+	// not be obtained, carried so the card can say why it is naming the
+	// stored PCM and nothing else about it.
+	AudioNotice string
+	// TestSound is what the Звук card's button plays, chosen by the same
+	// testSound /audio's own button uses. Empty when the library holds
+	// nothing at all, and the card then says so instead of rendering a
+	// button that can only fail.
+	TestSound string
 }
 
 // alertStartDisabled reports whether the configured alert-start event will
@@ -123,6 +153,109 @@ func (s *Server) status(loc *time.Location) engine.Status {
 	return st
 }
 
+// homeRecentEntries is how many event log rows the Останні дії card shows.
+//
+// Five is a judgement, not a round number. One row cannot answer the
+// question the card exists for: a single failure under four successes reads
+// differently from five failures in a row, and it is the run that tells an
+// operator whether the device is broken or merely had a bad minute. Past
+// about this many the card stops being something the eye takes in at a
+// glance and becomes a list to scroll past on the way to everything else,
+// which is what /log — one link away, and reading recentLogEntries — is
+// for.
+const homeRecentEntries = 5
+
+// recentActivity reads the last few log entries for the dashboard card.
+//
+// It builds log.go's logEntryView through log.go's own kindLabel, so the
+// same row cannot be called one thing here and another there — an operator
+// comparing this card against /log is comparing them on purpose, and two
+// vocabularies for one fact would make that comparison a puzzle. What it
+// deliberately does not reuse is logBaseView: that reads two hundred rows
+// off an SD card and answers questions about clearing the log, and this
+// page is fetched far more often than /log is, including by the stream's
+// own recovery probe.
+//
+// Every way the log can be unavailable ends in a notice rather than an
+// error, the same tolerance /log gives it: Deps.Log is nil on a device
+// whose SQLite file is corrupt or whose card went read-only, and that must
+// cost the operator their history, never the dashboard.
+func (s *Server) recentActivity() ([]logEntryView, string) {
+	if s.deps.Log == nil {
+		return nil, "Журнал подій недоступний на цьому пристрої."
+	}
+	entries, err := s.deps.Log.Recent(homeRecentEntries)
+	switch {
+	case err != nil:
+		s.deps.Logger.Error("event log: recent", "err", err)
+		return nil, "Не вдалося завантажити журнал подій."
+	case len(entries) == 0:
+		return nil, "Записів поки немає."
+	}
+
+	loc := s.location()
+	out := make([]logEntryView, len(entries))
+	for i, e := range entries {
+		out[i] = logEntryView{
+			AtText:        e.At.In(loc).Format("2006-01-02 15:04:05"),
+			Kind:          kindLabel(e.Kind),
+			EventID:       e.EventID,
+			Sound:         e.Sound,
+			OK:            e.OK,
+			Err:           e.Err,
+			PlaybackError: e.Kind == eventlog.KindPlaybackError,
+		}
+	}
+	return out, ""
+}
+
+// homeAudioBudget bounds everything the Звук card asks the sound system —
+// listing the outputs, opening the configured one, and finding its mixer
+// control — all of it together.
+//
+// /audio allows ten seconds for each of those three separately, which is
+// right for a screen somebody opened because the sound is broken and is
+// prepared to wait on. This is the dashboard. It is glanced at, it is what
+// the stream's recovery probe fetches when the daemon comes back, and a
+// wedged ALSA device must not be able to hold it: a card that says
+// "невідомо" in two seconds is worth more than the same card thirty seconds
+// later. Every call below derives its own deadline from this one, and
+// context.WithTimeout takes the shorter of the two, so nothing underneath
+// can outlast it.
+const homeAudioBudget = 2 * time.Second
+
+// homeAudio describes the configured output for the Звук card by calling
+// /audio's own currentAudio. None of what that knows is restated here: the
+// card labels, the "default resolves to card 0" heuristic, the wording for
+// an output that will not open and the mixer lookup are decided in audio.go,
+// and two screens on one device disagreeing about which output it uses would
+// be worse than either of them being wrong.
+//
+// playing suppresses the probe, and that is the one rule this page adds. A
+// probe is not a query — player.ProbeDevice opens the real PCM and plays a
+// real WAV through it — so probing while the player holds that PCM puts a
+// second opener on the sound card during the one minute this device exists
+// for. Neither answer it could come back with belongs on this card either:
+// both "works" and "does not work" would be facts about the siren already
+// playing, not about the output. An output nobody asked about claims
+// nothing, which is what applyProbes and currentAudio already do with one.
+func (s *Server) homeAudio(ctx context.Context, playing bool) (currentAudioView, string) {
+	ctx, cancel := context.WithTimeout(ctx, homeAudioBudget)
+	defer cancel()
+
+	devices, notice := s.listDevices(ctx)
+
+	// One probe, of the one output this card names. /audio probes every
+	// grouped row because it is a picker and those rows are candidates;
+	// here there is nothing to choose between, and twelve silent playbacks
+	// on a dashboard load would buy nothing at all.
+	var probes map[string]probeOutcome
+	if !playing {
+		probes = s.probeOutputs(ctx, []string{currentDeviceName(s.deps.Config.Get().Audio.Device)})
+	}
+	return s.currentAudio(ctx, devices, notice, probes), notice
+}
+
 // handleHome renders the dashboard: the page an operator actually looks at.
 // Every value is rendered server-side so the page is correct with
 // JavaScript disabled or before Alpine has loaded — the SSE stream wired up
@@ -161,6 +294,17 @@ func (s *Server) handleHome(w http.ResponseWriter, r *http.Request) {
 			view.Sounds = sounds
 		}
 	}
+	view.Recent, view.RecentNotice = s.recentActivity()
+	// Handed st.PlayingEventID rather than asking the player again: the
+	// card must not probe the output the siren is coming out of, and the
+	// answer to "is something playing" has to be the same one the rest of
+	// this page was built from — see homeAudio.
+	view.Audio, view.AudioNotice = s.homeAudio(r.Context(), st.PlayingEventID != "")
+	// The same sound /audio's own button plays, chosen the same way. The
+	// second result says whether there is one at all, which the template
+	// reads off TestSound being empty.
+	view.TestSound, _ = s.testSound()
+
 	view.Flash = s.flashMessage(r)
 
 	s.render(w, http.StatusOK, "home.html", view)

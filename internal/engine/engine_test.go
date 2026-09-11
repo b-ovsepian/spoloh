@@ -235,6 +235,42 @@ func waitPlayed(t *testing.T, r *recorder) string {
 	}
 }
 
+// pollTimes runs n successful polls. An all-clear is announced only after
+// alertstate.EndConfirmations consecutive calm readings, so every test that
+// wants one has to say how many readings it is handing the device.
+func pollTimes(t *testing.T, h *harness, ctx context.Context, n int) {
+	t.Helper()
+	for i := 0; i < n; i++ {
+		if err := h.eng.PollOnce(ctx); err != nil {
+			t.Fatalf("PollOnce %d of %d: %v", i+1, n, err)
+		}
+	}
+}
+
+// waitForLogEntry waits for a row of the given kind, and returns it. The row
+// it looks for is written from the player's goroutine, so this polls the real
+// log rather than sleeping for a guessed interval.
+func waitForLogEntry(t *testing.T, h *harness, kind string) eventlog.Entry {
+	t.Helper()
+	deadline := time.After(2 * time.Second)
+	for {
+		entries, err := h.log.Recent(50)
+		if err != nil {
+			t.Fatalf("Recent: %v", err)
+		}
+		for _, e := range entries {
+			if e.Kind == kind {
+				return e
+			}
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("no %s row was written; the log holds %+v", kind, entries)
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+}
+
 func TestAlertStartPlaysSiren(t *testing.T) {
 	h := newHarness(t)
 	ctx := context.Background()
@@ -261,7 +297,7 @@ func TestAlertEndPlaysAllClear(t *testing.T) {
 	waitPlayed(t, h.rec)
 
 	h.set(false)
-	h.eng.PollOnce(ctx)
+	pollTimes(t, h, ctx, alertstate.EndConfirmations)
 	if got := waitPlayed(t, h.rec); got != "all-clear.wav" {
 		t.Fatalf("played %q, want all-clear.wav", got)
 	}
@@ -1035,9 +1071,7 @@ func TestRegionChangeFromCalmToAlertedAnnouncesNothing(t *testing.T) {
 	// And the all-clear for that alert, once it ends, is announced: the new
 	// oblast's alert was adopted as the baseline rather than discarded.
 	h.setOther(false)
-	if err := h.eng.PollOnce(ctx); err != nil {
-		t.Fatalf("PollOnce: %v", err)
-	}
+	pollTimes(t, h, ctx, alertstate.EndConfirmations)
 	if got := waitPlayed(t, h.rec); got != "all-clear.wav" {
 		t.Fatalf("played %q when the newly configured oblast's alert ended, want all-clear.wav", got)
 	}
@@ -1192,5 +1226,223 @@ func TestAlertStillSoundsInQuietHoursWhenAlertsAreNotCovered(t *testing.T) {
 		if e.Kind == eventlog.KindAlertSuppressed {
 			t.Fatalf("an alert that sounded was recorded as suppressed: %+v", e)
 		}
+	}
+}
+
+// The end-to-end shape of the defect: while a raid is running, one calm
+// reading from a fallback source must not put an all-clear over the site's
+// speakers. alertsource.Client returns the first source that answers, so on
+// the operator's board — where all three configured sources returned 429 in
+// the same poll — which source answered changed without anything saying so.
+func TestAnAllClearIsNotAnnouncedUntilItIsConfirmed(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+
+	h.eng.PollOnce(ctx) // silent baseline
+	h.set(true)
+	if err := h.eng.PollOnce(ctx); err != nil {
+		t.Fatalf("PollOnce: %v", err)
+	}
+	if got := waitPlayed(t, h.rec); got != "siren.wav" {
+		t.Fatalf("played %q, want siren.wav", got)
+	}
+
+	h.set(false)
+	pollTimes(t, h, ctx, alertstate.EndConfirmations-1)
+	time.Sleep(200 * time.Millisecond)
+	if got := h.rec.Played(); len(got) != 1 {
+		t.Fatalf("played %v after %d calm readings, want the siren and nothing else: an unconfirmed all-clear tells a building a live raid is over",
+			got, alertstate.EndConfirmations-1)
+	}
+	if !h.eng.Status().Alert {
+		t.Fatal("the dashboard stopped reporting the raid before the all-clear was confirmed")
+	}
+
+	if err := h.eng.PollOnce(ctx); err != nil {
+		t.Fatalf("PollOnce: %v", err)
+	}
+	if got := waitPlayed(t, h.rec); got != "all-clear.wav" {
+		t.Fatalf("played %q on the confirming reading, want all-clear.wav", got)
+	}
+}
+
+// A calm reading with alert readings either side of it is a source blinking,
+// not a raid ending, and the device must say nothing at all about it.
+func TestAStrayCalmPollDoesNotCancelALiveRaid(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+
+	h.eng.PollOnce(ctx)
+	h.set(true)
+	h.eng.PollOnce(ctx)
+	if got := waitPlayed(t, h.rec); got != "siren.wav" {
+		t.Fatalf("played %q, want siren.wav", got)
+	}
+
+	for i := 0; i < 10; i++ {
+		h.set(false)
+		h.eng.PollOnce(ctx)
+		h.set(true)
+		h.eng.PollOnce(ctx)
+	}
+	time.Sleep(200 * time.Millisecond)
+
+	if got := h.rec.Played(); len(got) != 1 {
+		t.Fatalf("played %v, want the siren and nothing else", got)
+	}
+	if !h.eng.Status().Alert {
+		t.Fatal("the raid was cancelled by readings that never agreed twice in a row")
+	}
+}
+
+// A poll that returned nothing is a hole in the run, not a calm reading: the
+// device stopped watching, and evidence from before a blind window is not
+// evidence about now. See alertstate.Machine.PollFailed.
+func TestAFailedPollRestartsTheAllClearRun(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+
+	h.eng.PollOnce(ctx)
+	h.set(true)
+	h.eng.PollOnce(ctx)
+	waitPlayed(t, h.rec)
+
+	h.set(false)
+	pollTimes(t, h, ctx, alertstate.EndConfirmations-1)
+
+	h.fail(true)
+	if err := h.eng.PollOnce(ctx); err == nil {
+		t.Fatal("expected the poll to fail")
+	}
+	h.fail(false)
+	if got := h.eng.Status().AllClearSeen; got != 0 {
+		t.Fatalf("Status().AllClearSeen = %d after a failed poll, want 0", got)
+	}
+
+	// One short of a fresh full run: still nothing announced.
+	pollTimes(t, h, ctx, alertstate.EndConfirmations-1)
+	time.Sleep(200 * time.Millisecond)
+	if got := h.rec.Played(); len(got) != 1 {
+		t.Fatalf("played %v, want the siren only: the run before the failure must not count towards the one after it", got)
+	}
+
+	// And the all-clear is delayed, not lost.
+	if err := h.eng.PollOnce(ctx); err != nil {
+		t.Fatalf("PollOnce: %v", err)
+	}
+	if got := waitPlayed(t, h.rec); got != "all-clear.wav" {
+		t.Fatalf("played %q, want all-clear.wav once the fresh run completed", got)
+	}
+}
+
+// The pending all-clear has to reach the screen. A device still showing
+// «тривога» while alerts.in.ua says it is over looks broken, and a board with
+// no monitor has nothing but this dashboard to say otherwise — which is how
+// it gets unplugged, during a raid, by someone who concluded it had failed.
+func TestStatusShowsAnAllClearBeingConfirmed(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+
+	h.eng.PollOnce(ctx)
+	h.set(true)
+	h.eng.PollOnce(ctx)
+	if got := h.eng.Status().AllClearSeen; got != 0 {
+		t.Fatalf("AllClearSeen = %d during a running raid, want 0", got)
+	}
+
+	h.set(false)
+	if err := h.eng.PollOnce(ctx); err != nil {
+		t.Fatalf("PollOnce: %v", err)
+	}
+	got := h.eng.Status()
+	if got.AllClearSeen != 1 {
+		t.Fatalf("AllClearSeen = %d after one calm reading, want 1", got.AllClearSeen)
+	}
+	if got.AllClearNeeded != alertstate.EndConfirmations {
+		t.Fatalf("AllClearNeeded = %d, want %d", got.AllClearNeeded, alertstate.EndConfirmations)
+	}
+	if !got.Alert {
+		t.Fatal("the dashboard must keep reporting the raid while the all-clear is unconfirmed")
+	}
+
+	pollTimes(t, h, ctx, alertstate.EndConfirmations-1)
+	if got := h.eng.Status(); got.AllClearSeen != 0 || got.Alert {
+		t.Fatalf("after the all-clear: AllClearSeen %d, alert %v; want nothing pending and no raid", got.AllClearSeen, got.Alert)
+	}
+}
+
+// The minute of silence is the case this exists for: an alert cuts it off
+// mid-sound, the player drops the cancelled request rather than requeueing
+// it, and the log used to go on saying it played — to the one person reading
+// it to find out why nobody heard it.
+func TestAPreemptedScheduledEventIsRecordedAsCutShort(t *testing.T) {
+	clk := clock.NewFake(time.Date(2026, 9, 7, 9, 0, 0, 0, time.UTC)) // the default schedule's day and time
+	h := newHarnessWithClock(t, clk)
+
+	h.rec.block()
+	h.eng.Tick(context.Background())
+	if got := waitPlayed(t, h.rec); got != "metronome.wav" {
+		t.Fatalf("first play = %q, want metronome.wav", got)
+	}
+
+	h.set(true)
+	if err := h.eng.PollOnce(context.Background()); err != nil {
+		t.Fatalf("PollOnce: %v", err)
+	}
+	if got := waitPlayed(t, h.rec); got != "siren.wav" {
+		t.Fatalf("second play = %q, want the siren to preempt", got)
+	}
+
+	cut := waitForLogEntry(t, h, eventlog.KindPlaybackTruncated)
+	if cut.Sound != "metronome.wav" {
+		t.Fatalf("the cut-short row names %q, want metronome.wav", cut.Sound)
+	}
+	if cut.OK {
+		t.Error("a sound nobody heard the end of must not be recorded as OK")
+	}
+	if cut.Err == "" {
+		t.Error("the row must say why the sound stopped, or it reads as a playback fault")
+	}
+	// Not a fault: the device did the right thing, and a row that sends the
+	// operator to check the speaker wiring over it is a worse answer than
+	// none.
+	entries, err := h.log.Recent(50)
+	if err != nil {
+		t.Fatalf("Recent: %v", err)
+	}
+	for _, e := range entries {
+		if e.Kind == eventlog.KindPlaybackError {
+			t.Fatalf("a preemption was recorded as a playback error: %+v", e)
+		}
+	}
+}
+
+// The half that must not have moved: an announcement that ran to the end is
+// still recorded as played, and nothing else.
+func TestACompletedScheduledEventIsStillRecordedAsPlayed(t *testing.T) {
+	clk := clock.NewFake(time.Date(2026, 9, 7, 9, 0, 0, 0, time.UTC))
+	h := newHarnessWithClock(t, clk)
+
+	h.eng.Tick(context.Background())
+	if got := waitPlayed(t, h.rec); got != "metronome.wav" {
+		t.Fatalf("played %q, want metronome.wav", got)
+	}
+	time.Sleep(200 * time.Millisecond)
+
+	entries, err := h.log.Recent(50)
+	if err != nil {
+		t.Fatalf("Recent: %v", err)
+	}
+	var played bool
+	for _, e := range entries {
+		switch e.Kind {
+		case eventlog.KindScheduled:
+			played = e.OK && e.Sound == "metronome.wav"
+		case eventlog.KindPlaybackTruncated:
+			t.Fatalf("a sound that played to the end was recorded as cut short: %+v", e)
+		}
+	}
+	if !played {
+		t.Fatalf("no scheduled row says the minute of silence played: %+v", entries)
 	}
 }

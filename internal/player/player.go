@@ -57,9 +57,24 @@ type Backend interface {
 	Play(ctx context.Context, device, path string) error
 }
 
+// Reasons handed to OnTruncated. They name what cut the request short, not a
+// fault, and they are English like every other identifier that crosses this
+// boundary — the operator-facing wording is the event log's to write.
+const (
+	CutPreempted = "preempted"
+	CutStopped   = "stopped"
+)
+
 type current struct {
 	req    Request
 	cancel context.CancelFunc
+
+	// stopped distinguishes the two ways cancel gets called: Stop sets it,
+	// a preemption does not. Both cut the sound off, and the log has to be
+	// able to say which, because "a siren interrupted the minute of
+	// silence" and "somebody pressed stop" are different answers to the
+	// same question.
+	stopped bool
 }
 
 type Player struct {
@@ -70,6 +85,22 @@ type Player struct {
 	// or "play_timeout" when the stage was abandoned for exceeding
 	// MaxPlayback. Set it before Run.
 	OnError func(r Request, stage string, err error)
+
+	// OnTruncated reports a request that had started and did not finish:
+	// something of higher priority preempted it (CutPreempted), or Stop
+	// cancelled it (CutStopped). Set it before Run.
+	//
+	// Deliberately not OnError. A preemption is the device doing the right
+	// thing — reportStageError stays silent about it on purpose — and a row
+	// that reads as a fault sends an operator to check the speaker wiring
+	// over a chime correctly dropped for a siren. But silence is not right
+	// either: the engine writes an announcement's log row when the sound is
+	// queued, so without this the log says the minute of silence played when
+	// nobody heard it.
+	//
+	// Only a request that reached the output is reported. Requests still
+	// queued when Stop drops them never started, and never claimed to.
+	OnTruncated func(r Request, reason string)
 
 	// MaxPlayback caps one request. Zero means defaultMaxPlayback. Set it
 	// before Run; tests inject a short limit.
@@ -143,6 +174,7 @@ func (p *Player) Stop() {
 	p.mu.Lock()
 	p.queue = nil
 	if p.cur != nil {
+		p.cur.stopped = true
 		p.cur.cancel()
 	}
 	p.mu.Unlock()
@@ -196,11 +228,25 @@ func (p *Player) start(parent context.Context) (Request, context.Context, contex
 }
 
 func (p *Player) playOne(ctx context.Context, cancel context.CancelFunc, r Request) {
+	// Decided in the body below, reported by the cleanup. It cannot be
+	// derived in the cleanup itself: both the cancel() there and the
+	// expire() deferred further down cancel the context this reads, so by
+	// then every request that ran to the end looks cancelled.
+	cut := false
 	defer func() {
 		cancel()
 		p.mu.Lock()
+		// Read while p.cur is still ours, in the hold that clears it.
+		stopped := p.cur != nil && p.cur.stopped
 		p.cur = nil
 		p.mu.Unlock()
+		if cut && p.OnTruncated != nil {
+			reason := CutPreempted
+			if stopped {
+				reason = CutStopped
+			}
+			p.OnTruncated(r, reason)
+		}
 	}()
 
 	limit := p.MaxPlayback
@@ -216,13 +262,18 @@ func (p *Player) playOne(ctx context.Context, cancel context.CancelFunc, r Reque
 		p.reportStageError(r, "volume", limit, ctx.Err(), err)
 	}
 	// Cancelled while setting the volume (a preemption, a Stop, or the limit
-	// above): the request is dead, do not hand it to Play at all.
+	// above): the request is dead, do not hand it to Play at all. It is
+	// still a request that was cut short and made no sound, which is the
+	// outcome the log most needs to hear about; a timeout is not, because it
+	// already leaves a volume_timeout error behind.
 	if ctx.Err() != nil {
+		cut = errors.Is(ctx.Err(), context.Canceled)
 		return
 	}
 	if err := p.backend.Play(ctx, device, r.Path); err != nil {
 		p.reportStageError(r, "play", limit, ctx.Err(), err)
 	}
+	cut = errors.Is(ctx.Err(), context.Canceled)
 }
 
 // reportStageError reports a stage failure, except when the request was

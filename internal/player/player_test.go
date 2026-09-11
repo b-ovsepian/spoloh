@@ -443,3 +443,163 @@ func TestAScheduledEventPreemptsAPreview(t *testing.T) {
 		t.Fatalf("second play = %q, want the scheduled event to have preempted the preview", got)
 	}
 }
+
+// cutRecorder collects OnTruncated reports for the tests below.
+type cutRecorder struct {
+	mu   sync.Mutex
+	cuts []string // "eventID:reason"
+}
+
+func (c *cutRecorder) hook(r player.Request, reason string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.cuts = append(c.cuts, r.EventID+":"+reason)
+}
+
+// waitCut waits for want to be reported, or fails saying what was reported
+// instead. A callback fired from the player's goroutine is what is being
+// waited on, so this polls rather than sleeping for a guessed interval.
+func (c *cutRecorder) waitCut(t *testing.T, want string) {
+	t.Helper()
+	deadline := time.After(2 * time.Second)
+	for {
+		c.mu.Lock()
+		got := append([]string(nil), c.cuts...)
+		c.mu.Unlock()
+		for _, g := range got {
+			if g == want {
+				return
+			}
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("%q was never reported as cut short; got %v", want, got)
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+}
+
+func (c *cutRecorder) Cuts() []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]string(nil), c.cuts...)
+}
+
+// A preemption is not a fault and deliberately produces no OnError, which
+// used to mean it produced nothing at all — so the event log kept the row
+// engine.play wrote when the sound was queued and went on saying the minute
+// of silence played. This is the signal that lets it say otherwise.
+func TestPreemptionIsReportedAsCutShort(t *testing.T) {
+	f := newFake()
+	p := player.New(f, "default")
+
+	var cuts cutRecorder
+	p.OnTruncated = cuts.hook
+	var errs []string
+	p.OnError = func(_ player.Request, stage string, _ error) { errs = append(errs, stage) }
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go p.Run(ctx)
+
+	p.Play(player.Request{EventID: "silence", Path: "/s/metronome.wav", Volume: 85, Priority: player.PriorityScheduled})
+	waitStart(t, f)
+	p.Play(player.Request{EventID: "alert-start", Path: "/s/siren.wav", Volume: 100, Priority: player.PriorityAlert})
+	waitStartFor(t, f, "/s/siren.wav")
+
+	cuts.waitCut(t, "silence:"+player.CutPreempted)
+	if len(errs) != 0 {
+		t.Fatalf("a preemption reported errors %v; it is the device doing the right thing, not a fault", errs)
+	}
+}
+
+// Stop is the operator cutting a sound off, which reads differently in the
+// log from a siren doing it, so the two must not arrive under one name.
+func TestStopIsReportedAsCutShortByTheOperator(t *testing.T) {
+	f := newFake()
+	p := player.New(f, "default")
+
+	var cuts cutRecorder
+	p.OnTruncated = cuts.hook
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go p.Run(ctx)
+
+	p.Play(player.Request{EventID: "manual", Path: "/s/siren.wav", Volume: 100, Priority: player.PriorityAlert})
+	waitStart(t, f)
+	p.Stop()
+
+	cuts.waitCut(t, "manual:"+player.CutStopped)
+}
+
+// The other half: a sound that ran to the end must not be reported as cut
+// short, or the log would call every announcement truncated and the
+// distinction would be worth nothing.
+func TestACompletedRequestIsNotReportedAsCutShort(t *testing.T) {
+	f := newFake()
+	close(f.hold) // every Play returns immediately, as a finished sound does
+	p := player.New(f, "default")
+
+	var cuts cutRecorder
+	p.OnTruncated = cuts.hook
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go p.Run(ctx)
+
+	p.Play(player.Request{EventID: "silence", Path: "/s/metronome.wav", Volume: 85, Priority: player.PriorityScheduled})
+	waitStart(t, f)
+
+	// Wait for the request to be let go of before looking: Current() is
+	// cleared in the same cleanup that reports a cut, so an empty list read
+	// too early would pass against anything.
+	deadline := time.After(2 * time.Second)
+	for {
+		if _, playing := p.Current(); !playing {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatal("the request never finished")
+		case <-time.After(5 * time.Millisecond):
+		}
+	}
+	if got := cuts.Cuts(); len(got) != 0 {
+		t.Fatalf("a sound that played to the end was reported as %v, want nothing", got)
+	}
+}
+
+// A wedged card that hits MaxPlayback is already reported as a *_timeout
+// error. It must not also arrive as a truncation: "something more important
+// interrupted this" and "nothing could get this to finish" send an operator
+// to two different places.
+func TestATimeoutIsNotReportedAsCutShort(t *testing.T) {
+	f := newFake() // f.hold is never closed: Play blocks until cancelled
+	p := player.New(f, "default")
+	p.MaxPlayback = 50 * time.Millisecond
+
+	var cuts cutRecorder
+	p.OnTruncated = cuts.hook
+	stages := make(chan string, 4)
+	p.OnError = func(_ player.Request, stage string, _ error) { stages <- stage }
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go p.Run(ctx)
+
+	p.Play(player.Request{EventID: "alert-start", Path: "/s/siren.wav", Volume: 100, Priority: player.PriorityAlert})
+	waitStart(t, f)
+
+	select {
+	case got := <-stages:
+		if got != "play_timeout" {
+			t.Fatalf("stage = %q, want play_timeout", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("the wedged request was never abandoned")
+	}
+	if got := cuts.Cuts(); len(got) != 0 {
+		t.Fatalf("a timeout was reported as cut short (%v); it is a fault, and already has its own error", got)
+	}
+}

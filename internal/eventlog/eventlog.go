@@ -37,6 +37,28 @@ const (
 	// in /log's failure styling — the marked edge, the ✕, the tinted row —
 	// which is what makes it findable in a page of two hundred entries.
 	KindAlertSuppressed = "alert_suppressed"
+	// KindPlaybackTruncated is a sound that started and did not finish
+	// because something more important arrived — an air raid alert cutting
+	// into the minute of silence is the case this exists for — or because
+	// the operator pressed stop.
+	//
+	// It is not KindPlaybackError: nothing failed, the device chose
+	// correctly, and a row that sends someone to check the speaker wiring
+	// over that is a worse answer than no row at all. Nor is it enough to
+	// leave the announcement's own row standing on its own. That row is
+	// written when the sound is queued, before a byte reaches the speaker,
+	// so that a power cut mid-siren still leaves evidence the siren was
+	// sounded — which means it cannot also say how the sound ended. This is
+	// the half that can, and together they let the log distinguish three
+	// outcomes instead of two: played, cut short, failed.
+	//
+	// Recorded with OK=false, like KindAlertSuppressed and for the same
+	// reason: nothing went wrong, but a sound the device meant to make and
+	// did not finish is not a healthy outcome, and false is what puts the
+	// row in /log's failure styling where it can be found in a page of two
+	// hundred entries. The reason travels in Err, which is what keeps that
+	// styling from reading as a fault.
+	KindPlaybackTruncated = "playback_truncated"
 	// KindLogCleared is the one entry a Clear leaves behind. An empty log
 	// cannot tell "this device has never done anything" apart from
 	// "somebody erased the record", and on a device whose log is the only

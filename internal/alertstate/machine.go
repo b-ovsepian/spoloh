@@ -30,6 +30,31 @@ func (t Transition) String() string {
 	}
 }
 
+// EndConfirmations is how many consecutive calm readings an all-clear needs
+// before Apply reports Ended. A start needs one, and always will.
+//
+// The asymmetry is the whole point, and it is not a tuning knob.
+// alertsource.Client returns the first source that answers without an error
+// and never compares sources, so which source a reading came from changes
+// silently the moment the usual one is throttled — on one operator's board
+// all three configured sources returned 429 in the same poll. A fallback that
+// lags, or simply disagrees, then says "no alert" while a raid is running,
+// and one such reading used to be enough to announce over the site's speakers
+// that it was over.
+//
+// Three readings hold an all-clear for about thirty seconds at the default
+// 15s interval and twenty at the 10s floor (config.MinPollInterval), which
+// rides out a fallback one or two polls behind without this package having to
+// know which source answered. Two would ride out a single blink and nothing
+// more; four buys another poll's cover for another quarter-minute of waiting.
+//
+// The two ways of being wrong are not comparable, and that is what fixes the
+// direction to err in: too high means people hear the all-clear half a minute
+// late, too low means the device tells a building the raid is over while it
+// is still on. Only one of those is something this project can survive
+// saying.
+const EndConfirmations = 3
+
 // Machine tracks one oblast. It is driven from the poll loop's single
 // goroutine and is not safe for concurrent Apply calls.
 type Machine struct {
@@ -48,6 +73,14 @@ type Machine struct {
 	// restored is true between Restore and the first Apply, so that the first
 	// observation can be compared against what the previous process knew.
 	restored bool
+
+	// calmRun counts consecutive calm readings seen while the machine still
+	// reports an alert: the pending half of an all-clear that has been seen
+	// upstream and is deliberately not being announced yet. Nonzero is a
+	// state an operator debugging a late all-clear has to be able to see,
+	// which is what CalmRun is for. Any reading that says alert clears it,
+	// and so does PollFailed.
+	calmRun int
 }
 
 func New() *Machine { return &Machine{} }
@@ -98,16 +131,58 @@ func (m *Machine) Apply(st alertsource.RegionState, now time.Time) Transition {
 		return NoChange
 	}
 	if st.Alert == m.alert {
+		// A reading that agrees with what we already report ends any run of
+		// calm readings building towards an all-clear. The run has to be
+		// consecutive, or it confirms nothing: one calm reading now and
+		// another two raids later are not two readings of the same calm.
+		m.calmRun = 0
 		return NoChange
 	}
 
-	m.alert = st.Alert
-	m.since = since
 	if st.Alert {
+		// A siren is announced on the reading that asks for it, always. No
+		// poll of latency, no second opinion: see EndConfirmations for why
+		// only one of the two directions is allowed to wait.
+		m.calmRun = 0
+		m.alert = true
+		m.since = since
 		return Started
 	}
+
+	// Calm, while this machine still reports a raid. Count it and say
+	// nothing until the run is long enough to be believed.
+	m.calmRun++
+	if m.calmRun < EndConfirmations {
+		return NoChange
+	}
+	m.calmRun = 0
+	m.alert = false
+	m.since = since
 	return Ended
 }
+
+// PollFailed tells the machine that a poll produced no usable reading — the
+// whole source cascade failed, or the snapshot did not carry the configured
+// oblast — and discards any run of calm readings building towards an
+// all-clear.
+//
+// The run must be unbroken, not merely N readings that eventually happened. A
+// device that saw one calm reading, went blind for ten minutes, then saw one
+// more has not watched anything calm down: it has two readings with a hole
+// between them, and announcing off that is the same bet as announcing off a
+// single reading, which is the bet this whole mechanism exists to refuse.
+// Being strict costs an all-clear that waits for polling to steady — late,
+// not wrong.
+//
+// Nothing else is touched. A failed poll is not evidence of anything, least
+// of all that a raid ended, so what the machine reports does not move.
+func (m *Machine) PollFailed() { m.calmRun = 0 }
+
+// CalmRun reports how many consecutive calm readings have been seen towards
+// an all-clear that has not been announced yet; zero when nothing is being
+// held back. The dashboard shows it so a late all-clear reads as one being
+// confirmed rather than one that was lost.
+func (m *Machine) CalmRun() int { return m.calmRun }
 
 // Rebaseline discards everything the machine believes, so that the next Apply
 // adopts what it sees silently — exactly as a cold start does.
@@ -123,7 +198,8 @@ func (m *Machine) Apply(st alertsource.RegionState, now time.Time) Transition {
 // The restored flag is cleared with the rest: the "a transition happened
 // while we were down" evidence Restore left behind belongs to the oblast that
 // was configured then, and it must not be used to justify announcing
-// something about a different one.
+// something about a different one. So is any pending run of calm readings,
+// for the same reason — those readings were about the old oblast.
 func (m *Machine) Rebaseline() { *m = Machine{} }
 
 // Region reports the oblast the machine's current state was observed for, or
