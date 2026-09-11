@@ -599,6 +599,172 @@ func TestSoundsPageKeepsAFormThatPostsWithoutJavaScript(t *testing.T) {
 	}
 }
 
+// --- Result notices --------------------------------------------------------
+//
+// «інфа Звук видалено. не прибирається, переробити на попап як і коли
+// додано» — the operator's report that "sound deleted" does not clear and
+// should become a popup like the upload one. Investigating first: a fresh
+// GET /sounds after a delete does NOT carry the confirmation forward (see
+// TestSoundsDeleteMessageDoesNotSurviveANewPageLoad below) — there is no
+// persistence bug. The real gap is that the confirmation had no dismissal
+// story of its own (a success notice sitting on the page forever looks the
+// same as one that "does not go away") and, for upload specifically, the
+// XHR success path showed no confirmation at all before reloading. Upload
+// success, upload failure, delete success and delete failure all land in
+// soundsView.Error/Message and render through the same two blocks in
+// sounds.html, so fixing the one mechanism fixes all four results.
+//
+// What Go cannot exercise: that the success alert's setTimeout actually
+// fades it after ~6s, that the XHR path's own alert appears and then a
+// reload follows after ~1.6s, or any CSS transition — those are the
+// browser's half of this feature, same as the upload progress bar's own
+// disclaimer above. What Go can see, and what is asserted below: that a
+// no-JS request (upload or delete, success or failure) always gets a real
+// .alert component in the response body, that failure always carries
+// data-variant="destructive" and success never does, and that the JSON path
+// (already covered by TestSoundsUploadAnswersJSONWhenAsked and
+// TestSoundsUploadJSONCarriesTheServersOwnRejectionSentence above) is
+// unaffected by any of this — it never touched sounds.html.
+
+// TestSoundsDeleteMessageDoesNotSurviveANewPageLoad is the investigation the
+// coordinator asked for before touching any styling: does "Звук видалено."
+// actually persist, or does it just have no way to be dismissed? A fresh GET
+// /sounds — what a browser does on a reload, or on navigating back to this
+// page — must not carry a message that was only ever set on the one
+// response to the delete POST itself. If this test ever fails, the bug is
+// server-side state leaking between requests, not a missing dismiss button.
+func TestSoundsDeleteMessageDoesNotSurviveANewPageLoad(t *testing.T) {
+	srv, _ := newServerWithLibrary(t, "siren.wav", "all-clear.wav", "metronome.wav", "spare.wav")
+	setPassword(t, srv, "correct horse battery staple")
+	cookie := login(t, srv, "correct horse battery staple")
+
+	rec := eventsPostForm(t, srv, cookie, "/sounds/delete", url.Values{"name": {"spare.wav"}})
+	if !strings.Contains(rec.Body.String(), "Звук видалено.") {
+		t.Fatalf("the delete response itself should show the confirmation; body:\n%s", rec.Body.String())
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/sounds", nil)
+	req.AddCookie(cookie)
+	rec2 := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec2, req)
+	if strings.Contains(rec2.Body.String(), "Звук видалено.") {
+		t.Error("a fresh GET /sounds still shows the delete confirmation: this is a state-leak bug, not a styling one")
+	}
+}
+
+// A no-JS success — upload or delete — must render as the same styled Basecoat
+// alert every other result on this page uses: role="status", no
+// data-variant, so it is visually the "everything is fine" shape rather than
+// a plain line of text.
+//
+// Mutation to prove this test: delete the {{if .Message}}...{{end}} block in
+// sounds.html entirely, leaving only the XHR path's own alert (which starts
+// hidden behind style="display: none" and needs JavaScript to ever show).
+// Go's httptest never runs JavaScript, so this test — which never sets the
+// JSON Accept header — would then see no confirmation at all: exactly what
+// "drop the no-JS success notice" means for an operator whose browser has
+// scripts off.
+func TestSoundsUploadSuccessRendersAStyledAlertWithoutJavaScript(t *testing.T) {
+	srv, _ := newServerWithLibrary(t, "siren.wav")
+	setPassword(t, srv, "correct horse battery staple")
+	cookie := login(t, srv, "correct horse battery staple")
+
+	req := uploadRequest(t, "announcement.wav", conformingWAV())
+	req.AddCookie(cookie)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body:\n%s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, `<div class="alert" role="status" x-data=`) {
+		t.Errorf("the success confirmation is not rendered as the styled .alert component; body:\n%s", body)
+	}
+	if !strings.Contains(body, "announcement.wav") {
+		t.Errorf("the confirmation does not name the uploaded sound; body:\n%s", body)
+	}
+}
+
+// The same styled component, for the same reason, when the delete a
+// no-JS operator performs succeeds — this is the exact notice the operator
+// reported as never going away.
+//
+// Mutation to prove this test: same as above — drop the server-rendered
+// {{if .Message}}...{{end}} block. A no-JS delete would then confirm
+// nothing, which is a worse regression than the one being fixed: at least
+// today's plain-text notice is visible.
+func TestSoundsDeleteSuccessRendersAStyledAlertWithoutJavaScript(t *testing.T) {
+	srv, _ := newServerWithLibrary(t, "siren.wav", "all-clear.wav", "metronome.wav", "spare.wav")
+	setPassword(t, srv, "correct horse battery staple")
+	cookie := login(t, srv, "correct horse battery staple")
+
+	rec := eventsPostForm(t, srv, cookie, "/sounds/delete", url.Values{"name": {"spare.wav"}})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body:\n%s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, `<div class="alert" role="status" x-data=`) {
+		t.Errorf("the delete confirmation is not rendered as the styled .alert component; body:\n%s", body)
+	}
+	if !strings.Contains(body, "Звук видалено.") {
+		t.Errorf("the delete confirmation text is missing; body:\n%s", body)
+	}
+}
+
+// A failure must render with the destructive variant, not the plain success
+// shape — this is what "waits to be dismissed" actually rests on: an
+// operator has to be able to tell, at a glance, that this is the one that
+// does not fade.
+//
+// Mutation to prove this test: remove data-variant="destructive" from the
+// server-rendered Error block in sounds.html, or copy the success block's
+// attributes onto it. Either is "render the failure with the success
+// styling," and this test's check for the destructive variant then fails.
+func TestSoundsUploadFailureRendersDestructiveStyledAlertWithoutJavaScript(t *testing.T) {
+	srv, _ := newServerWithLibrary(t, "siren.wav")
+	setPassword(t, srv, "correct horse battery staple")
+	cookie := login(t, srv, "correct horse battery staple")
+
+	req := uploadRequest(t, "bad.wav", []byte("this is not a wav file"))
+	req.AddCookie(cookie)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body:\n%s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, `<div class="alert" data-variant="destructive" role="alert">`) {
+		t.Errorf("the rejection is not rendered as a destructive-variant .alert; body:\n%s", body)
+	}
+}
+
+// The one delete failure that is not cosmetic: soundUsers exists because
+// deleting a sound an event still points at leaves that event aimed at a
+// file that is gone, which fails at the moment it matters — when the engine
+// tries to play it during an air raid. Whatever styling this task adds must
+// not soften that warning into looking like good news.
+//
+// Mutation to prove this test: same as the upload failure above — drop
+// data-variant="destructive" from the Error block.
+func TestSoundsDeleteRefusalRendersDestructiveStyledAlertWithoutJavaScript(t *testing.T) {
+	srv, store := newServerWithStore(t)
+	setPassword(t, srv, "correct horse battery staple")
+	cookie := login(t, srv, "correct horse battery staple")
+
+	inUse := store.Get().Events[0].Sound
+
+	rec := eventsPostForm(t, srv, cookie, "/sounds/delete", url.Values{"name": {inUse}})
+	body := rec.Body.String()
+	if !strings.Contains(body, `<div class="alert" data-variant="destructive" role="alert">`) {
+		t.Errorf("the in-use refusal is not rendered as a destructive-variant .alert; body:\n%s", body)
+	}
+	if !strings.Contains(body, inUse) {
+		t.Errorf("the refusal does not name the sound; body:\n%s", body)
+	}
+}
+
 // --- Duration --------------------------------------------------------------
 //
 // «на Бібліотека звуків показувати тривалість звуку» — the operator's
@@ -1038,5 +1204,32 @@ func TestStopRefusesAnOffSiteReturn(t *testing.T) {
 		if loc := rec.Header().Get("Location"); !strings.HasPrefix(loc, "/?") {
 			t.Errorf("return %q: Location = %q, want the / fallback", bad, loc)
 		}
+	}
+}
+
+// A preview must not be able to delay an announcement. /play serves both the
+// home page's manual fire and this listen button; the manual fire is
+// deliberately PriorityAlert, so the preview has to say what it is. Asserted
+// on the markup because the priority itself is chosen inside the engine and
+// this is the signal that reaches it.
+func TestSoundsPreviewFormsDeclareThemselvesPreviews(t *testing.T) {
+	srv, _, _ := newServerWithPlayer(t)
+	setPassword(t, srv, "correct horse battery staple")
+	cookie := login(t, srv, "correct horse battery staple")
+
+	req := httptest.NewRequest(http.MethodGet, "/sounds", nil)
+	req.AddCookie(cookie)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+
+	body := rec.Body.String()
+	previews := strings.Count(body, `<input type="hidden" name="preview" value="1">`)
+	listens := strings.Count(body, `>Прослухати</button>`)
+	if listens == 0 {
+		t.Fatal("no listen buttons rendered; this test proves nothing")
+	}
+	if previews != listens {
+		t.Errorf("%d listen buttons but %d preview markers: a listen button without one "+
+			"plays at alert priority and can hold the speaker while a siren waits", listens, previews)
 	}
 }

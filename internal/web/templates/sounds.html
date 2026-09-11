@@ -2,13 +2,27 @@
 {{define "width"}}max-w-5xl{{end}}
 {{define "content"}}
 <div class="grid gap-4">
+  {{/*
+  Upload success, upload failure, delete success, delete failure all land in
+  the same two fields (soundsView.Error/Message) and render through these
+  same two blocks — one mechanism, one placement, for every result this page
+  can show. Only the success block ever fades on its own: an operator who
+  looked away and missed "this file was rejected" would believe a sound is
+  loaded that is not there and find out during an air raid, so a failure
+  waits here until the operator leaves the page, not on a timer. x-init's
+  setTimeout is the enhancement; with no JavaScript, x-show and x-init are
+  inert attributes and the alert simply stays, which is the safe direction
+  to fail in.
+  */}}
   {{if .Error}}
   <div class="alert" data-variant="destructive" role="alert">
     <section><p>{{.Error}}</p></section>
   </div>
   {{end}}
   {{if .Message}}
-  <div class="alert" role="status"><section><p>{{.Message}}</p></section></div>
+  <div class="alert" role="status" x-data="{ shown: true }" x-show="shown" x-init="setTimeout(() => shown = false, 6000)">
+    <section><p>{{.Message}}</p></section>
+  </div>
   {{end}}
 
   {{/*
@@ -50,7 +64,18 @@
         <progress class="w-full" x-show="phase === 'processing'" aria-label="Обробка файлу"></progress>
         <p class="text-sm text-muted-foreground" role="status" x-text="phase === 'sending' ? pct + '%' : 'Обробка…'"></p>
       </div>
-      <p class="text-sm text-destructive" role="alert" x-show="error" style="display: none" x-text="error"></p>
+      {{/*
+      The XHR path used to answer success with nothing but an immediate
+      location.reload() — the operator never saw a confirmation at all, only
+      a page that changed under them — and answered failure with a bare
+      <p>, not the .alert component every other result on this page uses.
+      Both are the same component now, for the same "one mechanism" reason
+      the server-rendered blocks above are: an operator reading this page
+      must not learn that a script-driven result looks different from a
+      no-script one.
+      */}}
+      <div class="alert" role="status" x-show="successMessage" style="display: none"><section><p x-text="successMessage"></p></section></div>
+      <div class="alert" data-variant="destructive" role="alert" x-show="error" style="display: none"><section><p x-text="error"></p></section></div>
     </form>
   </section>
 
@@ -113,6 +138,13 @@
           <form method="post" action="/play">
             <input type="hidden" name="sound" value="{{.Name}}">
             <input type="hidden" name="return" value="/sounds">
+            {{/*
+            Marks this as a preview rather than a manual fire, so it plays
+            below everything real and a live alert takes the speaker from it
+            immediately. See handlePlay; without this a listen button could
+            delay a siren by up to five minutes.
+            */}}
+            <input type="hidden" name="preview" value="1">
             <button class="btn" data-variant="outline" data-size="sm" type="submit">Прослухати</button>
           </form>
           <form method="post" action="/sounds/delete">
@@ -148,6 +180,13 @@
                 <form method="post" action="/play">
                   <input type="hidden" name="sound" value="{{.Name}}">
                   <input type="hidden" name="return" value="/sounds">
+            {{/*
+            Marks this as a preview rather than a manual fire, so it plays
+            below everything real and a live alert takes the speaker from it
+            immediately. See handlePlay; without this a listen button could
+            delay a siren by up to five minutes.
+            */}}
+            <input type="hidden" name="preview" value="1">
                   <button class="btn" data-variant="outline" data-size="sm" type="submit">Прослухати</button>
                 </form>
                 <form method="post" action="/sounds/delete">
@@ -176,6 +215,7 @@ function upload() {
     phase: 'idle',
     pct: 0,
     error: '',
+    successMessage: '',
     get busy() { return this.phase !== 'idle'; },
 
     send(event) {
@@ -186,6 +226,7 @@ function upload() {
       this.phase = 'sending';
       this.pct = 0;
       this.error = '';
+      this.successMessage = '';
 
       xhr.open('POST', form.action);
       // Asks handleSoundsUpload for its one-sentence JSON result instead of
@@ -201,9 +242,20 @@ function upload() {
       xhr.onload = () => {
         let result = null;
         try { result = JSON.parse(xhr.responseText); } catch (e) { /* not JSON: fall through to the generic message */ }
-        // Reload rather than splicing a row in: the new sound has to appear in
-        // the list, and the server already renders that list from the library.
-        if (xhr.status === 200 && result && result.ok) { location.reload(); return; }
+        if (xhr.status === 200 && result && result.ok) {
+          // Reload rather than splicing a row in: the new sound has to appear
+          // in the list, and the server already renders that list from the
+          // library. But not immediately — an instant reload used to erase
+          // the confirmation before anyone could read it, which is the whole
+          // reason someone who had just watched a progress bar reach 100%
+          // came away thinking nothing had happened. The delay is long enough
+          // to read one short sentence, not long enough to make the operator
+          // wait on a list that has already finished loading.
+          this.phase = 'idle';
+          this.successMessage = result.message;
+          setTimeout(() => location.reload(), 1600);
+          return;
+        }
         this.phase = 'idle';
         // The server's own sentence, which is the only thing that knows why
         // this file was refused. Anything that did not answer in JSON — a 403
