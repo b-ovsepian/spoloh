@@ -110,10 +110,16 @@ func TestAnAlertEndWebhookWaitsForTheConfirmedAllClear(t *testing.T) {
 // fired on the start and not on the end would be the worst of the two
 // behaviours, and either half alone would pass.
 func TestQuietHoursSilenceTheSirenAndStillFireTheWebhook(t *testing.T) {
-	h, hooks := newHarnessWithWebhooks(t, clock.System{Loc: time.UTC})
+	// A fixed clock inside the window, not the wall clock and a window
+	// stretched to cover the day: the first version of this test used
+	// 00:00–23:59 against clock.System and passed for seven minutes, until
+	// the suite happened to run during the one minute of the day that
+	// window leaves out.
+	clk := clock.NewFake(time.Date(2026, 9, 7, 3, 0, 0, 0, time.UTC))
+	h, hooks := newHarnessWithWebhooks(t, clk)
 	ctx := context.Background()
 	h.cfg.QuietHours = config.QuietHours{
-		Enabled: true, From: "00:00", To: "23:59",
+		Enabled: true, From: "01:00", To: "05:00",
 		AppliesTo: []string{config.CategoryAlerts, config.CategoryScheduled},
 	}
 
