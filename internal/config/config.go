@@ -106,6 +106,41 @@ type Alerts struct {
 	Region       string   `json:"region"`
 	Sources      []string `json:"sources"`
 	PollInterval Duration `json:"poll_interval"`
+
+	// LocationUID is the published alerts.in.ua location this device
+	// watches, finer than an oblast. Zero — what every device ships with,
+	// and what every config written before this field existed carries —
+	// means the whole oblast named by Region, which is exactly what the
+	// device did when there was nowhere to store a location. No stored file
+	// needs migrating and no device changes what it announces because it
+	// was upgraded.
+	//
+	// Only alerts.in.ua understands anything below oblast level. The six
+	// Ubilling keys answer with a boolean per oblast and nothing else, so a
+	// cascade that falls back to one of them broadens to the oblast holding
+	// this location rather than going quiet — see alertsource.OblastOf.
+	// That announces more than was asked for, never less, and /alerts says
+	// it per source before it can happen.
+	//
+	// Checked against alertsource.KnownLocation where it is chosen
+	// (internal/web/alerts.go), deliberately not in Validate. Validate is
+	// also what every load runs through, and a daemon that refuses to start
+	// because a UID left the published table is a device that announces
+	// nothing at all. An unrecognised UID falls back to the oblast instead.
+	LocationUID int `json:"location_uid,omitempty"`
+
+	// AlertsUAToken is the operator's own alerts.in.ua API token, without
+	// which that source cannot be used at all — it is the credential
+	// alertsource.SelectableSources gates the source on.
+	//
+	// It is a secret, and the three rules that follow from that are each
+	// enforced somewhere that fails loudly rather than left to care:
+	// Redacted() strips it (config_test.go walks Config by reflection for
+	// anything secret-shaped it forgets), no page renders it
+	// (internal/web/leak_test.go walks every route), and no error or log
+	// line carries it (internal/alertsource keeps it out of every wrapped
+	// error; see AlertsUA.Fetch and alertsource.Reason).
+	AlertsUAToken string `json:"alerts_ua_token,omitempty"`
 }
 
 type Audio struct {
@@ -548,6 +583,19 @@ func (c *Config) Validate() error {
 	if c.Alerts.PollInterval.Std() < MinPollInterval {
 		return fmt.Errorf("alerts.poll_interval %v is below the %v minimum", c.Alerts.PollInterval.Std(), MinPollInterval)
 	}
+	// alerts.location_uid and alerts.alerts_ua_token are deliberately not
+	// checked here, for any value, and that must not start — the same ruling
+	// quiet_hours.applies_to and webhooks get below, reached the same way.
+	// Both are operator-choosable, so both are checked where they are
+	// chosen: /alerts refuses a UID that is not in the published table and a
+	// token that could not be an Authorization header, each with the field
+	// named in Ukrainian. Checking them here as well would mean a UID
+	// dropped from a later build's location table, or a token from a device
+	// restored out of a backup, stops the daemon starting — and a device
+	// that will not start announces nothing at all. Neither value can
+	// silence anything on its own: an unrecognised UID broadens to the
+	// oblast, and a token nothing accepts leaves a cascade slot that fails
+	// and is logged as failing.
 	if c.Audio.MasterVolume < 0 || c.Audio.MasterVolume > 100 {
 		return fmt.Errorf("audio.master_volume %d is outside 0..100", c.Audio.MasterVolume)
 	}

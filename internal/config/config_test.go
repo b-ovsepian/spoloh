@@ -3,6 +3,9 @@ package config_test
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
+	"reflect"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -498,5 +501,196 @@ func TestACloneOfAConfigWithNoWebhooksStaysEmpty(t *testing.T) {
 	}
 	if strings.Contains(string(out), "webhooks") {
 		t.Errorf("a device with no webhooks writes a webhooks key: %s", out)
+	}
+}
+
+// A fresh device stores no location and no token: zero means "the whole
+// oblast named by Region", which is what every device did before there was
+// anywhere to put a location. If Default() ever started shipping a UID, every
+// new install would announce for somewhere nobody chose.
+func TestDefaultShipsNoLocationAndNoToken(t *testing.T) {
+	c := config.Default()
+	if c.Alerts.LocationUID != 0 {
+		t.Errorf("Default().Alerts.LocationUID = %d, want 0 — the whole oblast", c.Alerts.LocationUID)
+	}
+	if c.Alerts.AlertsUAToken != "" {
+		t.Error("Default() ships an alerts.in.ua token")
+	}
+	if err := c.Validate(); err != nil {
+		t.Fatalf("Default() must validate: %v", err)
+	}
+}
+
+// A config.json written before these fields existed has neither key, and must
+// load as "the whole oblast, no credential" rather than as anything that
+// stops the daemon. Every device in the field is holding one of these files.
+func TestAConfigWrittenBeforeTheLocationFieldsLoadsUnchanged(t *testing.T) {
+	c := config.Default()
+	out, err := json.Marshal(c)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	// omitempty on both keys is what keeps an unrelated save from writing
+	// "location_uid": 0 and an empty token into every config.json in the
+	// field.
+	for _, key := range []string{"location_uid", "alerts_ua_token"} {
+		if strings.Contains(string(out), key) {
+			t.Errorf("a device with no location written writes a %q key: %s", key, out)
+		}
+	}
+
+	var back config.Config
+	if err := json.Unmarshal(out, &back); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if back.Alerts.LocationUID != 0 || back.Alerts.AlertsUAToken != "" {
+		t.Errorf("Alerts = %+v, want the location and the token unset", back.Alerts)
+	}
+	if err := back.Validate(); err != nil {
+		t.Fatalf("a config with no location must still validate: %v", err)
+	}
+}
+
+// Validate is what every load runs through, so it must not be the thing that
+// stops a daemon starting over a location a later build's table no longer
+// lists, or a token some upstream has since revoked. Neither can silence
+// anything on its own — see the comment in Validate — and a device that
+// refuses to start announces nothing at all.
+func TestValidateAcceptsALocationAndATokenItCannotVouchFor(t *testing.T) {
+	c := config.Default()
+	c.Alerts.LocationUID = 999999 // in no published table, now or ever
+	c.Alerts.AlertsUAToken = "a-token-nothing-will-accept"
+
+	if err := c.Validate(); err != nil {
+		t.Fatalf("Validate refused a repairable alerts config, which would stop the daemon: %v", err)
+	}
+}
+
+// Both new fields survive a Clone. The token is a string, so the struct copy
+// already carries it; this is here so that a future change to a []byte (or to
+// a list of tokens) is caught rather than shipping a clone that shares — or
+// silently drops — a credential.
+func TestCloneCarriesTheLocationAndTheToken(t *testing.T) {
+	original := config.Default()
+	original.Alerts.LocationUID = 1198
+	original.Alerts.AlertsUAToken = "clone-me"
+
+	clone := original.Clone()
+
+	if clone.Alerts.LocationUID != 1198 {
+		t.Errorf("clone LocationUID = %d, want 1198", clone.Alerts.LocationUID)
+	}
+	if clone.Alerts.AlertsUAToken != "clone-me" {
+		t.Errorf("clone AlertsUAToken = %q, want it carried over", clone.Alerts.AlertsUAToken)
+	}
+}
+
+// The token is a credential and Redacted is the only sanctioned way to hand a
+// config to anything that renders or writes it. The rest of Alerts is not a
+// credential and must survive: a redacted config still has to be able to show
+// which oblast and which location this device watches.
+func TestRedactedRemovesTheAlertsUATokenAndKeepsTheRestOfAlerts(t *testing.T) {
+	c := config.Default()
+	c.Alerts.LocationUID = 1198
+	c.Alerts.AlertsUAToken = "token-that-must-not-escape"
+
+	got := c.Redacted()
+
+	if got.Alerts.AlertsUAToken != "" {
+		t.Errorf("AlertsUAToken = %q, want it stripped", got.Alerts.AlertsUAToken)
+	}
+	if got.Alerts.LocationUID != 1198 || got.Alerts.Region != c.Alerts.Region {
+		t.Errorf("Alerts = %+v, want everything but the token preserved", got.Alerts)
+	}
+	if c.Alerts.AlertsUAToken == "" {
+		t.Error("Redacted emptied the caller's own token; the daemon still has to fetch with it")
+	}
+}
+
+// secretish matches a field name that reads like a credential. Deliberately
+// broad: the point is to catch a field nobody thought about, so a false
+// positive (answered by keptOnPurpose below, with a reason) is the cheap
+// direction and a miss is the expensive one.
+var secretish = regexp.MustCompile(`(?i)token|secret|password|passphrase|hash|credential`)
+
+// This is what replaces, for every block that cannot be zeroed whole, the
+// property Redacted gets for free on Auth: add a credential to Config and
+// forget to strip it, and a named test fails rather than a page leaking it.
+//
+// It fills every string in a Config with a marker first, so it cannot pass
+// vacuously against a config that happened to leave the field empty — the
+// trap that made a green suite hide a total failure once already.
+func TestRedactedRemovesEveryFieldThatLooksLikeACredential(t *testing.T) {
+	keptOnPurpose := map[string]bool{
+		// Shown on the network page on purpose: an operator who lost the
+		// installer's output has nowhere else to read it, and it protects
+		// a setup network rather than this device's administration. See
+		// Redacted.
+		"Network.APPassword": true,
+	}
+
+	c := config.Default()
+	fillStrings(reflect.ValueOf(c).Elem())
+	got := c.Redacted()
+
+	var found int
+	walkStrings(t, "", reflect.ValueOf(got).Elem(), func(path, value string) {
+		if !secretish.MatchString(path[strings.LastIndexByte(path, '.')+1:]) {
+			return
+		}
+		found++
+		if keptOnPurpose[path] {
+			return
+		}
+		if value != "" {
+			t.Errorf("Redacted() leaves %s = %q; it reads like a credential and nothing strips it", path, value)
+		}
+	})
+	if found == 0 {
+		t.Fatal("this walk found no secret-shaped field at all, so it proves nothing")
+	}
+}
+
+// fillStrings writes a marker into every string in v, so that a field
+// Redacted forgets is non-empty and therefore visible.
+func fillStrings(v reflect.Value) {
+	switch v.Kind() {
+	case reflect.String:
+		v.SetString("filled-by-the-redaction-walk")
+	case reflect.Struct:
+		for i := range v.NumField() {
+			if v.Type().Field(i).IsExported() {
+				fillStrings(v.Field(i))
+			}
+		}
+	case reflect.Slice:
+		for i := range v.Len() {
+			fillStrings(v.Index(i))
+		}
+	}
+}
+
+// walkStrings calls fn for every string in v, with a dotted path naming it.
+func walkStrings(t *testing.T, path string, v reflect.Value, fn func(path, value string)) {
+	t.Helper()
+	switch v.Kind() {
+	case reflect.String:
+		fn(path, v.String())
+	case reflect.Struct:
+		for i := range v.NumField() {
+			f := v.Type().Field(i)
+			if !f.IsExported() {
+				continue
+			}
+			name := f.Name
+			if path != "" {
+				name = path + "." + name
+			}
+			walkStrings(t, name, v.Field(i), fn)
+		}
+	case reflect.Slice:
+		for i := range v.Len() {
+			walkStrings(t, fmt.Sprintf("%s[%d]", path, i), v.Index(i), fn)
+		}
 	}
 }

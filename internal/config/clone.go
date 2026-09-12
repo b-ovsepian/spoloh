@@ -4,6 +4,12 @@ package config
 // result without reaching into the original — which is what lets a store hand
 // the same configuration to the engine's goroutine and an HTTP handler at the
 // same time without either seeing the other's half-finished edit.
+//
+// Only slices need the work. Everything else — the alerts.in.ua token and the
+// location UID included — is copied by the struct assignment below, because a
+// Go string shares its backing array but can never be written through it. A
+// credential kept as a []byte would not be safe that way, and would belong in
+// the list below; the webhook headers are there for exactly that reason.
 func (c *Config) Clone() *Config {
 	if c == nil {
 		return nil
