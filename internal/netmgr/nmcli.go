@@ -98,7 +98,11 @@ func (m NMCLI) run(ctx context.Context, args ...string) ([]byte, error) {
 // <psk> as its final two elements, or update this function.
 func redactPassword(args []string) (secret string, redacted []string) {
 	redacted = append([]string(nil), args...)
-	if n := len(redacted); n >= 2 && redacted[n-2] == "password" {
+	// Two spellings, because nmcli takes the secret two ways: "password" for
+	// the wifi shorthands, and a fully qualified property for a profile
+	// built by hand. Both are always last, which is what makes anchoring to
+	// the end of argv safe — see this function's doc comment.
+	if n := len(redacted); n >= 2 && (redacted[n-2] == "password" || strings.HasSuffix(redacted[n-2], ".psk")) {
 		secret = redacted[n-1]
 		redacted[n-1] = "***"
 	}
@@ -349,15 +353,58 @@ func splitTerseFields(line string) []string {
 	return fields
 }
 
+// joinConnID is the profile name this daemon gives every network it joins.
+//
+// One name, reused, and never a name NetworkManager or netplan chose. See
+// Connect for why the profile is built rather than found.
+const joinConnID = "spoloh-wifi"
+
 // Connect joins the network ssid using psk. The SSID comes from a scan and
 // the password from an operator; both are passed as separate argv elements
 // to exec.CommandContext, never assembled into a shell string.
+//
+// It builds its own profile instead of asking nmcli to work one out.
+// `nmcli device wifi connect <ssid> password <psk>` reuses any existing
+// profile carrying that SSID, and on a board installed from a netplan image
+// there already is one. On the operator's Raspberry Pi, joining from the
+// device's own access point answered:
+//
+//	802-11-wireless-security.key-mgmt: property is missing.
+//
+// — netplan's profile, reused, with a security section nmcli would not
+// complete. The operator was standing on the setup screen the access point
+// exists to serve, and could not get off it.
+//
+// So: drop our own previous profile, state every property this time, bring
+// it up. Nothing is inferred from what happens to be on the device already,
+// which is the only way a join behaves the same on a board flashed from an
+// image as on one installed by hand.
+//
+// Only ever our own profile is deleted. Removing whatever else claims the
+// SSID would be tidier and is exactly wrong: it is someone else's
+// configuration, it may be how the board is meant to come up after a power
+// cut, and a device that silently rewrites the network setup around it is a
+// device nobody can reason about.
 func (m NMCLI) Connect(ctx context.Context, ssid, psk string) error {
-	args := []string{"device", "wifi", "connect", ssid}
+	// A profile that is not there is the normal case on a first join, and
+	// nmcli says so with a non-zero status. Nothing here can act on the
+	// difference, so the result is dropped rather than guessed at.
+	_, _ = m.run(ctx, "connection", "delete", joinConnID)
+
+	add := []string{"connection", "add", "type", "wifi", "con-name", joinConnID, "ssid", ssid}
 	if psk != "" {
-		args = append(args, "password", psk)
+		// key-mgmt is the property nmcli would not fill in on its own, and
+		// psk goes last so redactPassword keeps it out of every error this
+		// call can produce.
+		add = append(add,
+			"802-11-wireless-security.key-mgmt", "wpa-psk",
+			"802-11-wireless-security.psk", psk,
+		)
 	}
-	_, err := m.run(ctx, args...)
+	if _, err := m.run(ctx, add...); err != nil {
+		return err
+	}
+	_, err := m.run(ctx, "connection", "up", joinConnID)
 	return err
 }
 

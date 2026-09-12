@@ -215,21 +215,26 @@ func TestConnectPassesArgumentsWithoutAShell(t *testing.T) {
 	if err := m.Connect(context.Background(), "Site; rm -rf /", "p4ss w0rd"); err != nil {
 		t.Fatalf("Connect: %v", err)
 	}
-	argv := rec.argv[0]
+	// Every invocation, not the first: a join is three nmcli calls now —
+	// drop our old profile, build one, bring it up — and the SSID and the
+	// password travel in the middle one. Checking only argv[0] would have
+	// passed while reading the delete.
 	var sawSSID, sawPSK bool
-	for _, a := range argv {
-		if a == "Site; rm -rf /" {
-			sawSSID = true
-		}
-		if a == "p4ss w0rd" {
-			sawPSK = true
-		}
-		if strings.Contains(a, "sh -c") || strings.Contains(a, "&&") {
-			t.Fatalf("argument %q looks like a shell invocation", a)
+	for _, argv := range rec.argv {
+		for _, a := range argv {
+			if a == "Site; rm -rf /" {
+				sawSSID = true
+			}
+			if a == "p4ss w0rd" {
+				sawPSK = true
+			}
+			if strings.Contains(a, "sh -c") || strings.Contains(a, "&&") {
+				t.Fatalf("argument %q looks like a shell invocation", a)
+			}
 		}
 	}
 	if !sawSSID || !sawPSK {
-		t.Fatalf("argv %v does not carry the SSID and password as separate arguments", argv)
+		t.Fatalf("argv %v does not carry the SSID and password as separate arguments", rec.argv)
 	}
 }
 
@@ -479,6 +484,73 @@ func TestStartHotspotPassesThePasswordWithoutAShell(t *testing.T) {
 	for i := range want {
 		if got[i] != want[i] {
 			t.Fatalf("argv = %q, want %q", got, want)
+		}
+	}
+}
+
+// The join builds its own profile rather than letting nmcli find one. On the
+// operator's board, `nmcli device wifi connect` reused the netplan profile
+// already carrying that SSID and failed with
+// "802-11-wireless-security.key-mgmt: property is missing" — from the setup
+// screen the access point exists to serve.
+func TestConnectBuildsItsOwnProfileWithEveryPropertyStated(t *testing.T) {
+	rec := &recorder{}
+	m := netmgr.NMCLI{Run: rec.run}
+
+	if err := m.Connect(context.Background(), "OvsepianWLAN", "hunter2hunter2"); err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+
+	var flat []string
+	for _, argv := range rec.argv {
+		flat = append(flat, strings.Join(argv, " "))
+	}
+	joined := strings.Join(flat, " | ")
+
+	if strings.Contains(joined, "device wifi connect") {
+		t.Errorf("the join still asks nmcli to find a profile: %s", joined)
+	}
+	if !strings.Contains(joined, "802-11-wireless-security.key-mgmt wpa-psk") {
+		t.Errorf("key-mgmt is not stated, which is the property nmcli would not fill in: %s", joined)
+	}
+	if !strings.Contains(joined, "con-name spoloh-wifi") {
+		t.Errorf("the join does not use this daemon's own profile name: %s", joined)
+	}
+}
+
+// Only our own profile is ever deleted. Removing whatever else claims the
+// SSID would be tidier and is exactly wrong: it is someone else's
+// configuration and may be how the board comes up after a power cut.
+func TestConnectDeletesOnlyItsOwnProfile(t *testing.T) {
+	rec := &recorder{}
+	m := netmgr.NMCLI{Run: rec.run}
+
+	if err := m.Connect(context.Background(), "OvsepianWLAN", "hunter2hunter2"); err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+	for _, argv := range rec.argv {
+		line := strings.Join(argv, " ")
+		if !strings.Contains(line, "connection delete") {
+			continue
+		}
+		if !strings.Contains(line, "spoloh-wifi") {
+			t.Errorf("the join deletes a profile that is not ours: %s", line)
+		}
+	}
+}
+
+// An open network has no key management to state, and stating wpa-psk for
+// one would refuse a network that is genuinely open.
+func TestConnectToAnOpenNetworkStatesNoSecurity(t *testing.T) {
+	rec := &recorder{}
+	m := netmgr.NMCLI{Run: rec.run}
+
+	if err := m.Connect(context.Background(), "OpenGuest", ""); err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+	for _, argv := range rec.argv {
+		if strings.Contains(strings.Join(argv, " "), "802-11-wireless-security") {
+			t.Errorf("an open network was given security properties: %v", argv)
 		}
 	}
 }
