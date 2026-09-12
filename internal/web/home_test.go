@@ -415,6 +415,17 @@ func homeBody(t *testing.T, srv *web.Server) string {
 // nothing.
 func newServerInAlert(t *testing.T) *web.Server {
 	t.Helper()
+	// LevelUnknown, which is the level of every raid this package rendered
+	// before levels existed and of every raid a Ubilling source reports.
+	return newServerInAlertAtLevel(t, alertsource.LevelUnknown)
+}
+
+// newServerInAlertAtLevel is newServerInAlert with the severity upstream
+// named, restored the same way the rest of the alert is: alertstate.Persisted
+// carries the level precisely so a board that lost power mid-raid comes back
+// announcing the severity it was already announcing.
+func newServerInAlertAtLevel(t *testing.T, level alertsource.Level) *web.Server {
+	t.Helper()
 	store, err := configstore.Open(filepath.Join(t.TempDir(), "config.json"))
 	if err != nil {
 		t.Fatalf("configstore.Open: %v", err)
@@ -425,6 +436,7 @@ func newServerInAlert(t *testing.T) *web.Server {
 		Region: region,
 		Alert:  true,
 		Since:  time.Date(2026, 9, 12, 10, 0, 0, 0, time.UTC),
+		Level:  level,
 	}, region)
 	eng := engine.New(engine.Deps{
 		Config:  store.Get,
@@ -700,6 +712,9 @@ func TestHomeKeepsEveryLiveBinding(t *testing.T) {
 		`x-show="playing"`,
 		`x-show="failing"`,
 		`x-text="region"`,
+		`x-text="levelLabel"`,
+		`x-text="levelNote"`,
+		`x-show="levelNote"`,
 		`x-text="since ? 'з ' + since : ''"`,
 		`x-text="nextEvent"`,
 		`x-text="nextEventAt"`,
@@ -1495,5 +1510,82 @@ func TestHomePutsTheMapUnderTheHeaderWithoutDressingItAsState(t *testing.T) {
 	}
 	if !strings.Contains(card, "alerts.in.ua") {
 		t.Error("the map card does not name its source, so it can be read as the device's own state")
+	}
+}
+
+// alertBanner returns the markup of the alarmed half of the state block
+// alone. Every assertion about the level has to be anchored inside it: the
+// words also travel in the Alpine initial state below the markup, and a
+// whole-page check would be satisfied by that alone while the banner itself
+// said nothing.
+func alertBanner(t *testing.T, body string) string {
+	t.Helper()
+	start := strings.Index(body, `data-state="alert"`)
+	if start < 0 {
+		t.Fatal("the page carries no alarmed banner at all")
+	}
+	start = strings.LastIndex(body[:start], "<div")
+	end := strings.Index(body[start:], "</div>")
+	if start < 0 || end < 0 {
+		t.Fatal("the alarmed banner is not a block of its own")
+	}
+	return body[start : start+end]
+}
+
+// The same raid can be declared yellow or red, and the two are different
+// instructions to the people who hear the siren. ТРИВОГА on its own does not
+// say which, and this page is what an operator checks before deciding what
+// to do.
+func TestHomeNamesTheLevelOnTheAlertBanner(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		level   alertsource.Level
+		want    string
+		wantNot string
+	}{
+		{"red", alertsource.LevelRed, "ЧЕРВОНИЙ", "ЖОВТИЙ"},
+		{"yellow", alertsource.LevelYellow, "ЖОВТИЙ", "ЧЕРВОНИЙ"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			banner := alertBanner(t, homeBody(t, newServerInAlertAtLevel(t, tc.level)))
+			if !strings.Contains(banner, tc.want) {
+				t.Errorf("the banner of a raid declared %s does not say so; banner:\n%s", tc.name, banner)
+			}
+			if strings.Contains(banner, tc.wantNot) {
+				t.Errorf("the banner of a raid declared %s names the other level; banner:\n%s", tc.name, banner)
+			}
+		})
+	}
+}
+
+// An unknown level is not a mild one. Every Ubilling source reports unknown —
+// those providers have no level concept at all — and this device announces
+// such a raid as red, so a banner that showed it as the lesser warning would
+// contradict the siren the operator just heard. It reads as red, with a line
+// saying plainly that nobody named the level.
+func TestHomeShowsAnUnnamedLevelAsRed(t *testing.T) {
+	banner := alertBanner(t, homeBody(t, newServerInAlertAtLevel(t, alertsource.LevelUnknown)))
+
+	if !strings.Contains(banner, "ЧЕРВОНИЙ") {
+		t.Errorf("a raid upstream named no level for does not read as red; banner:\n%s", banner)
+	}
+	if strings.Contains(banner, "ЖОВТИЙ") {
+		t.Errorf("a raid upstream named no level for reads as the lesser warning; banner:\n%s", banner)
+	}
+	if !strings.Contains(banner, "джерело не вказує рівень") {
+		t.Errorf("the banner does not say that upstream named no level at all; banner:\n%s", banner)
+	}
+}
+
+// A calm device claims nothing about severity. The banner is hidden anyway,
+// but a hidden block carrying a level is one an Alpine binding can reveal
+// with the wrong words already in it.
+func TestHomeNamesNoLevelOnACalmDevice(t *testing.T) {
+	banner := alertBanner(t, homeBody(t, newServer(t)))
+
+	for _, word := range []string{"ЧЕРВОНИЙ", "ЖОВТИЙ"} {
+		if strings.Contains(banner, word) {
+			t.Errorf("a calm device's banner already names a level; banner:\n%s", banner)
+		}
 	}
 }

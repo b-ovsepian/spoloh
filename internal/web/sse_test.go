@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/b-ovsepian/spoloh/internal/alertsource"
 	"github.com/b-ovsepian/spoloh/internal/web"
 )
 
@@ -166,5 +167,33 @@ func TestEventsStreamCarriesAHeldBackAllClear(t *testing.T) {
 	}
 	if !strings.Contains(body, `"all_clear_needed":3`) {
 		t.Errorf("the frame does not carry how many confirmations it takes; body was %q", body)
+	}
+}
+
+// The level is in the frame rather than rendered once, and this is what says
+// so. An escalation is a raid changing severity under somebody who is
+// already looking at the screen — that is the whole reason the transition is
+// announced — and a level frozen at page-load would still be saying yellow
+// while the siren says otherwise.
+//
+// The request's context is cancelled before the handler runs, which is
+// deterministic and needs no clock: handleEvents writes the current frame
+// before it ever waits, so the one frame this test reads is always there and
+// the loop then exits on the first select.
+func TestEventsStreamCarriesTheAlertLevel(t *testing.T) {
+	srv := newServerInAlertAtLevel(t, alertsource.LevelYellow)
+	setPassword(t, srv, "correct horse battery staple")
+	cookie := login(t, srv, "correct horse battery staple")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	req := httptest.NewRequest(http.MethodGet, "/stream", nil).WithContext(ctx)
+	req.AddCookie(cookie)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+
+	body := rec.Body.String()
+	if !strings.Contains(body, `"level_label":"ЖОВТИЙ РІВЕНЬ"`) {
+		t.Fatalf("the frame does not carry how severe the running raid is; body was %q", body)
 	}
 }

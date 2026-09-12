@@ -87,6 +87,32 @@ already widened.
         <path d="M12 9v5"/><path d="M12 17.5h.01"/>
       </svg>
       <p class="text-5xl font-black tracking-wide">ТРИВОГА</p>
+      {{/*
+      How bad it is, under the word that says there is something. The same
+      raid can be declared yellow or red, and the two ask different things of
+      the people who hear the siren — so the banner that is already the
+      loudest thing on this page is where the answer belongs, not a card
+      further down.
+
+      Both lines are bound to the stream. A level rendered once would freeze
+      at whatever it was when the page loaded, which is worst during exactly
+      the minute it changes: an escalation is read off this screen by
+      somebody who is already standing in front of it.
+
+      The words come from the server — see handlers.go's alertLevel — and
+      never a level string this page branches on itself. "Is this red" is
+      Level.TreatAsRed's answer, and a second implementation of it here is
+      where an unknown level, which every Ubilling source reports, would come
+      out as the lesser warning.
+
+      No colour of its own: the banner is already solid red for every raid,
+      and the difference between the two levels is carried by the word. The
+      note under it is the qualifier an unknown level gets — it is hidden by
+      the server for a level upstream actually named, the same
+      rendered-and-hidden shape everything else on this page uses.
+      */}}
+      <p class="text-2xl font-bold tracking-wide" x-text="levelLabel">{{.Level.Label}}</p>
+      <p class="text-center text-sm" x-show="levelNote"{{if not .Level.Note}} style="display:none"{{end}} x-text="levelNote">{{.Level.Note}}</p>
     </div>
     <div data-state="calm" x-show="!alert"{{if .Status.Alert}} style="display:none"{{end}}
          class="flex flex-col items-center gap-3 rounded-xl border-4 border-border bg-card px-4 py-10 text-foreground">
@@ -539,6 +565,10 @@ function status() {
     alert: {{.Status.Alert}}, region: {{.Status.Region}}, since: {{.SinceText}},
     lastSuccess: {{.LastSuccessText}}, lastError: {{.Status.LastError}}, source: {{.Status.SourceName}},
     failing: {{.Status.Failing}}, clockSynced: {{.Status.ClockSynced}},
+    // How severe the raid is, in the words the server chose. Nothing here
+    // decides whether a level counts as red — see sse.go's LevelLabel for
+    // why that branch may live in exactly one place, and it is not this one.
+    levelLabel: {{.Level.Label}}, levelNote: {{.Level.Note}},
     // How far along a held-back all-clear is, and how far it has to get.
     // Needed is carried rather than written in here because the count is
     // alertstate.EndConfirmations and a page cannot read a Go constant.
@@ -580,6 +610,7 @@ function status() {
         this.alert = d.alert; this.region = d.region; this.since = d.since;
         this.lastSuccess = d.last_success; this.lastError = d.last_error; this.source = d.source;
         this.failing = d.failing; this.clockSynced = d.clock_synced;
+        this.levelLabel = d.level_label; this.levelNote = d.level_note;
         this.allClearSeen = d.all_clear_seen; this.allClearNeeded = d.all_clear_needed;
         this.nextEvent = d.next_event; this.nextEventAt = d.next_event_at;
         this.playing = d.playing;

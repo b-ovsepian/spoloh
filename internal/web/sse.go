@@ -89,6 +89,20 @@ type statusFrame struct {
 	LastError   string `json:"last_error"`
 	Source      string `json:"source"`
 	Failing     bool   `json:"failing"`
+	// LevelLabel and LevelNote are the banner's severity line, already in
+	// words — see handlers.go's alertLevel, which is the only place the
+	// level is ever branched on. The page does not receive the raw level
+	// and must not: "is this red" is Level.TreatAsRed's answer, and a
+	// second implementation of it in JavaScript is exactly where a raid
+	// upstream never named a level for would come out as the lesser
+	// warning.
+	//
+	// In the frame rather than rendered once, for the reason the all-clear
+	// counter below is: an escalation is a raid changing severity under
+	// somebody who is already looking at the screen, and a level frozen at
+	// page-load would still be saying yellow while the siren says otherwise.
+	LevelLabel string `json:"level_label"`
+	LevelNote  string `json:"level_note"`
 	// AllClearSeen and AllClearNeeded carry an all-clear upstream has
 	// reported and this device is not announcing yet — see
 	// engine.Status's own comment for why the screen has to say so.
@@ -145,6 +159,7 @@ func (s *Server) currentFrame() ([]byte, error) {
 	// uses — so the stream and the page it keeps fresh never disagree about
 	// what the daemon has no engine for yet.
 	st := s.status(loc)
+	level := alertLevel(st)
 
 	f := statusFrame{
 		Region:    st.Region,
@@ -152,6 +167,9 @@ func (s *Server) currentFrame() ([]byte, error) {
 		LastError: st.LastError,
 		Source:    st.SourceName,
 		Failing:   st.Failing,
+
+		LevelLabel: level.Label,
+		LevelNote:  level.Note,
 
 		AllClearSeen:   st.AllClearSeen,
 		AllClearNeeded: st.AllClearNeeded,

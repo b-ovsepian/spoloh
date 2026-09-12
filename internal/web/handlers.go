@@ -29,7 +29,12 @@ type homeView struct {
 	// when nothing publishes one or the device holds no address for it to
 	// resolve to — see MDNSName and reachableMDNSName. It sits beside
 	// Addresses because it answers the same question and fails the same way.
-	MDNS            string
+	MDNS string
+	// Level is how severe the running alert is, in the words the banner
+	// shows. It is also carried in every SSE frame — see sse.go — because a
+	// level rendered once would freeze at whatever it was when the page
+	// loaded, which is worst during exactly the minute it changes.
+	Level           alertLevelView
 	SinceText       string
 	LastSuccessText string
 	NextEventAtText string
@@ -107,6 +112,66 @@ type homeView struct {
 	// nothing at all, and the card then says so instead of rendering a
 	// button that can only fail.
 	TestSound string
+}
+
+// alertLevelView is the line under ТРИВОГА that says how bad the raid is.
+// Both halves are built in Go rather than in the page, so the one branch
+// that must not be got wrong is written once — see alertLevel.
+type alertLevelView struct {
+	// Label is the level in words, empty on a calm device. Never a colour
+	// on its own: this screen is read behind glass and from across a
+	// corridor, and the banner is already solid red for every raid.
+	Label string
+	// Note is the qualifier an unknown level needs and the two named levels
+	// do not, empty for them.
+	Note string
+}
+
+// The three things the banner can say about severity. A raid declared
+// yellow and a raid declared red are different instructions to the people
+// who hear the siren; an unknown level is neither a third instruction nor a
+// milder one.
+const (
+	levelRedLabel    = "ЧЕРВОНИЙ РІВЕНЬ"
+	levelYellowLabel = "ЖОВТИЙ РІВЕНЬ"
+	// levelUnknownNote is what is added under the red label when upstream
+	// named no level at all — which is every Ubilling key, so it is the
+	// normal reading on most devices rather than an exception.
+	//
+	// The label stays the red one. Saying «рівень невідомий» in the badge
+	// itself would read, from the other side of a corridor, as something
+	// less than red, and this device announces an unknown level as red: a
+	// page that implied otherwise would contradict the siren the operator
+	// just heard. The note is what keeps that honest — it says plainly that
+	// nobody named the level and that the device is treating it as the
+	// worse of the two.
+	levelUnknownNote = "джерело не вказує рівень — пристрій оголошує тривогу як червону"
+)
+
+// alertLevel turns the engine's level into what the banner shows.
+//
+// It branches on alertsource.Level.TreatAsRed and never on the literal
+// "red". Unknown is the empty value and is handled as red everywhere in this
+// repository — every Ubilling source reports it, because those providers
+// have no level concept at all — so a test for "red" here would render every
+// Ubilling-sourced raid as the lesser warning. That is the silent downgrade
+// the whole level design exists to prevent, and this is the one line of the
+// dashboard where it could be reintroduced.
+//
+// A calm device says nothing about severity: Status.Level is unknown when
+// nothing is running, and a banner that is hidden anyway must not be carrying
+// a claim about a raid that is not happening.
+func alertLevel(st engine.Status) alertLevelView {
+	switch {
+	case !st.Alert:
+		return alertLevelView{}
+	case !st.Level.TreatAsRed():
+		return alertLevelView{Label: levelYellowLabel}
+	case st.Level == alertsource.LevelUnknown:
+		return alertLevelView{Label: levelRedLabel, Note: levelUnknownNote}
+	default:
+		return alertLevelView{Label: levelRedLabel}
+	}
 }
 
 // alertStartDisabled reports whether the configured alert-start event will
@@ -374,6 +439,7 @@ func (s *Server) handleHome(w http.ResponseWriter, r *http.Request) {
 		Status:                     st,
 		Addresses:                  addrs,
 		MDNS:                       reachableMDNSName(MDNSName(), addrs),
+		Level:                      alertLevel(st),
 		AlertsDisabled:             alertStartDisabled(s.deps.Config.Get()),
 		AlertsSilencedByQuietHours: s.deps.Config.Get().QuietHours.SilencesAlerts(),
 		QuietFrom:                  s.deps.Config.Get().QuietHours.From,
