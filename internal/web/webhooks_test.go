@@ -7,12 +7,14 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/b-ovsepian/spoloh/internal/config"
 	"github.com/b-ovsepian/spoloh/internal/configstore"
 	"github.com/b-ovsepian/spoloh/internal/web"
+	"github.com/b-ovsepian/spoloh/internal/webhook"
 )
 
 // headerSecret is the operator's own example credential: an Authorization
@@ -334,5 +336,80 @@ func TestNoPageOutsideTheWebhookScreenRendersAHeaderValue(t *testing.T) {
 		}
 		check(t, http.MethodGet, path)
 		check(t, http.MethodPost, path)
+	}
+}
+
+// A relay driven from this screen has to be able to hear that the threat
+// grew. The escalation fires its own trigger and never the start's — a start
+// webhook has already closed whatever it closes by the time a raid is
+// declared red — so the name must be on this screen's picker, and what the
+// form stores must be the name the dispatcher matches on.
+//
+// This drives the real internal/webhook dispatcher over the configuration
+// this screen wrote, rather than asserting on the stored string alone:
+// "stored under the right name" and "fired for the right transition" are
+// two claims, and it is the second one an operator's hardware depends on.
+// The endpoint is an httptest server on loopback, which is not the internet.
+func TestAnEscalationWebhookFiresOnItsOwnTriggerAndNoOther(t *testing.T) {
+	srv, store, cookie := newWebhookServer(t)
+
+	var mu sync.Mutex
+	var hits int
+	endpoint := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		mu.Lock()
+		hits++
+		mu.Unlock()
+	}))
+	defer endpoint.Close()
+
+	form := webhookForm()
+	form.Set("trigger", config.TriggerAlertEscalated)
+	form.Set("url", endpoint.URL+"/Sendkey?key=8")
+	if rec := submit(t, srv, cookie, "/webhooks/add", form); rec.Code != http.StatusOK {
+		t.Fatalf("adding the escalation webhook: status = %d, want 200; body:\n%s", rec.Code, rec.Body.String())
+	}
+	stored := store.Get().Webhooks
+	if len(stored) != 1 || stored[0].Trigger != config.TriggerAlertEscalated {
+		t.Fatalf("the stored webhooks are %+v, want exactly one on the escalation trigger", stored)
+	}
+
+	d := webhook.New(store.Get, nil, nil)
+	d.Timeout = 2 * time.Second
+
+	for _, trigger := range []string{config.TriggerAlertStart, config.TriggerAlertEnd, config.TriggerScheduled} {
+		d.Dispatch(trigger)
+	}
+	d.Wait()
+	mu.Lock()
+	strays := hits
+	mu.Unlock()
+	if strays != 0 {
+		t.Fatalf("the escalation webhook fired %d times on triggers that are not its own", strays)
+	}
+
+	d.Dispatch(config.TriggerAlertEscalated)
+	d.Wait()
+	mu.Lock()
+	defer mu.Unlock()
+	if hits != 1 {
+		t.Fatalf("the endpoint was reached %d times when the raid was declared red, want 1", hits)
+	}
+}
+
+// The picker has to offer the escalation at all, and offer it in the order
+// the transitions happen — a list an operator reads top to bottom while
+// deciding which of them their relay cares about.
+func TestTheWebhookTriggerPickerOffersTheEscalation(t *testing.T) {
+	srv, _, cookie := newWebhookServer(t)
+	body := webhookPage(t, srv, cookie, "/webhooks")
+
+	if !strings.Contains(body, `value="`+config.TriggerAlertEscalated+`"`) {
+		t.Fatal("the trigger picker does not offer the escalation at all")
+	}
+	start := strings.Index(body, `value="`+config.TriggerAlertStart+`"`)
+	escalated := strings.Index(body, `value="`+config.TriggerAlertEscalated+`"`)
+	end := strings.Index(body, `value="`+config.TriggerAlertEnd+`"`)
+	if !(start < escalated && escalated < end) {
+		t.Errorf("the picker lists start at %d, escalation at %d and end at %d: they are not in the order the transitions happen", start, escalated, end)
 	}
 }

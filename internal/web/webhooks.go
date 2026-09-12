@@ -155,10 +155,23 @@ type webhookTriggerOption struct {
 	Selected bool
 }
 
-// webhookTriggers is the picker, in the order the three things happen.
+// webhookTriggers is the picker, in the order the things happen: a raid
+// begins, it is declared red, it ends — and, apart from all three, the
+// clock.
+//
+// The escalation fires its own webhook and never the start's, whether or not
+// an event names it: see Engine.announceEscalation. A relay driven from this
+// screen therefore hears about a rise in severity only if the operator adds
+// a row for it, which is why the name has to be on this list at all.
 func webhookTriggers(selected string) []webhookTriggerOption {
-	out := make([]webhookTriggerOption, 0, 3)
-	for _, t := range []string{config.TriggerAlertStart, config.TriggerAlertEnd, config.TriggerScheduled} {
+	triggers := []string{
+		config.TriggerAlertStart,
+		config.TriggerAlertEscalated,
+		config.TriggerAlertEnd,
+		config.TriggerScheduled,
+	}
+	out := make([]webhookTriggerOption, 0, len(triggers))
+	for _, t := range triggers {
 		out = append(out, webhookTriggerOption{Value: t, Label: triggerLabel(t), Selected: t == selected})
 	}
 	return out
