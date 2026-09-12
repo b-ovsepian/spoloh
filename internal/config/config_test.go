@@ -630,12 +630,27 @@ func TestRedactedRemovesEveryFieldThatLooksLikeACredential(t *testing.T) {
 	}
 
 	c := config.Default()
+	// A webhook, before the walk fills anything. Default() ships an empty
+	// slice, so without this the walk steps over Webhooks entirely and every
+	// field inside it — including the header value, which is where an
+	// Authorization credential lives — is never examined at all. The test
+	// passed for exactly that reason while Redacted() left header values
+	// untouched.
+	c.Webhooks = []config.Webhook{{
+		Headers: []config.WebhookHeader{{}, {}},
+	}}
 	fillStrings(reflect.ValueOf(c).Elem())
 	got := c.Redacted()
 
+	// A header value is a credential whatever it is called, and it is called
+	// "Value". Name-shaped detection cannot reach it, so it is named here —
+	// the one place where what operators put in a field outranks what the
+	// field is called.
+	alsoSecret := regexp.MustCompile(`^Webhooks\[\d+\]\.Headers\[\d+\]\.`)
+
 	var found int
 	walkStrings(t, "", reflect.ValueOf(got).Elem(), func(path, value string) {
-		if !secretish.MatchString(path[strings.LastIndexByte(path, '.')+1:]) {
+		if !secretish.MatchString(path[strings.LastIndexByte(path, '.')+1:]) && !alsoSecret.MatchString(path) {
 			return
 		}
 		found++

@@ -21,6 +21,18 @@ package config
 // function leaves behind. Add the next credential anywhere and forget this
 // line, and it is a red suite rather than a leak.
 //
+// Webhook header values are removed, and they are the reason name-shaped
+// detection is not enough on its own. The field is called Value, which looks
+// like nothing, and it routinely holds an Authorization header — the
+// operator's example for this feature was a Basic credential against a box
+// on their own network. Nothing about the name says so; only what operators
+// put there does.
+//
+// The name is emptied with it. "Authorization" alone leaks nothing, but a
+// header whose value is gone and whose name survives reads, on the screen
+// this exists to feed, as a header that was configured with no value — and
+// somebody will helpfully fill it in.
+//
 // Nothing else is removed. The access point password looks like a secret and
 // is deliberately kept: the network page shows it because an operator who
 // lost the installer's output has nowhere else to read it, and it protects a
@@ -29,5 +41,10 @@ func (c *Config) Redacted() *Config {
 	out := c.Clone()
 	out.Auth = Auth{}
 	out.Alerts.AlertsUAToken = ""
+	for i := range out.Webhooks {
+		for j := range out.Webhooks[i].Headers {
+			out.Webhooks[i].Headers[j] = WebhookHeader{}
+		}
+	}
 	return out
 }
