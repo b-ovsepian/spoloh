@@ -22,14 +22,46 @@ curl -fsSL https://github.com/b-ovsepian/spoloh/releases/latest/download/install
 
 This needs a published release: the script and every file it installs are
 release assets, so until the first `v*` tag is pushed the command has nothing
-to fetch and will fail with a 404.
+to fetch and will fail with a 404. Installing before then, or from a fork, is
+described below.
 
 The installer downloads the release for your board, verifies it, installs the
 service, and prints the Wi-Fi access point password. **Write that password
 down** — if the device ever cannot reach a network it raises an access point
-called `Spoloh-Setup`, and that password is the only way back in.
+called `Spoloh-Setup`, and that password is the only way back in. It is kept
+in `/etc/spoloh/config.json` too, but that file is `0600` and owned by
+`spoloh`, so reading it back takes a shell on the board — which is exactly
+what you do not have on the day you need the password.
 
-Then open `http://spoloh.local/` and set an administrator password.
+Then open `http://spoloh.local/` and set an administrator password. That, and
+`sudo usermod -aG spoloh $USER` if you want the command line, are the only
+things an operator has to do by hand; both are once, not once per update.
+
+### Installing without a release
+
+Before the first tag, and for a fork or a change you have not pushed, stage a
+release of your own and point the installer at it. The download root is
+overridable, so this runs the real script over real checksums and installs
+the real units — only the host is a directory instead of GitHub:
+
+```sh
+git clone https://github.com/b-ovsepian/spoloh && cd spoloh
+make dist        # armv6, armv7, arm64, every deploy file, and SHA256SUMS
+
+sudo mkdir -p /srv/spoloh-release/latest/download
+sudo cp dist/* /srv/spoloh-release/latest/download/
+sudo SPOLOH_BASE_URL=file:///srv/spoloh-release sh deploy/install.sh
+```
+
+`latest/download` is not decoration: it is the path the installer builds when
+no `SPOLOH_VERSION` is given, mirroring where GitHub's `/releases/latest`
+redirect lands. `make dist` cross-compiles all three boards and needs Go 1.25
+and nothing else, so it can run on the board or on a laptop with `dist/`
+copied across.
+
+A device installed this way is stamped with whatever `git describe` said, so
+`spoloh update` will offer it the first real release as soon as one is
+published. Cutting that release is [docs/RELEASING.md](docs/RELEASING.md).
 
 ## Updating
 

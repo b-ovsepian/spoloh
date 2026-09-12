@@ -36,6 +36,28 @@ dist:
 	cp deploy/install.sh deploy/spoloh.service deploy/spoloh.sysusers deploy/spoloh.tmpfiles deploy/50-spoloh-networkmanager.rules deploy/spoloh-timesync.service deploy/50-spoloh-timedate.rules dist/
 	cd dist && sha256sum spoloh-linux-* install.sh spoloh.service spoloh.sysusers spoloh.tmpfiles 50-spoloh-networkmanager.rules spoloh-timesync.service 50-spoloh-timedate.rules > SHA256SUMS
 
+# `make release` is `make dist` plus the one thing a build cannot discover for
+# itself: whether this commit is the tag being released. VERSION comes from
+# `git describe`, which answers v0.1.0-3-gdeadbee or v0.1.0-dirty as readily
+# as v0.1.0, and whatever it says is linked into all three binaries and
+# reported by `spoloh version` on every board that installs them. `spoloh
+# update` compares that string against the release tag literally, so a board
+# stamped v0.1.0-3-gdeadbee answers `spoloh version` with something that names
+# no release at all: whoever is standing in front of it, or reading its
+# journal from somewhere else, has no way to say what is on it.
+#
+# Untracked files are deliberately not a failure. `git describe --dirty`
+# ignores them too, and nothing untracked is in the build.
+.PHONY: release
+release:
+	@tag=$$(git describe --exact-match --tags HEAD 2>/dev/null) || { \
+	  echo "HEAD is not at a tag; this build would be stamped $(VERSION). Tag first - see docs/RELEASING.md" >&2; exit 1; }; \
+	[ "$(VERSION)" = "$$tag" ] || { \
+	  echo "tracked files are modified: this build would be stamped $(VERSION), not $$tag. Commit or stash first" >&2; exit 1; }
+	$(MAKE) dist
+	@echo
+	@echo "dist/ is the release. Upload every file in it - the script and the checksums are assets too."
+
 clean:
 	rm -rf dist spoloh
 
