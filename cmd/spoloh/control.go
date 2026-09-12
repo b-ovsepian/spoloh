@@ -42,6 +42,7 @@ func (d controlDevice) Status() control.Status {
 		Region:      cfg.Alerts.Region,
 		Source:      st.SourceName,
 		LastUpdate:  st.LastSuccess,
+		PollPaused:  st.PollPaused,
 		SourceError: st.LastError,
 		ClockSynced: st.ClockSynced,
 		Output:      cfg.Audio.Device,

@@ -160,6 +160,7 @@ func TestEachCommandPrintsItsOwnShape(t *testing.T) {
 				"region: Львівська область\n" +
 				"source: default\n" +
 				"last_update: 2026-09-12T14:05:00+03:00\n" +
+				"poll_paused: no\n" +
 				"source_error: -\n" +
 				"clock_synced: yes\n" +
 				"output: plughw:1,0\n" +
@@ -230,6 +231,7 @@ func TestStatusPrintsEveryFieldOnAQuietDevice(t *testing.T) {
 		"region: Київська область\n" +
 		"source: -\n" +
 		"last_update: -\n" +
+		"poll_paused: no\n" +
 		"source_error: -\n" +
 		"clock_synced: no\n" +
 		"output: -\n" +

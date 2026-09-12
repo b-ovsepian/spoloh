@@ -140,6 +140,7 @@ func printStatus(out io.Writer, s *Status) {
 	fmt.Fprintf(out, "region: %s\n", dash(s.Region))
 	fmt.Fprintf(out, "source: %s\n", dash(s.Source))
 	fmt.Fprintf(out, "last_update: %s\n", stamp(s.LastUpdate))
+	fmt.Fprintf(out, "poll_paused: %s\n", yesno(s.PollPaused))
 	fmt.Fprintf(out, "source_error: %s\n", dash(s.SourceError))
 	fmt.Fprintf(out, "clock_synced: %s\n", yesno(s.ClockSynced))
 	fmt.Fprintf(out, "output: %s\n", dash(s.Output))

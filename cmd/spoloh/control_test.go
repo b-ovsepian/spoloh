@@ -11,12 +11,14 @@ import (
 	"testing"
 	"time"
 
+	"github.com/b-ovsepian/spoloh/internal/alertstate"
 	"github.com/b-ovsepian/spoloh/internal/clock"
 	"github.com/b-ovsepian/spoloh/internal/config"
 	"github.com/b-ovsepian/spoloh/internal/control"
 	"github.com/b-ovsepian/spoloh/internal/engine"
 	"github.com/b-ovsepian/spoloh/internal/eventlog"
 	"github.com/b-ovsepian/spoloh/internal/library"
+	"github.com/b-ovsepian/spoloh/internal/netmgr"
 	"github.com/b-ovsepian/spoloh/internal/player"
 )
 
@@ -265,3 +267,44 @@ func (d *recordingDevice) Play(string) error                { return errors.New(
 func (d *recordingDevice) Stop()                            {}
 func (d *recordingDevice) Log(int) ([]control.Entry, error) { return nil, nil }
 func (d *recordingDevice) Version() control.Version         { return control.Version{} }
+
+// `spoloh status` is what somebody with a shell on the board reads when the
+// dashboard is not in front of them, and last_update is the line they read
+// first. Forty minutes old means one thing on a device that cannot reach its
+// sources and something else entirely on one that has stopped trying on
+// purpose; without poll_paused beside it the two are the same line, and one
+// of them is a fault.
+//
+// The mapping is what this pins, not the printing. internal/control's own
+// tests hand the printer a Status they built by hand, so a field that stops
+// being filled in here would still print — as "no", on a device that is
+// paused.
+func TestControlStatusCarriesThePausedPoll(t *testing.T) {
+	cfg := config.Default()
+	feed := &netmgr.StatusFeed{}
+	clk := clock.NewFake(time.Date(2026, 9, 12, 14, 0, 0, 0, time.UTC))
+	eng := engine.New(engine.Deps{
+		Config:  func() *config.Config { return cfg },
+		Machine: alertstate.New(),
+		// Never Run: engine.Status only asks the player what is on the
+		// speaker, which on one that was never started is nothing.
+		Player:  player.New(nil, "plughw:1,0"),
+		Network: feed,
+		Clock:   clk,
+		Logger:  discardLogger(),
+	})
+	dev := controlDevice{engine: eng, cfg: func() *config.Config { return cfg }}
+
+	if dev.Status().PollPaused {
+		t.Error("a device nobody has reported a network for says its poll is paused")
+	}
+
+	// The reading a supervisor takes on a device that lost its network,
+	// waited out the grace period and raised its own access point.
+	feed.Publish(netmgr.Status{HotspotUp: true}, clk.Now())
+	eng.Tick(context.Background())
+
+	if !dev.Status().PollPaused {
+		t.Error("the engine stopped polling and `spoloh status` does not say so")
+	}
+}

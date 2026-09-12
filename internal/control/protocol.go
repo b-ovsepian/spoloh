@@ -77,14 +77,22 @@ type Response struct {
 // a client formatting with RFC3339 prints the site's local time without
 // having to know the configured zone.
 type Status struct {
-	Alert       bool      `json:"alert"`
-	Since       time.Time `json:"since"`
-	Region      string    `json:"region"`
-	Source      string    `json:"source"`
-	LastUpdate  time.Time `json:"last_update"`
-	SourceError string    `json:"source_error,omitempty"`
-	ClockSynced bool      `json:"clock_synced"`
-	Output      string    `json:"output"`
+	Alert      bool      `json:"alert"`
+	Since      time.Time `json:"since"`
+	Region     string    `json:"region"`
+	Source     string    `json:"source"`
+	LastUpdate time.Time `json:"last_update"`
+	// PollPaused is true while the device is serving its own access point
+	// with no upstream and has therefore stopped asking about raids. It sits
+	// beside LastUpdate because it is what makes that line readable: a last
+	// update forty minutes old means one thing on a device that cannot reach
+	// its sources and something else entirely on a device that has decided
+	// not to try. Without it the two are the same line, and one of them is a
+	// fault.
+	PollPaused  bool   `json:"poll_paused"`
+	SourceError string `json:"source_error,omitempty"`
+	ClockSynced bool   `json:"clock_synced"`
+	Output      string `json:"output"`
 	// Playing is the sound on the speaker right now, bare name, empty when
 	// the device is quiet.
 	Playing string `json:"playing,omitempty"`
