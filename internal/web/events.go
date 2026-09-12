@@ -62,6 +62,10 @@ func triggerLabel(trigger string) string {
 		return "Посилення тривоги"
 	case config.TriggerScheduled:
 		return "За розкладом"
+	case config.TriggerAnySound:
+		// Only ever reached from the webhooks screen: an event names one
+		// kind of announcement, while a webhook may ask for all of them.
+		return "Будь-який звук"
 	default:
 		return "Невідома подія"
 	}

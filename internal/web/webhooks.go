@@ -244,6 +244,11 @@ func webhookTriggers(selected string) []webhookTriggerOption {
 		config.TriggerAlertEscalated,
 		config.TriggerAlertEnd,
 		config.TriggerScheduled,
+		// Last, and only on this screen. It is the widest choice on the
+		// list and the one an operator reaches for once they have written
+		// the same request four times; putting it first would have people
+		// pick it before they know what the others are.
+		config.TriggerAnySound,
 	}
 	out := make([]webhookTriggerOption, 0, len(triggers))
 	for _, t := range triggers {

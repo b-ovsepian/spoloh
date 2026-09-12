@@ -468,3 +468,49 @@ func TestANilEventLogDoesNotStopAWebhook(t *testing.T) {
 		t.Fatalf("%d requests were made with no event log to write to, want 1", n)
 	}
 }
+
+// The common thing to drive from here is not a reaction to one kind of
+// announcement but a state the speakers have to be in whenever the device
+// speaks at all — something feeding the same amplifier muted, an input
+// selected. Written as four near-identical webhooks that is four places to
+// keep in step, and the one that drifts is found during a raid.
+func TestAnySoundFiresForEveryAnnouncement(t *testing.T) {
+	for _, trigger := range []string{
+		config.TriggerAlertStart,
+		config.TriggerAlertEnd,
+		config.TriggerAlertEscalated,
+		config.TriggerScheduled,
+	} {
+		t.Run(trigger, func(t *testing.T) {
+			rec := newRecorder(t, func(w http.ResponseWriter, r *http.Request) {})
+			hook := relay(rec.srv.URL + "/setvol?mute=1")
+			hook.Trigger = config.TriggerAnySound
+			hook.Phase = config.PhaseBefore
+			h := newHarness(t, hook)
+
+			h.d.Dispatch(config.PhaseBefore, trigger)
+			h.d.Wait()
+
+			if n := rec.count(); n != 1 {
+				t.Errorf("%d requests for %s, want 1: a webhook bound to any sound fires for every announcement", n, trigger)
+			}
+		})
+	}
+}
+
+// The match is one-way. A webhook naming one announcement must not start
+// firing for the others just because a wider choice exists on the same list.
+func TestASpecificTriggerStillFiresOnlyForItself(t *testing.T) {
+	rec := newRecorder(t, func(w http.ResponseWriter, r *http.Request) {})
+	hook := relay(rec.srv.URL + "/setvol?mute=1")
+	hook.Trigger = config.TriggerAlertStart
+	hook.Phase = config.PhaseBefore
+	h := newHarness(t, hook)
+
+	h.d.Dispatch(config.PhaseBefore, config.TriggerScheduled)
+	h.d.Wait()
+
+	if n := rec.count(); n != 0 {
+		t.Errorf("%d requests reached the endpoint, want 0: this webhook names alert_start only", n)
+	}
+}

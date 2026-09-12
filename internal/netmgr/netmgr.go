@@ -43,6 +43,9 @@ type Status struct {
 type Manager interface {
 	Status(ctx context.Context) (Status, error)
 	Scan(ctx context.Context) ([]Network, error)
+	// Rescan sweeps the air first. Slower than Scan and not for a page
+	// load; see NMCLI.Rescan for why the two are separate.
+	Rescan(ctx context.Context) ([]Network, error)
 	Connect(ctx context.Context, ssid, psk string) error
 	StartHotspot(ctx context.Context, ssid, psk string) error
 	StopHotspot(ctx context.Context) error

@@ -67,6 +67,22 @@ func (f *Fake) Scan(ctx context.Context) ([]Network, error) {
 	return out, nil
 }
 
+// Rescan records itself under its own method name so a test can tell which
+// of the two a caller asked for — the distinction is the entire point of
+// having both, and a fake that blurred it would let the refresh button go
+// back to reading a cache with nothing failing.
+func (f *Fake) Rescan(ctx context.Context) ([]Network, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls = append(f.calls, Call{Method: "Rescan"})
+	if f.ScanErr != nil {
+		return nil, f.ScanErr
+	}
+	out := make([]Network, len(f.Networks))
+	copy(out, f.Networks)
+	return out, nil
+}
+
 // Connect records the attempt and, on success, updates CurrentStatus to
 // reflect a device now joined to ssid — the behaviour a real one has.
 func (f *Fake) Connect(ctx context.Context, ssid, psk string) error {

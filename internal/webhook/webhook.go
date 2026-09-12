@@ -161,7 +161,14 @@ func (d *Dispatcher) Dispatch(phase, trigger string) time.Duration {
 	var wait time.Duration
 	cfg := d.cfg()
 	for _, w := range cfg.Webhooks {
-		if !w.Enabled || w.Trigger != trigger || config.WebhookPhase(w) != phase {
+		// TriggerAnySound matches whatever opened this session. The
+		// comparison is one-way on purpose: a webhook bound to any_sound
+		// fires for every announcement, and a webhook bound to one
+		// announcement never fires for another.
+		if !w.Enabled || config.WebhookPhase(w) != phase {
+			continue
+		}
+		if w.Trigger != trigger && w.Trigger != config.TriggerAnySound {
 			continue
 		}
 		if phase == config.PhaseBefore {

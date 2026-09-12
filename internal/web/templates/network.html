@@ -79,6 +79,20 @@ the network it just joined.
     <form method="post" action="/network" class="grid gap-4">
       <fieldset class="field">
         <legend>Мережа Wi-Fi</legend>
+        {{/*
+        A plain link, not a script and not a form post: it changes nothing on
+        the device, it reads the air, and every control on this screen has to
+        keep working with JavaScript off — this is the screen someone reaches
+        over the access point when nothing else about the device works.
+
+        It is worth a button because the ordinary page load answers from
+        NetworkManager's cache, which refreshes on its own schedule. A list
+        taken just after a network appeared, or after the device was carried
+        into a different building, can be minutes stale — and an operator
+        standing next to a network that is not on the list concludes it is
+        not there. This asks the radio to sweep.
+        */}}
+        <p class="mb-2"><a class="btn" data-variant="outline" data-size="sm" href="/network?rescan=1">Оновити список мереж</a> <span class="text-sm text-muted-foreground">Пошук триває кілька секунд.</span></p>
         {{if .Networks}}
         <div class="grid gap-2">
           {{range .Networks}}

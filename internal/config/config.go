@@ -30,6 +30,22 @@ const (
 	TriggerAlertEnd   = "alert_end"
 	TriggerScheduled  = "scheduled"
 
+	// TriggerAnySound matches whatever opened the session, so a webhook
+	// bound to it fires for every sound this device makes — an alert, an
+	// all-clear, an escalation, a scheduled chime.
+	//
+	// It exists because the common thing to drive from here is not a
+	// reaction to one kind of announcement but a state the speakers have to
+	// be in whenever the device speaks at all: something else feeding the
+	// same amplifier muted, an input selected, a light on. Writing that as
+	// four near-identical webhooks means four places to keep in step and
+	// one of them eventually out of step — and the one that drifts is
+	// discovered during a raid.
+	//
+	// It is a trigger rather than a fifth phase because it answers "for
+	// which announcements", which is exactly what a trigger answers.
+	TriggerAnySound = "any_sound"
+
 	// TriggerAlertEscalated is a raid that was announced as yellow and has
 	// been declared red. It is a new transition, not a new spelling of an
 	// old one: nothing fired for it before, so no stored configuration can
@@ -493,7 +509,7 @@ func ValidateWebhook(w Webhook) error {
 		return webhookErr(WebhookFieldName, "name is %d characters, the maximum is %d", len(w.Name), MaxWebhookNameLen)
 	}
 	switch w.Trigger {
-	case TriggerAlertStart, TriggerAlertEnd, TriggerAlertEscalated, TriggerScheduled:
+	case TriggerAlertStart, TriggerAlertEnd, TriggerAlertEscalated, TriggerScheduled, TriggerAnySound:
 	default:
 		return webhookErr(WebhookFieldTrigger, "unknown trigger %q", w.Trigger)
 	}

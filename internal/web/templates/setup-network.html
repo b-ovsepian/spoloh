@@ -80,6 +80,16 @@ inside home.html.
     <form method="post" action="/network" class="grid gap-4">
       <fieldset class="field">
         <legend>Мережа Wi-Fi</legend>
+        {{/*
+        This screen is reached over the device's own access point, by somebody
+        standing in a building it has never been in — so the list they need is
+        of networks NetworkManager has very likely never seen. The ordinary
+        load answers from its cache; this asks the radio to sweep.
+
+        A link rather than a script: there is no internet here, nothing else
+        about the device is working, and this is the one control that has to.
+        */}}
+        <p class="mb-2"><a class="btn" data-variant="outline" data-size="sm" href="/?rescan=1">Оновити список мереж</a> <span class="text-sm text-muted-foreground">Пошук триває кілька секунд.</span></p>
         {{if .Networks}}
         <div class="grid gap-2">
           {{range .Networks}}

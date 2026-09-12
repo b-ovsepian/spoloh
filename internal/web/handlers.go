@@ -520,7 +520,10 @@ type setupNetworkView struct {
 // in front of them unasked.
 func (s *Server) handleNetworkSetup(w http.ResponseWriter, r *http.Request) {
 	cfg := s.deps.Config.Get()
-	nets, notice := s.scanNetworks(r.Context())
+	// The refresh button matters more here than anywhere else: this is the
+	// screen somebody reaches standing in a building the device has never
+	// been in, looking for a network NetworkManager's cache has never seen.
+	nets, notice := s.scanNetworks(r.Context(), r.URL.Query().Has("rescan"))
 
 	loc := s.location()
 	st := s.status(loc)

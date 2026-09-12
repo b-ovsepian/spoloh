@@ -358,9 +358,10 @@ func (p *deadlineProbe) StartHotspot(ctx context.Context, ssid, psk string) erro
 	return nil
 }
 
-func (p *deadlineProbe) Scan(context.Context) ([]netmgr.Network, error) { return nil, nil }
-func (p *deadlineProbe) Connect(context.Context, string, string) error  { return nil }
-func (p *deadlineProbe) StopHotspot(context.Context) error              { return nil }
+func (p *deadlineProbe) Scan(context.Context) ([]netmgr.Network, error)   { return nil, nil }
+func (p *deadlineProbe) Rescan(context.Context) ([]netmgr.Network, error) { return nil, nil }
+func (p *deadlineProbe) Connect(context.Context, string, string) error    { return nil }
+func (p *deadlineProbe) StopHotspot(context.Context) error                { return nil }
 
 func TestTickBoundsEveryCommand(t *testing.T) {
 	// A wedged NetworkManager must not stop the supervisor for good. Tick runs
@@ -625,6 +626,7 @@ func (m *statusHookManager) StartHotspot(context.Context, string, string) error 
 	return nil
 }
 
-func (m *statusHookManager) Scan(context.Context) ([]netmgr.Network, error) { return nil, nil }
-func (m *statusHookManager) Connect(context.Context, string, string) error  { return nil }
-func (m *statusHookManager) StopHotspot(context.Context) error              { return nil }
+func (m *statusHookManager) Scan(context.Context) ([]netmgr.Network, error)   { return nil, nil }
+func (m *statusHookManager) Rescan(context.Context) ([]netmgr.Network, error) { return nil, nil }
+func (m *statusHookManager) Connect(context.Context, string, string) error    { return nil }
+func (m *statusHookManager) StopHotspot(context.Context) error                { return nil }

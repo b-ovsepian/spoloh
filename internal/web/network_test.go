@@ -431,6 +431,13 @@ func (p *scanProbe) Scan(context.Context) ([]netmgr.Network, error) {
 	return nil, p.err
 }
 
+// The same failure either way: a probe that failed the cached read and
+// succeeded the forced one would let a test pass against a page that
+// swallowed the error on the path it actually takes.
+func (p *scanProbe) Rescan(context.Context) ([]netmgr.Network, error) {
+	return nil, p.err
+}
+
 func newServerWithScanProbe(t *testing.T, probe *scanProbe) (*web.Server, *bytes.Buffer) {
 	t.Helper()
 	store, err := configstore.Open(filepath.Join(t.TempDir(), "config.json"))
@@ -638,5 +645,60 @@ func TestNetworkStatusSectionRendersWithNilNetworkManager(t *testing.T) {
 	}
 	if !strings.Contains(body, "<form") {
 		t.Error("a nil network manager took the join form down with it")
+	}
+}
+
+// The ordinary page load answers from NetworkManager's cache, and the button
+// exists to ask the radio to sweep instead. A button that read the same cache
+// would show the same list and teach an operator standing next to a network
+// that it is not there — which is the conclusion this screen handed them
+// before the button existed.
+func TestNetworkRefreshAsksForAFreshSweep(t *testing.T) {
+	srv, _, fake := newServerWithNetwork(t)
+	setPassword(t, srv, "correct horse battery staple")
+	cookie := login(t, srv, "correct horse battery staple")
+
+	get := func(path string) {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		req.AddCookie(cookie)
+		srv.Handler().ServeHTTP(httptest.NewRecorder(), req)
+	}
+
+	get("/network")
+	get("/network?rescan=1")
+
+	var scans, rescans int
+	for _, c := range fake.Calls() {
+		switch c.Method {
+		case "Scan":
+			scans++
+		case "Rescan":
+			rescans++
+		}
+	}
+	if scans != 1 {
+		t.Errorf("%d cached scans, want 1: an ordinary load must not spend seconds sweeping", scans)
+	}
+	if rescans != 1 {
+		t.Errorf("%d forced sweeps, want 1: the refresh button read the cache instead", rescans)
+	}
+}
+
+// The button has to be on the page for any of that to matter, and it has to
+// be a link — this screen is reached when nothing else about the device works
+// and every control on it must survive JavaScript being off.
+func TestNetworkOffersARefreshLink(t *testing.T) {
+	srv, _, _ := newServerWithNetwork(t)
+	setPassword(t, srv, "correct horse battery staple")
+	cookie := login(t, srv, "correct horse battery staple")
+
+	req := httptest.NewRequest(http.MethodGet, "/network", nil)
+	req.AddCookie(cookie)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+
+	body := rec.Body.String()
+	if !strings.Contains(body, `href="/network?rescan=1"`) {
+		t.Errorf("no refresh link on the page; body:\n%s", body)
 	}
 }

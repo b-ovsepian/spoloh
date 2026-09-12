@@ -147,7 +147,33 @@ var errEmptyAPPassword = errors.New("refusing to raise an open access point: no 
 
 // Scan lists visible Wi-Fi networks, one per SSID, strongest signal first.
 func (m NMCLI) Scan(ctx context.Context) ([]Network, error) {
-	out, err := m.run(ctx, "-t", "-f", "SSID,SIGNAL,SECURITY", "device", "wifi", "list")
+	return m.list(ctx, false)
+}
+
+// Rescan sweeps the air before listing, instead of reporting what
+// NetworkManager last happened to see.
+//
+// `nmcli device wifi list` answers from a cache that NetworkManager refreshes
+// on its own schedule, so a list taken moments after a network appeared — or
+// after the operator carried the device into a different building — can be
+// several minutes stale. An operator staring at a list that does not contain
+// the network they are standing next to concludes it is not there, which is
+// the wrong conclusion and one this screen handed them.
+//
+// Separate from Scan because it is slower: the radio has to sweep, which
+// takes seconds the ordinary page load should not spend. The page keeps the
+// cheap read and the refresh button asks for this one, which is the whole
+// reason the button is worth having.
+func (m NMCLI) Rescan(ctx context.Context) ([]Network, error) {
+	return m.list(ctx, true)
+}
+
+func (m NMCLI) list(ctx context.Context, force bool) ([]Network, error) {
+	args := []string{"-t", "-f", "SSID,SIGNAL,SECURITY", "device", "wifi", "list"}
+	if force {
+		args = append(args, "--rescan", "yes")
+	}
+	out, err := m.run(ctx, args...)
 	if err != nil {
 		return nil, err
 	}

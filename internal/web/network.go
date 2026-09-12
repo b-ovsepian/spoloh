@@ -121,7 +121,10 @@ func visibleNetworksBySignal(nets []netmgr.Network) []netmgr.Network {
 // scanNetworks runs a bounded scan and turns every way it can come up empty
 // — no manager wired up, the scan itself failing, or the bound above
 // expiring — into an explanatory notice rather than an error page.
-func (s *Server) scanNetworks(ctx context.Context) ([]netmgr.Network, string) {
+// force asks the radio to sweep rather than reporting NetworkManager's
+// cache. Only the refresh button sets it: the sweep takes seconds, and an
+// ordinary page load should not spend them.
+func (s *Server) scanNetworks(ctx context.Context, force bool) ([]netmgr.Network, string) {
 	if s.deps.Network == nil {
 		return nil, "Мережевий модуль недоступний на цьому пристрої."
 	}
@@ -129,7 +132,11 @@ func (s *Server) scanNetworks(ctx context.Context) ([]netmgr.Network, string) {
 	scanCtx, cancel := context.WithTimeout(ctx, networkScanTimeout)
 	defer cancel()
 
-	nets, err := s.deps.Network.Scan(scanCtx)
+	scan := s.deps.Network.Scan
+	if force {
+		scan = s.deps.Network.Rescan
+	}
+	nets, err := scan(scanCtx)
 	if err != nil {
 		// A browser that left the page cancels ctx, which nmcli under
 		// exec.CommandContext answers by dying to a signal — "network: scan
@@ -188,7 +195,11 @@ func (s *Server) currentStatus(ctx context.Context) (netmgr.Status, string) {
 // read off the screen.
 func (s *Server) handleNetwork(w http.ResponseWriter, r *http.Request) {
 	cfg := s.deps.Config.Get()
-	nets, notice := s.scanNetworks(r.Context())
+	// The refresh button, and nothing else. A GET rather than a form post
+	// because it changes nothing on the device — it reads the air — and
+	// because a link keeps working with scripts off, which every control on
+	// this screen has to.
+	nets, notice := s.scanNetworks(r.Context(), r.URL.Query().Has("rescan"))
 	st, statusNotice := s.currentStatus(r.Context())
 
 	view := networkView{
@@ -211,7 +222,7 @@ func (s *Server) handleNetwork(w http.ResponseWriter, r *http.Request) {
 // ssid kept selected for convenience. It never receives or echoes the
 // submitted password.
 func (s *Server) renderNetworkRejected(w http.ResponseWriter, r *http.Request, status int, cfg *config.Config, ssid, message string) {
-	nets, notice := s.scanNetworks(r.Context())
+	nets, notice := s.scanNetworks(r.Context(), false)
 	st, statusNotice := s.currentStatus(r.Context())
 	view := networkView{
 		Networks:        nets,
