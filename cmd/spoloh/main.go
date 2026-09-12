@@ -23,6 +23,7 @@ import (
 	"github.com/b-ovsepian/spoloh/internal/alertsource"
 	"github.com/b-ovsepian/spoloh/internal/alertstate"
 	"github.com/b-ovsepian/spoloh/internal/clock"
+	"github.com/b-ovsepian/spoloh/internal/config"
 	"github.com/b-ovsepian/spoloh/internal/configstore"
 	"github.com/b-ovsepian/spoloh/internal/control"
 	"github.com/b-ovsepian/spoloh/internal/engine"
@@ -252,7 +253,7 @@ func run(configPath, dataDir, listen, socket string) error {
 	eng := engine.New(engine.Deps{
 		Config:    cfgFn,
 		StatePath: statePath,
-		Source:    alertsource.New(alertsource.DefaultBaseURL, cfg.Alerts.Sources, nil),
+		Source:    buildAlertSource(cfg),
 		Machine:   machine,
 		Player:    pl,
 		Library:   lib,
@@ -480,4 +481,151 @@ func serveWithRetry(ctx context.Context, name string, serve func(context.Context
 		// served for months and then failed once still retries in a second.
 		delay = min(delay*2, maxRetry)
 	}
+}
+
+// chainLink is one provider inside a mixed cascade, together with the cascade
+// keys it is standing in for. The keys are carried rather than derived
+// because a link that is never reached still has to be able to name itself:
+// alertsource.OutcomeNotReached is a distinct answer from "failed" on purpose
+// — see its comment — and it cannot be reported for a source nobody can name.
+type chainLink struct {
+	keys []string
+	src  alertsource.Cascade
+}
+
+// sourceChain tries each link in order and returns the first that answers.
+//
+// The order is the whole contract. A cascade stops at the first source that
+// answers, so which one that is depends on the order the operator put the
+// keys in on /alerts — and nothing here may re-group them to keep a provider
+// together.
+type sourceChain []chainLink
+
+// The dashboard's per-source card reads Attempts through
+// alertsource.Cascade, and engine.Engine only asks for them when its Source
+// satisfies that interface. A composite that implemented Source alone would
+// compile, run, poll correctly and leave the card saying nothing was ever
+// asked — a feature dead with nothing failing. That is not a thing a test can
+// catch, so it is asserted here, the way internal/web/audio.go asserts
+// mixerReporter for the same reason.
+var _ alertsource.Cascade = sourceChain(nil)
+
+func (ch sourceChain) Fetch(ctx context.Context) (alertsource.Snapshot, error) {
+	snap, _, err := ch.FetchCascade(ctx)
+	return snap, err
+}
+
+// FetchCascade reports one attempt per configured key, in cascade order,
+// whether or not that key was reached — the contract Client.FetchCascade
+// keeps for a single provider, held across a chain of them so that a mixed
+// cascade is not the one arrangement that cannot explain itself.
+func (ch sourceChain) FetchCascade(ctx context.Context) (alertsource.Snapshot, []alertsource.Attempt, error) {
+	var (
+		attempts []alertsource.Attempt
+		errs     []error
+	)
+	// notReached records the keys the cascade never got to. The zero Attempt
+	// is already "not reached", which is what an attempt nobody made is.
+	notReached := func(links []chainLink) {
+		for _, link := range links {
+			for _, key := range link.keys {
+				attempts = append(attempts, alertsource.Attempt{Key: key})
+			}
+		}
+	}
+
+	for i, link := range ch {
+		snap, got, err := link.src.FetchCascade(ctx)
+		attempts = append(attempts, got...)
+		if err == nil {
+			notReached(ch[i+1:])
+			return snap, attempts, nil
+		}
+		errs = append(errs, err)
+		// A cancelled poll leaves the rest not reached, which is exactly
+		// what happened to them.
+		if ctx.Err() != nil {
+			notReached(ch[i+1:])
+			break
+		}
+	}
+	// Joined as they came back, unwrapped: every error here was built by a
+	// provider that keeps its credential out of it, and this must not start
+	// adding context of its own. engine.Status.LastError renders far-end
+	// text on the dashboard, so a wrapper here that quoted a request would
+	// be the path an alerts.in.ua token took onto a page. The token travels
+	// in an Authorization header, never in a URL, and nothing below may
+	// change that.
+	return alertsource.Snapshot{}, attempts, errors.Join(errs...)
+}
+
+// buildAlertSource assembles the cascade the engine polls out of the keys the
+// operator ordered on /alerts.
+//
+// Those keys are no longer all one provider. Six of them select which
+// upstream Ubilling asks on this device's behalf and travel as a "?source="
+// value; alertsource.AlertsUAKey is a different company at a different
+// address with its own credential. Handing it to the Ubilling client would
+// send "?source=alertsua" — a request that fails uselessly, because the
+// endpoint answers for a source name it does not know rather than saying it
+// does not know it. So the order is walked once and each run of consecutive
+// Ubilling keys becomes one alertsource.Client, with the single alerts.in.ua
+// client dropped in at the position the operator put it.
+//
+// One AlertsUA value, not one per occurrence: it holds the conditional-request
+// cache that keeps this device inside a rate limit shared by every device on
+// the same public IP. /alerts cannot submit the key twice anyway — parseSources
+// keeps only its first position — and a second client would quietly halve the
+// value of the first one's cache.
+//
+// A key with no token behind it is left out rather than dialled: a slot that
+// cannot authenticate does nothing but burn a poll. If that empties the
+// cascade, the Ubilling default is what remains, because a device with no
+// source at all is a device that announces nothing — the one outcome this
+// project refuses.
+// The return type is Cascade, not Source, so every path out of here is
+// checked by the compiler rather than by whatever the engine happens to
+// type-assert at runtime.
+func buildAlertSource(cfg *config.Config) alertsource.Cascade {
+	var (
+		chain   sourceChain
+		pending []string
+	)
+	flush := func() {
+		if len(pending) == 0 {
+			return
+		}
+		chain = append(chain, chainLink{
+			keys: pending,
+			src:  alertsource.New(alertsource.DefaultBaseURL, pending, nil),
+		})
+		pending = nil
+	}
+
+	for _, key := range cfg.Alerts.Sources {
+		if key != alertsource.AlertsUAKey {
+			pending = append(pending, key)
+			continue
+		}
+		if cfg.Alerts.AlertsUAToken == "" {
+			continue
+		}
+		flush()
+		chain = append(chain, chainLink{
+			keys: []string{alertsource.AlertsUAKey},
+			src:  alertsource.NewAlertsUA(alertsource.AlertsUABaseURL, cfg.Alerts.AlertsUAToken, nil),
+		})
+	}
+	flush()
+
+	if len(chain) == 0 {
+		return alertsource.New(alertsource.DefaultBaseURL, nil, nil)
+	}
+	// A cascade that is one provider stays that provider, so the common
+	// case — six Ubilling keys and no token, which is every device that has
+	// not been registered for one — carries no wrapper at all.
+	if len(chain) == 1 {
+		return chain[0].src
+	}
+	return chain
 }
