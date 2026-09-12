@@ -100,6 +100,8 @@ func kindLabel(kind string) string {
 		return "Помилка відтворення"
 	case eventlog.KindPlaybackTruncated:
 		return "Відтворення перервано"
+	case eventlog.KindWebhook:
+		return "Вебхук"
 	case eventlog.KindAlertSuppressed:
 		return "Тривогу не озвучено"
 	case eventlog.KindLogCleared:

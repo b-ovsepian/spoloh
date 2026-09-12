@@ -357,3 +357,14 @@ func TestClearDoesNotLoseAppendsThatRaceIt(t *testing.T) {
 		t.Fatalf("Count after a raced clear: %v", err)
 	}
 }
+
+// eventlog must not import internal/webhook, so the two declare this string
+// separately — and a drift between them renders a Ukrainian table row as a
+// bare Latin identifier, which is exactly how it was noticed. The literal is
+// repeated here on purpose: importing either constant to compare against the
+// other would make the test pass by construction.
+func TestWebhookKindMatchesTheDispatcherLiteral(t *testing.T) {
+	if eventlog.KindWebhook != "webhook" {
+		t.Errorf("eventlog.KindWebhook = %q, want the literal webhook.EventKind writes", eventlog.KindWebhook)
+	}
+}

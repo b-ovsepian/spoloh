@@ -83,7 +83,7 @@ operator opens to change a setting rather than leaves up watching.
   and both class names appear literally in template source for Tailwind to
   find.
   */}}
-  <div class="mx-auto flex {{template "width" .}} items-center gap-2 p-3 sm:gap-4">
+  <div class="mx-auto flex {{template "width" .}} flex-wrap items-center gap-x-2 gap-y-1 p-3 sm:gap-x-4">
     <a href="/" class="flex items-center gap-2 text-lg font-semibold tracking-wide">{{template "mark" 22}}Сполох</a>
     {{/*
     aria-current is bound by Alpine from the address bar rather than passed in
@@ -91,7 +91,16 @@ operator opens to change a setting rather than leaves up watching.
     page is worth a binding but not a change to every view model. Without
     JavaScript the links still work — only the highlight is missing.
     */}}
-    <nav aria-label="Розділи" class="flex items-center gap-1" x-data>
+    {{/*
+    Nine sections do not fit one line on a phone. They wrap rather than
+    scroll sideways or hide behind a menu button: a horizontal scroller
+    leaves later sections invisible with nothing saying they exist, and a
+    menu behind a button would put every screen of this device one tap
+    further away and behind JavaScript — which nothing here may require.
+    Two short rows cost a few pixels of header and keep every section
+    reachable and visible.
+    */}}
+    <nav aria-label="Розділи" class="flex flex-wrap items-center gap-1" x-data>
       <a href="/" class="rounded-md px-3 py-2 text-sm hover:bg-accent aria-[current=page]:bg-accent aria-[current=page]:font-semibold" :aria-current="location.pathname === '/' ? 'page' : null">Головна</a>
       <a href="/alerts" class="rounded-md px-3 py-2 text-sm hover:bg-accent aria-[current=page]:bg-accent aria-[current=page]:font-semibold" :aria-current="location.pathname === '/alerts' ? 'page' : null">Джерела</a>
       <a href="/events" class="rounded-md px-3 py-2 text-sm hover:bg-accent aria-[current=page]:bg-accent aria-[current=page]:font-semibold" :aria-current="location.pathname === '/events' ? 'page' : null">Події</a>

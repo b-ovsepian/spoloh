@@ -27,13 +27,13 @@ const AlertsUAActivePath = "alerts/active.json"
 // AlertsUADocsURL is where an operator reads about this provider and, more to
 // the point, where they get the token it will not work without.
 //
-// It points at the provider's own front page rather than at a deeper
-// documentation path, for the reason DocsURL gives about not linking someone
-// to a JSON payload, plus one more: this repository links only to addresses
-// it can stand behind, and a guessed path that 404s on the day an operator
-// finally goes looking for their token is worse than a general one that does
-// not.
-const AlertsUADocsURL = "https://alerts.in.ua/"
+// This is the developer documentation, not the provider's front page: it is
+// where the token request form and the endpoint reference live, and the
+// operator arriving here has one job — get a token. It was fetched and
+// confirmed to answer during this work rather than guessed, which is the bar
+// for any address this repository links to; DocsURL's comment gives the rest
+// of the reasoning about not sending a reader to a JSON payload.
+const AlertsUADocsURL = "https://devs.alerts.in.ua/"
 
 // alertsUASourceName is what a snapshot from here calls itself when nothing
 // in the payload names the provider. The Ubilling endpoint returns a "source"

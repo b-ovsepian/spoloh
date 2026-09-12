@@ -59,6 +59,18 @@ const (
 	// hundred entries. The reason travels in Err, which is what keeps that
 	// styling from reading as a fault.
 	KindPlaybackTruncated = "playback_truncated"
+
+	// KindWebhook is a request this device made to the operator's own
+	// hardware on an announcement — a relay, a PA controller, whatever they
+	// pointed it at.
+	//
+	// The string must stay equal to webhook.EventKind, which is what the
+	// dispatcher writes. They are declared apart because internal/eventlog
+	// must not import internal/webhook, and a test pins them equal: a
+	// webhook whose rows this package does not recognise renders on /log as
+	// a bare Latin identifier in a Ukrainian table, which is how the
+	// mismatch showed up the first time.
+	KindWebhook = "webhook"
 	// KindLogCleared is the one entry a Clear leaves behind. An empty log
 	// cannot tell "this device has never done anything" apart from
 	// "somebody erased the record", and on a device whose log is the only

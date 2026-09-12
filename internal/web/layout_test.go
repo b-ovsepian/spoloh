@@ -190,7 +190,7 @@ func TestHeaderWidthTracksThePageWidth(t *testing.T) {
 		rec := httptest.NewRecorder()
 		srv.Handler().ServeHTTP(rec, req)
 
-		header := `<div class="mx-auto flex ` + tc.width + ` items-center gap-2 p-3 sm:gap-4">`
+		header := `<div class="mx-auto flex ` + tc.width + ` flex-wrap items-center`
 		if !strings.Contains(rec.Body.String(), header) {
 			t.Errorf("%s: header is not %s; body:\n%s", tc.path, tc.width, rec.Body.String())
 		}
