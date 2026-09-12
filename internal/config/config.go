@@ -46,6 +46,22 @@ const (
 	// which announcements", which is exactly what a trigger answers.
 	TriggerAnySound = "any_sound"
 
+	// TriggerManual is a sound the operator asked for: the dashboard's own
+	// playback button, the preview on the sounds screen, `spoloh play`.
+	//
+	// It is a webhook trigger and not an event trigger. An event is
+	// something the device decides to announce; this is something a person
+	// asked it to say, so there is nothing to schedule and Event.validate
+	// does not accept it.
+	//
+	// Manual firing and previewing share it. They differ in priority — a
+	// preview yields to everything real — but not in what the far end has
+	// to do: whatever mutes a music player for an announcement has to mute
+	// it for a sound somebody is listening to as well, or they hear both at
+	// once. An operator who wants only genuine announcements names those
+	// triggers; one who wants every sound uses TriggerAnySound.
+	TriggerManual = "manual"
+
 	// TriggerAlertEscalated is a raid that was announced as yellow and has
 	// been declared red. It is a new transition, not a new spelling of an
 	// old one: nothing fired for it before, so no stored configuration can
@@ -509,7 +525,7 @@ func ValidateWebhook(w Webhook) error {
 		return webhookErr(WebhookFieldName, "name is %d characters, the maximum is %d", len(w.Name), MaxWebhookNameLen)
 	}
 	switch w.Trigger {
-	case TriggerAlertStart, TriggerAlertEnd, TriggerAlertEscalated, TriggerScheduled, TriggerAnySound:
+	case TriggerAlertStart, TriggerAlertEnd, TriggerAlertEscalated, TriggerScheduled, TriggerAnySound, TriggerManual:
 	default:
 		return webhookErr(WebhookFieldTrigger, "unknown trigger %q", w.Trigger)
 	}

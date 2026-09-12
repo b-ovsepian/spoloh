@@ -248,6 +248,7 @@ func webhookTriggers(selected string) []webhookTriggerOption {
 		// list and the one an operator reaches for once they have written
 		// the same request four times; putting it first would have people
 		// pick it before they know what the others are.
+		config.TriggerManual,
 		config.TriggerAnySound,
 	}
 	out := make([]webhookTriggerOption, 0, len(triggers))

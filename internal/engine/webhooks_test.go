@@ -2,6 +2,7 @@ package engine_test
 
 import (
 	"context"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -224,5 +225,45 @@ func TestAnEngineWithNoWebhookDispatcherStillAnnounces(t *testing.T) {
 
 	if got := waitPlayed(t, h.rec); got == "" {
 		t.Fatal("nothing was played with no webhook dispatcher wired up")
+	}
+}
+
+// A manual fire is a sound, so the far end has to hear about it. It used to
+// hand the request straight to the player: no session, no phase webhook, and
+// the music player feeding the same speakers stayed unmuted while the siren
+// somebody pressed the button for competed with it. Found on a real device.
+func TestManualPlaybackOpensASessionAndFiresItsPhases(t *testing.T) {
+	hooks := &triggerLog{}
+	h := newHarnessWith(t, alertstate.New(), clock.System{Loc: time.UTC}, func(d *engine.Deps) {
+		d.Webhooks = hooks.fire
+	})
+
+	if err := h.eng.PlayManual("siren.wav", 100); err != nil {
+		t.Fatalf("PlayManual: %v", err)
+	}
+
+	got := waitForFiring(t, hooks, config.PhaseBefore+":"+config.TriggerManual)
+	if !slices.Contains(got, config.PhaseBefore+":"+config.TriggerManual) {
+		t.Errorf("a manual fire opened no session; firings: %v", got)
+	}
+}
+
+// A preview is a sound too. It yields to everything real, which is a matter
+// of priority inside the player — but whatever mutes a music player for an
+// announcement has to mute it for a sound somebody is listening to, or they
+// hear both at once.
+func TestPreviewAlsoOpensASession(t *testing.T) {
+	hooks := &triggerLog{}
+	h := newHarnessWith(t, alertstate.New(), clock.System{Loc: time.UTC}, func(d *engine.Deps) {
+		d.Webhooks = hooks.fire
+	})
+
+	if err := h.eng.PlayPreview("siren.wav", 100); err != nil {
+		t.Fatalf("PlayPreview: %v", err)
+	}
+
+	got := waitForFiring(t, hooks, config.PhaseBefore+":"+config.TriggerManual)
+	if !slices.Contains(got, config.PhaseBefore+":"+config.TriggerManual) {
+		t.Errorf("a preview opened no session; firings: %v", got)
 	}
 }

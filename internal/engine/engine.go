@@ -604,12 +604,24 @@ func (e *Engine) PlayPreview(sound string, volume int) error {
 }
 
 func (e *Engine) playManual(sound, path string, volume int, priority player.Priority) error {
-	e.d.Player.Play(player.Request{
+	// Through speak, like every other sound this device makes.
+	//
+	// It used to hand the request straight to the player, which meant a
+	// manual fire opened no session and fired no phase webhook: the music
+	// player feeding the same speakers stayed unmuted, and the siren
+	// somebody pressed the button for competed with it. The operator found
+	// that on a real device.
+	//
+	// speak also gives it the rest of the session's behaviour for free — a
+	// manual sound that starts while the device is already speaking joins
+	// that session rather than firing a second before, and the after that
+	// eventually answers it is the one that matters.
+	e.speak(config.TriggerManual, []player.Request{{
 		EventID:  "manual",
 		Path:     path,
 		Volume:   volume,
 		Priority: priority,
-	})
+	}})
 	e.record(eventlog.Entry{At: e.d.Clock.Now(), Kind: eventlog.KindManual, Sound: sound, OK: true})
 	return nil
 }
