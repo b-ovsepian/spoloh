@@ -1,0 +1,122 @@
+{{/*
+The screen a device serves over its own access point, and the only one it
+serves at /. Somebody is standing in a room with no internet, holding a
+phone joined to Spoloh-Setup, trying to put this device on a network. That
+is the whole page: where the device is, and a form.
+
+There is no map here, and not because it would look wrong. alerts.in.ua is
+an external embed and this connection has no route to the internet at all,
+so the frame could only sit empty — a blank rectangle on a setup screen
+reads as a broken page, and the page has enough to say without one.
+
+There is no status banner, no cascade health, no log and no sound library
+either. Every one of those describes a device with a network, and the
+readings behind them stopped when the network did. See handlers.go's
+handleNetworkSetup for why this is its own template rather than a branch
+inside home.html.
+*/}}
+{{define "title"}}Налаштування мережі — Сполох{{end}}
+{{define "content"}}
+<div class="grid gap-4">
+  {{/*
+  Said first, plainly, and in the operator's own terms: this device is not on
+  a network, it is running its own, and that is why nothing here is live. The
+  paused poll is named rather than left to be discovered — a device that has
+  stopped asking about air raids and does not say so is indistinguishable
+  from one that is broken, and this is the one screen where somebody is
+  looking.
+  */}}
+  <section class="card p-4">
+    <h1 class="text-lg font-semibold">Пристрій не підключений до мережі</h1>
+    <p class="mt-2">Зараз він роздає власну точку доступу <span class="font-mono">{{.APSSID}}</span>, і ваш телефон підключений саме до неї. Інтернету через неї немає.</p>
+    <p class="mt-2">Поки триває цей стан, пристрій не опитує джерела тривог — питати нема кого. Опитування відновиться автоматично, щойно з'явиться мережа.</p>
+  </section>
+
+  {{/*
+  If the device believes a raid is running, the siren is audible in the room
+  this page is being read in. Saying nothing here would make the screen
+  disagree with the loudest thing in the building.
+
+  It is a sentence and a time, not the dashboard's banner: the banner means
+  "this is happening, live", and the honest claim here is narrower — this is
+  what the device last managed to find out, and it is still announcing it.
+  The time of the last successful reading is what makes that checkable
+  instead of a hedge.
+  */}}
+  {{if .Alert}}
+  <div class="alert" data-variant="destructive" role="alert">
+    <section>
+      <h2 class="font-semibold">Пристрій зараз оголошує тривогу{{if .LevelLabel}} ({{.LevelLabel}}){{end}}</h2>
+      <p>Тривога від {{.SinceText}}. Це дані, отримані {{if .LastSuccessText}}{{.LastSuccessText}}{{else}}ще до втрати мережі{{end}} — відтоді пристрій не має зв'язку з джерелами й показує той самий стан. Сирена звучить саме через це, і вимикати її через втрату мережі пристрій не буде.</p>
+    </section>
+  </div>
+  {{end}}
+
+  {{/*
+  Shown deliberately, on the same terms /network shows them: an operator who
+  lost the installer's printed output has nowhere else to find these, and
+  this page is behind the session the device already requires. Display only
+  — network.go's doc comment says why the password must never be logged.
+  */}}
+  <section class="card p-4">
+    <h2 class="text-sm font-semibold text-muted-foreground">Точка доступу пристрою</h2>
+    <p>SSID: <span class="font-mono">{{.APSSID}}</span></p>
+    <p>Пароль: <span class="font-mono">{{.APPassword}}</span></p>
+  </section>
+
+  {{/*
+  The form posts to /network, which is the same handler the Мережа page
+  posts to — the same scan above it, the same join behind it, the same hold
+  on the supervisor's gate while it runs. Two joins that can drift apart is
+  how one of them ends up being the broken one, and the broken one would be
+  this: the path used once per device, by somebody who cannot reach the
+  other page to find out.
+  */}}
+  <div class="card p-6">
+    <header class="mb-4">
+      <h2 class="text-lg font-semibold">Підключення до Wi-Fi</h2>
+    </header>
+
+    <form method="post" action="/network" class="grid gap-4">
+      <fieldset class="field">
+        <legend>Мережа Wi-Fi</legend>
+        {{if .Networks}}
+        <div class="grid gap-2">
+          {{range .Networks}}
+          <label class="flex items-center justify-between gap-2 rounded-md border border-border p-3">
+            <span class="flex items-center gap-2">
+              <input type="radio" name="ssid" value="{{.SSID}}" required>
+              <span>{{.SSID}}</span>
+            </span>
+            <span class="text-sm text-muted-foreground">{{.Signal}}%{{if .Secured}} · 🔒{{end}}</span>
+          </label>
+          {{end}}
+        </div>
+        {{else}}
+        <p class="text-muted-foreground">{{if .ScanNotice}}{{.ScanNotice}}{{else}}Мереж поблизу не знайдено.{{end}}</p>
+        {{end}}
+      </fieldset>
+
+      <div class="field">
+        <label for="password">Пароль мережі</label>
+        <input class="input" type="password" id="password" name="password" autocomplete="off">
+      </div>
+
+      {{/*
+      Above the button, not after it: pressing it closes the access point
+      this page is being read over, so everything the operator needs has to
+      be in front of them first. The wording is /network's, and it promises
+      only what can be known here — the address on the new network is
+      assigned by that network.
+      */}}
+      <div class="alert" data-variant="destructive" role="alert">
+        <section>
+          <p>Після натискання кнопки точка доступу пристрою вимкнеться, і ваш телефон втратить із нею зв'язок. Пристрій отримає нову адресу вже в тій мережі. Підключіть телефон до тієї самої мережі Wi-Fi: якщо наступна сторінка встигне завантажитися, вона покаже нову адресу.</p>
+        </section>
+      </div>
+
+      <button class="btn" type="submit">Підключити</button>
+    </form>
+  </div>
+</div>
+{{end}}

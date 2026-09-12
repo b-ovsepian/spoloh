@@ -42,6 +42,21 @@ type Deps struct {
 	// the join in progress. Nil is tolerated like every other optional
 	// dependency here, and a nil gate is simply never held.
 	JoinGate *netmgr.JoinGate
+	// NetStatus is what the network supervisor last saw. It is what decides
+	// whether / is the dashboard or the network setup screen — see
+	// handleHome — and it is read rather than asking Network above, which
+	// would put an nmcli invocation on every page load of a screen that is
+	// fetched constantly, including by the status stream's own recovery
+	// probe.
+	//
+	// The same feed is handed to internal/engine, deliberately: the poll
+	// loop pauses on exactly the condition that replaces this page, and two
+	// answers to one question is how the device ends up showing a setup
+	// screen while still polling, or a dashboard of frozen values with
+	// nothing saying so. Nil is tolerated like every other optional
+	// dependency here and reads as "not on the access point", which is the
+	// ordinary dashboard.
+	NetStatus *netmgr.StatusFeed
 	// Devices lists the ALSA outputs the /audio page offers. player.ALSA
 	// (already constructed in main.go for playback) satisfies this; nil is
 	// tolerated like every other optional dependency here, and in this

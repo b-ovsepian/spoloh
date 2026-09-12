@@ -316,16 +316,17 @@ func run(configPath, dataDir, listen, socket string) error {
 	}
 
 	websrv, err := web.New(web.Deps{
-		Config:   store,
-		Engine:   eng,
-		Log:      lg,
-		Player:   pl,
-		Library:  lib,
-		Network:  netManager,
-		JoinGate: joinGate,
-		Devices:  alsa,
-		Timedate: timeManager,
-		Logger:   logger,
+		Config:    store,
+		Engine:    eng,
+		Log:       lg,
+		Player:    pl,
+		Library:   lib,
+		Network:   netManager,
+		NetStatus: netStatus,
+		JoinGate:  joinGate,
+		Devices:   alsa,
+		Timedate:  timeManager,
+		Logger:    logger,
 		// Without this the footer on every page reads "збірка для
 		// розробки" on a device running a stamped release — a visible
 		// untruth, and the one place an operator looks to answer "what is

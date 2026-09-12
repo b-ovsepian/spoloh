@@ -20,6 +20,7 @@ import (
 	"github.com/b-ovsepian/spoloh/internal/configstore"
 	"github.com/b-ovsepian/spoloh/internal/engine"
 	"github.com/b-ovsepian/spoloh/internal/eventlog"
+	"github.com/b-ovsepian/spoloh/internal/netmgr"
 	"github.com/b-ovsepian/spoloh/internal/player"
 	"github.com/b-ovsepian/spoloh/internal/web"
 )
@@ -1629,5 +1630,176 @@ func TestHomeColoursTheBannerByLevel(t *testing.T) {
 				t.Errorf("the %s banner carries %s, which belongs to the other level; classes: %s", tc.name, tc.deny, classes)
 			}
 		})
+	}
+}
+
+// newServerOnAccessPoint wires a server whose network feed carries the
+// reading a supervisor takes on a device that has lost its network, waited
+// out the grace period and raised its own hotspot: HotspotUp without
+// Connected. A netmgr.Fake stands in for nmcli so the screen's scan is the
+// real /network scan against a scripted manager rather than a second one
+// written for this page.
+//
+// alert seeds an engine already reporting a raid, on the same path
+// newServerInAlertAtLevel uses — a machine Restore'd from disk, which is how
+// a board that lost power mid-raid comes back up. Without it the server has
+// no engine at all and is calm by definition.
+func newServerOnAccessPoint(t *testing.T, st netmgr.Status, alert bool) *web.Server {
+	t.Helper()
+	store, err := configstore.Open(filepath.Join(t.TempDir(), "config.json"))
+	if err != nil {
+		t.Fatalf("configstore.Open: %v", err)
+	}
+
+	var eng *engine.Engine
+	if alert {
+		region := store.Get().Alerts.Region
+		machine := alertstate.New()
+		machine.Restore(alertstate.Persisted{
+			Region: region,
+			Alert:  true,
+			Since:  time.Date(2026, 9, 12, 10, 0, 0, 0, time.UTC),
+			Level:  alertsource.LevelRed,
+		}, region)
+		eng = engine.New(engine.Deps{Config: store.Get, Machine: machine, Player: player.New(nil, "default")})
+	}
+
+	feed := &netmgr.StatusFeed{}
+	// time.Now() because the web server's clock is the real one. StatusFeed
+	// ages a reading out after a minute, which is far longer than any test
+	// here takes and is deliberately not what these tests are about.
+	feed.Publish(st, time.Now())
+
+	fake := &netmgr.Fake{
+		Networks:      []netmgr.Network{{SSID: "site-wifi", Signal: 72, Secured: true}},
+		CurrentStatus: st,
+	}
+	srv, err := web.New(web.Deps{Config: store, Engine: eng, Network: fake, NetStatus: feed})
+	if err != nil {
+		t.Fatalf("web.New: %v", err)
+	}
+	return srv
+}
+
+// onAccessPoint is the reading that makes / the setup screen: serving its own
+// access point, with nothing above it.
+var onAccessPoint = netmgr.Status{HotspotUp: true}
+
+// Somebody is standing in a room with no internet, holding a phone joined to
+// the device's own access point. The dashboard is not what they need: the
+// alert state is stale by definition, the map cannot load, and the cards are
+// between them and the one thing they came to do.
+func TestHomeIsTheNetworkSetupScreenOnTheDeviceSOwnAccessPoint(t *testing.T) {
+	body := homeBody(t, newServerOnAccessPoint(t, onAccessPoint, false))
+
+	if !strings.Contains(body, "Пристрій не підключений до мережі") {
+		t.Error("the page does not say plainly where the device is")
+	}
+	if !strings.Contains(body, "не опитує джерела тривог") {
+		t.Error("the page does not say that the device has stopped polling; a silent pause reads as a wedged daemon")
+	}
+	// The join is /network's, submitted to /network's own handler — not a
+	// second one written for this screen.
+	if !strings.Contains(body, `action="/network"`) {
+		t.Error("the setup screen does not carry the join form")
+	}
+	if !strings.Contains(body, "site-wifi") {
+		t.Error("the setup screen lists no networks; the scan did not reach it")
+	}
+
+	// None of the dashboard, not the banner and not the cards it is built
+	// from.
+	for _, marker := range []string{`data-state="alert"`, `data-state="calm"`, "Стан джерел", "Останні дії"} {
+		if strings.Contains(body, marker) {
+			t.Errorf("the setup screen still carries the dashboard's %q", marker)
+		}
+	}
+}
+
+// The common case, and the one this task is not for: a device on a network
+// serves the dashboard it always did.
+func TestHomeIsTheOrdinaryDashboardOnANetwork(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		st   netmgr.Status
+	}{
+		{"joined over wifi", netmgr.Status{Connected: true, SSID: "site-wifi"}},
+		// Both at once is not a contradiction — see netmgr.Status — and a
+		// board on a wall port with its access point still up has an
+		// upstream. This is the reading that makes AP mode the pair of
+		// fields rather than either one alone.
+		{"wall port with the access point still up", netmgr.Status{Connected: true, HotspotUp: true}},
+		// Mid-join, or inside the grace period before the access point goes
+		// up: not reachable over a hotspot that does not exist yet.
+		{"no network and no access point", netmgr.Status{}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body := homeBody(t, newServerOnAccessPoint(t, tc.st, false))
+
+			if !strings.Contains(body, `data-state="alert"`) {
+				t.Error("the dashboard's state banner is missing; the setup screen was served to a device on a network")
+			}
+			if strings.Contains(body, "Пристрій не підключений до мережі") {
+				t.Error("a device with an upstream was served the network setup screen")
+			}
+		})
+	}
+}
+
+// If the device still believes a raid is running, the siren is audible in the
+// room this page is being read in. A setup screen showing a calm, tidy form
+// while the device is wailing is a screen nobody trusts again.
+func TestTheSetupScreenNamesARaidTheDeviceStillBelieves(t *testing.T) {
+	body := homeBody(t, newServerOnAccessPoint(t, onAccessPoint, true))
+
+	if !strings.Contains(body, "оголошує тривогу") {
+		t.Error("the setup screen says nothing about the raid the device is announcing")
+	}
+	// The date only: the time itself renders in the device's configured
+	// zone, which every other screen already pins, and repeating that
+	// arithmetic here would test the zone rather than this page.
+	if !strings.Contains(body, "Тривога від 2026-09-12") {
+		t.Error("the setup screen does not say when the believed raid started")
+	}
+	// Said as a sentence, not as the dashboard's banner: the banner means
+	// "live", and this reading is from before the network went.
+	if strings.Contains(body, "не має зв'язку з джерелами") == false {
+		t.Error("the setup screen does not say the reading predates the network going")
+	}
+	if strings.Contains(body, `data-state="alert"`) {
+		t.Error("the setup screen renders the dashboard's banner after all")
+	}
+
+	// A calm device claims nothing. The block is rendered by the server or
+	// not at all — nothing on this page depends on JavaScript.
+	calm := homeBody(t, newServerOnAccessPoint(t, onAccessPoint, false))
+	if strings.Contains(calm, "оголошує тривогу") {
+		t.Error("a calm device's setup screen claims a raid is running")
+	}
+}
+
+// The map is an external embed on a connection with no route to the internet.
+// A frame that can only sit empty reads as a broken page.
+func TestTheSetupScreenRendersNoMapFrame(t *testing.T) {
+	body := homeBody(t, newServerOnAccessPoint(t, onAccessPoint, false))
+
+	for _, marker := range []string{"<iframe", "alerts.in.ua"} {
+		if strings.Contains(body, marker) {
+			t.Errorf("the setup screen carries %q, which cannot load over the access point", marker)
+		}
+	}
+}
+
+// leak_test.go walks the route table, and this screen is not a route — it is
+// a second thing / can be. Nothing that walk enforces may be true only of the
+// page it happens to reach.
+func TestTheSetupScreenRendersNoSecret(t *testing.T) {
+	srv := newServerOnAccessPoint(t, onAccessPoint, false)
+	body := homeBody(t, srv)
+
+	for _, secret := range []string{"$2a$", "$2b$"} {
+		if strings.Contains(body, secret) {
+			t.Errorf("the setup screen rendered something that looks like the password hash (%q)", secret)
+		}
 	}
 }

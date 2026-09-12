@@ -12,6 +12,7 @@ import (
 	"github.com/b-ovsepian/spoloh/internal/engine"
 	"github.com/b-ovsepian/spoloh/internal/eventlog"
 	"github.com/b-ovsepian/spoloh/internal/library"
+	"github.com/b-ovsepian/spoloh/internal/netmgr"
 	"github.com/b-ovsepian/spoloh/internal/scheduler"
 )
 
@@ -436,11 +437,126 @@ func (s *Server) homeAudio(ctx context.Context, playing bool) (currentAudioView,
 	return s.currentAudio(ctx, devices, notice, probes), notice
 }
 
+// apOnly reports whether this device is up on its own access point with no
+// upstream, which is the one condition that changes what / is.
+//
+// It reads the feed the network supervisor publishes to, and so does
+// internal/engine's poll loop: the page that says "this device stopped
+// polling" and the loop that stopped polling have to be answering the same
+// question from the same reading, or one of them is lying. A nil feed — this
+// package's own tests, a daemon wired without a supervisor — reads as false,
+// which is the ordinary dashboard.
+func (s *Server) apOnly() bool { return s.deps.NetStatus.APOnly(s.now()) }
+
+// setupNetworkView is what setup-network.html reads.
+//
+// It carries deliberately little. Everything homeView offers — the cascade's
+// health, the sound library, the audio probe, the recent log, the next
+// scheduled event — describes a device with a network, and over the access
+// point every one of those is either stale by definition or beside the
+// point. The person holding the phone is standing in a room with no
+// internet, trying to get this device onto a network; anything else on the
+// screen is something between them and that.
+type setupNetworkView struct {
+	// Networks and ScanNotice are /network's own scan, unchanged — see
+	// scanNetworks. The join this page submits is /network's too. Two scans,
+	// or two joins, would be two implementations of the operation this whole
+	// screen exists to perform, and the one that broke would be the one
+	// nobody was looking at.
+	Networks   []netmgr.Network
+	ScanNotice string
+	// APSSID and APPassword are the access point the operator is reading
+	// this page over. Display only, never logged — see networkView, which
+	// shows them on the same terms.
+	APSSID     string
+	APPassword string
+
+	// Alert is what this device still believes, and it is on this screen for
+	// one reason: if it is true the siren is audible in the room. A setup
+	// screen showing a calm, tidy form while the device is wailing is a
+	// screen nobody trusts again.
+	//
+	// It is said in a sentence rather than the dashboard's banner. The
+	// banner is the loudest thing on the widest page and it means "this is
+	// happening now, live"; here the reading is from before the network
+	// went, and the page has to say that too.
+	Alert bool
+	// LevelLabel is how severe the believed raid is, in the banner's own
+	// words — built by alertLevel, the only place the level is branched on,
+	// so an unknown level reads as red here exactly as it does there.
+	LevelLabel string
+	// SinceText is when the believed raid started, and LastSuccessText the
+	// last moment this device heard anything from a source at all. The
+	// second is the honest one: it is what makes "this reading is old" a
+	// fact with a time on it rather than a hedge.
+	SinceText       string
+	LastSuccessText string
+}
+
+// handleNetworkSetup renders the one screen that matters over the device's
+// own access point: where the device is, and a form to put it on a network.
+//
+// A separate template rather than a branch inside home.html, and the argument
+// is maintenance rather than taste. home.html is the longest page in this
+// repository and its job is to show everything; folding this in would put
+// every one of its cards behind a condition, and would leave the screen whose
+// whole point is that it shows one thing living inside the file that keeps
+// growing. It is also more than markup: handleHome reads the event log,
+// probes the ALSA output and walks the source cascade to build its view, and
+// none of that should be computed for a page that will not render it — the
+// audio probe in particular opens the real PCM, which is the last thing to do
+// on a device that may be mid-siren. render.go gives every page its own clone
+// of the layout already, so a second template costs nothing but the file.
+//
+// It stays on / rather than taking a route of its own. The address someone
+// types is the device's, a redirect would be a second URL to get wrong next
+// to the /setup that already exists for the first-run password, and the
+// moment the device joins a network / has to be the dashboard again — which a
+// bookmarked second URL would quietly stop being.
+//
+// The ordinary shell, navigation and all: the access point is how a device is
+// commissioned, so the operator standing over it still has to be able to
+// reach /audio and /sounds. What this screen refuses to do is put any of that
+// in front of them unasked.
+func (s *Server) handleNetworkSetup(w http.ResponseWriter, r *http.Request) {
+	cfg := s.deps.Config.Get()
+	nets, notice := s.scanNetworks(r.Context())
+
+	loc := s.location()
+	st := s.status(loc)
+	view := setupNetworkView{
+		Networks:   nets,
+		ScanNotice: notice,
+		APSSID:     cfg.Network.APSSID,
+		APPassword: cfg.Network.APPassword,
+		Alert:      st.Alert,
+		LevelLabel: alertLevel(st).Label,
+	}
+	if !st.Since.IsZero() {
+		view.SinceText = st.Since.In(loc).Format("2006-01-02 15:04")
+	}
+	if !st.LastSuccess.IsZero() {
+		view.LastSuccessText = st.LastSuccess.In(loc).Format("2006-01-02 15:04")
+	}
+	s.render(w, http.StatusOK, "setup-network.html", view)
+}
+
 // handleHome renders the dashboard: the page an operator actually looks at.
 // Every value is rendered server-side so the page is correct with
 // JavaScript disabled or before Alpine has loaded — the SSE stream wired up
 // in home.html only keeps it fresh afterward.
+//
+// Except over the device's own access point, where it renders the network
+// setup screen instead. None of this dashboard is what the person holding the
+// phone there needs — and the map cannot load, the cascade's health is a
+// description of the last poll before the network went, and the whole page is
+// between them and the one thing they came to do.
 func (s *Server) handleHome(w http.ResponseWriter, r *http.Request) {
+	if s.apOnly() {
+		s.handleNetworkSetup(w, r)
+		return
+	}
+
 	loc := s.location()
 	st := s.status(loc)
 
