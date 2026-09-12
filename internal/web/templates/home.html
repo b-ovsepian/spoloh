@@ -18,6 +18,26 @@ already widened.
 {{define "content"}}
 <div x-data="status()" x-init="connect()" class="grid gap-4">
   {{/*
+  First thing under the header, on the operator's instruction. It is the
+  country at a glance, and it was at the bottom of a long page where nobody
+  scrolled to it.
+
+  Placing it above the state block is the one thing to be careful about, so
+  the care is in the styling rather than the position: an ordinary card, no
+  border-4, no filled colour, a heading and a caption that both name
+  alerts.in.ua, and a shorter frame here than it had at the bottom. The
+  banner below it is the widest, loudest thing on the page and the only one
+  that drives the siren. If the two ever disagree, the banner is the device.
+  */}}
+  <section class="card p-4">
+    <h2 class="text-sm font-semibold text-muted-foreground">Мапа тривог (alerts.in.ua)</h2>
+    <div class="mt-2 aspect-[5/3] w-full overflow-hidden rounded-md bg-muted sm:aspect-[16/5]">
+      <iframe class="h-full w-full border-0" src="https://alerts.in.ua/?embed" title="Мапа повітряних тривог" loading="lazy"></iframe>
+    </div>
+    <p class="mt-2 text-sm text-muted-foreground">Дані alerts.in.ua, а не стан цього пристрою: те, за чим пристрій вмикає сирену, показано вгорі сторінки. Мапа завантажується з інтернету — коли пристрій роздає власну точку доступу, вона не з’явиться.</p>
+  </section>
+
+  {{/*
   Someone who disables the siren for a ten-minute PA test and forgets is
   the worst outcome this product has, so this is the one warning that must
   be impossible not to notice: shown above the status block itself,
@@ -488,13 +508,6 @@ already widened.
     class names it can see in this file. loading="lazy" keeps a device with no
     internet from spending its page load on a request that cannot finish.
     */}}
-    <section class="card p-4 sm:col-span-2">
-      <h2 class="text-sm font-semibold text-muted-foreground">Мапа тривог (alerts.in.ua)</h2>
-      <div class="mt-2 aspect-[5/3] w-full overflow-hidden rounded-md bg-muted sm:aspect-[5/2]">
-        <iframe class="h-full w-full border-0" src="https://alerts.in.ua/?embed" title="Мапа повітряних тривог" loading="lazy"></iframe>
-      </div>
-      <p class="mt-2 text-sm text-muted-foreground">Дані alerts.in.ua, а не стан цього пристрою: те, за чим пристрій вмикає сирену, показано вгорі сторінки. Мапа завантажується з інтернету — коли пристрій роздає власну точку доступу, вона не з’явиться.</p>
-    </section>
   </div>
 </div>
 

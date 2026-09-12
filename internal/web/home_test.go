@@ -750,13 +750,17 @@ func TestHomeEmbedsTheAlertMapAsALabelledFluidFrame(t *testing.T) {
 		t.Error("the embed still carries the snippet's fixed 500px width")
 	}
 
-	// The banner is what drives the siren; the map is what a third party
-	// believes. Reading the map as the device's state is the misreading this
-	// page cannot afford, so the map comes after the banner and is styled as
-	// an ordinary card — none of the banner's filled destructive colour.
+	// The map now sits above the banner, on the operator's instruction: it
+	// is the country at a glance and it was at the bottom of a page nobody
+	// scrolled. What still has to hold is the thing the old ordering was
+	// protecting — the map is what a third party believes, the banner is
+	// what drives the siren, and the map must never be readable as the
+	// device's own state. So the banner must still render, and the map must
+	// still be an ordinary card with none of the banner's filled
+	// destructive colour (checked below).
 	banner := strings.Index(body, `data-state="alert"`)
-	if banner < 0 || banner > iframe {
-		t.Errorf("banner at %d, map at %d: the map must come below the state banner", banner, iframe)
+	if banner < 0 {
+		t.Error("the state banner is not on the page at all")
 	}
 	start := strings.LastIndex(body[:iframe], "<section")
 	end := strings.Index(body[iframe:], "</section>")
@@ -1137,11 +1141,14 @@ func TestHomeRendersWithNoAudioDependenciesAtAll(t *testing.T) {
 // the evidence that any of it works, then the third party's map last. The
 // banner and both standing warnings stay outside the grid entirely, which
 // TestHomeKeepsTheBannerAndItsWarningOutOfTheCardGrid pins.
-func TestHomeLaysTheSevenCardsOutWithoutARaggedHole(t *testing.T) {
+func TestHomeLaysTheCardsOutWithoutARaggedHole(t *testing.T) {
 	srv, _ := newServerWithStore(t)
 	body := homeBody(t, srv)
 
-	order := []string{"Стан", "Найближча подія", "Стан джерел", "Ручне відтворення", "Звук", "Останні дії", "Мапа тривог (alerts.in.ua)"}
+	// The map is no longer in this list: it was lifted out of the grid to
+	// sit under the header, so the grid holds six cards and the map's own
+	// placement is pinned by TestHomeEmbedsTheAlertsMap.
+	order := []string{"Стан", "Найближча подія", "Стан джерел", "Ручне відтворення", "Звук", "Останні дії"}
 	at := make([]int, len(order))
 	for i, heading := range order {
 		at[i] = strings.Index(body, ">"+heading+"</h2>")
@@ -1153,11 +1160,11 @@ func TestHomeLaysTheSevenCardsOutWithoutARaggedHole(t *testing.T) {
 		}
 	}
 
-	// Three full-width cards among seven is what makes the rows come out
-	// even. Counted as a literal class name because Tailwind compiles only
-	// the names it can see in the template.
-	if got := strings.Count(body, "sm:col-span-2"); got != 3 {
-		t.Errorf("%d cards span both columns, want 3: seven cards in a two-column grid leave a ragged hole otherwise", got)
+	// Two full-width cards among six is what makes the rows come out even.
+	// Counted as a literal class name because Tailwind compiles only the
+	// names it can see in the template.
+	if got := strings.Count(body, "sm:col-span-2"); got != 2 {
+		t.Errorf("%d cards span both columns, want 2: six cards in a two-column grid leave a ragged hole otherwise", got)
 	}
 	// The span lives on the <section> tag, which opens before the heading
 	// cardNamed anchors on — so this reads the tag itself.
@@ -1458,5 +1465,35 @@ func TestHomeHidesTheAllClearLineWhenNothingIsHeldBack(t *testing.T) {
 	srv, _ := newServerWithStore(t)
 	if line := allClearLine(t, homeBody(t, srv)); !strings.Contains(line, "display:none") {
 		t.Errorf("the all-clear line is shown on a device holding nothing back: %s", line)
+	}
+}
+
+// The operator asked for the map under the header. What must survive that
+// move is the reason it used to be last: it shows what a third party
+// believes, the banner shows what drives the siren, and the two can
+// disagree. So the map must still be an ordinary card — never the banner's
+// filled destructive styling — and the banner must still be the widest,
+// loudest thing on the page.
+func TestHomePutsTheMapUnderTheHeaderWithoutDressingItAsState(t *testing.T) {
+	srv, _ := newServerWithStore(t)
+	body := homeBody(t, srv)
+
+	iframe := strings.Index(body, `src="https://alerts.in.ua/?embed"`)
+	grid := strings.Index(body, `class="grid gap-4 sm:grid-cols-2"`)
+	if iframe < 0 || grid < 0 {
+		t.Fatalf("map at %d, card grid at %d: both must render", iframe, grid)
+	}
+	if iframe > grid {
+		t.Error("the map is still inside or below the card grid; it belongs under the header")
+	}
+
+	start := strings.LastIndex(body[:iframe], "<section")
+	end := iframe + strings.Index(body[iframe:], "</section>")
+	card := body[start:end]
+	if strings.Contains(card, "destructive") || strings.Contains(card, "border-4") {
+		t.Errorf("the map card wears the state banner's styling; card markup:\n%s", card)
+	}
+	if !strings.Contains(card, "alerts.in.ua") {
+		t.Error("the map card does not name its source, so it can be read as the device's own state")
 	}
 }
