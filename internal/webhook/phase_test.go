@@ -1,7 +1,9 @@
 package webhook_test
 
 import (
+	"fmt"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -117,6 +119,73 @@ func TestAnOverLongStoredDelayIsStillBoundedAtDispatch(t *testing.T) {
 
 	if got != config.MaxWebhookDelay {
 		t.Fatalf("delay = %v, want it bounded to %v", got, config.MaxWebhookDelay)
+	}
+}
+
+// A status code is not evidence the announcement will be heard. A controller
+// can take the request, answer 200, and report in its body that it is still
+// in the state that keeps this device inaudible — and the operator has no
+// other way to find that out.
+func TestTheAnswerFromTheFarEndIsRecorded(t *testing.T) {
+	rec := newRecorder(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/xml")
+		fmt.Fprint(w, "<?xml version=\"1.0\"?><result><state>1</state></result>")
+	})
+	h := newHarness(t, relay(rec.srv.URL))
+
+	h.d.Dispatch(config.PhaseOnTrigger, config.TriggerAlertStart)
+	h.d.Wait()
+
+	row := h.onlyEntry(t)
+	if !row.OK {
+		t.Fatalf("a 200 was recorded as a failure: %+v", row)
+	}
+	if !strings.Contains(row.Err, "<state>1</state>") {
+		t.Fatalf("the row does not carry what the far end answered: %q", row.Err)
+	}
+}
+
+// The excerpt is bytes from a box on somebody's network on their way into a
+// table rendered in a building they live in. It is cut hard, and it is never
+// parsed — this test asserts the bound, not a shape, because there is no
+// shape: one target answers XML, the next a line of text, the next nothing.
+func TestTheAnswerIsCutShortAndStrippedOfControlBytes(t *testing.T) {
+	rec := newRecorder(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.Write([]byte("ok\x00\x07 " + strings.Repeat("A", 4096)))
+	})
+	h := newHarness(t, relay(rec.srv.URL))
+
+	h.d.Dispatch(config.PhaseOnTrigger, config.TriggerAlertStart)
+	h.d.Wait()
+
+	row := h.onlyEntry(t)
+	if len(row.Err) > 300 {
+		t.Fatalf("the recorded answer is %d bytes; a target answering with a web page could bury the log", len(row.Err))
+	}
+	if strings.ContainsAny(row.Err, "\x00\x07\n\r") {
+		t.Fatalf("a control byte reached the event log: %q", row.Err)
+	}
+}
+
+// A header value is a credential, and "it is never logged" is a rule this
+// side of the wire keeps whatever the other side does. A far end that echoes
+// the request back must not put the operator's own Authorization header into
+// their event log by way of this device.
+func TestAHeaderValueEchoedBackIsScrubbedFromTheAnswer(t *testing.T) {
+	rec := newRecorder(t, func(w http.ResponseWriter, req *http.Request) {
+		fmt.Fprintf(w, "you sent %s", req.Header.Get("Authorization"))
+	})
+	h := newHarness(t, relay(rec.srv.URL))
+
+	h.d.Dispatch(config.PhaseOnTrigger, config.TriggerAlertStart)
+	h.d.Wait()
+
+	row := h.onlyEntry(t)
+	if strings.Contains(row.Err, secret) {
+		t.Fatalf("the credential reached the event log through the response body: %q", row.Err)
+	}
+	if strings.Contains(h.logs.String(), secret) {
+		t.Fatalf("the credential reached the journal: %q", h.logs.String())
 	}
 }
 

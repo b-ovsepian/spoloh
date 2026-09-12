@@ -24,6 +24,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/b-ovsepian/spoloh/internal/config"
 	"github.com/b-ovsepian/spoloh/internal/eventlog"
@@ -58,11 +60,26 @@ const DefaultTimeout = 5 * time.Second
 // small enough that a dead target costs four sockets rather than twenty.
 const maxInFlight = 4
 
-// maxDrainedBody is how much of a response is read before it is thrown away.
-// Nothing here looks at a response body — the status is the answer — but
-// reading a little of it lets the connection be reused instead of torn down,
-// and reading none of a large one leaves the transport holding it.
+// maxDrainedBody is how much of a response is read before the rest is thrown
+// away. Reading a little of it lets the connection be reused instead of torn
+// down, and reading none of a large one leaves the transport holding it.
 const maxDrainedBody = 4 << 10
+
+// maxLoggedBody is how much of that is kept for the event log.
+//
+// A status code is not evidence that the announcement will be heard. A
+// controller can accept the request, answer 200, and still not be in the
+// state the operator wanted — and what it reports back is the only place that
+// shows. Two hundred bytes is enough for the one-line answer these boxes give
+// and small enough that a target which answers with a web page cannot fill
+// the log with it.
+const maxLoggedBody = 200
+
+// minRedactedHeaderValue is the shortest header value worth scrubbing out of
+// a logged response. A one- or two-character value would match half the
+// alphabet of an ordinary answer and redact text that is not a credential;
+// anything actually secret is longer than this.
+const minRedactedHeaderValue = 8
 
 // Dispatcher fires the webhooks stored in the configuration. The zero value
 // is not usable; call New.
@@ -257,7 +274,8 @@ func (d *Dispatcher) fire(w config.Webhook) {
 		return
 	}
 	defer resp.Body.Close()
-	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, maxDrainedBody))
+	answered, _ := io.ReadAll(io.LimitReader(resp.Body, maxDrainedBody))
+	answer := excerpt(answered, w)
 
 	switch {
 	case resp.StatusCode >= 300 && resp.StatusCode < 400:
@@ -265,14 +283,85 @@ func (d *Dispatcher) fire(w config.Webhook) {
 		// operator pointed it, and it was not followed on purpose.
 		d.logger.Warn("webhook answered with a redirect, which is not followed",
 			"webhook", w.ID, "target", target(w.URL), "status", resp.StatusCode)
-		d.record(w, false, fmt.Sprintf("перенаправлення %d не виконується", resp.StatusCode))
+		d.record(w, false, withAnswer(fmt.Sprintf("перенаправлення %d не виконується", resp.StatusCode), answer))
 	case resp.StatusCode >= 400:
 		d.logger.Warn("webhook was refused", "webhook", w.ID, "target", target(w.URL), "status", resp.StatusCode)
-		d.record(w, false, fmt.Sprintf("відповідь %d", resp.StatusCode))
+		d.record(w, false, withAnswer(fmt.Sprintf("відповідь %d", resp.StatusCode), answer))
 	default:
 		d.logger.Info("webhook sent", "webhook", w.ID, "target", target(w.URL), "status", resp.StatusCode)
-		d.record(w, true, "")
+		d.record(w, true, withAnswer(fmt.Sprintf("відповідь %d", resp.StatusCode), answer))
 	}
+}
+
+// excerpt reduces a response body to a short line for the event log.
+//
+// It is recorded because a status code is not evidence the announcement will
+// be heard: the far end can accept the request, answer 200, and report in the
+// body that it is still in the state that keeps this device inaudible. An
+// operator cannot tell a working relay from a broken one without seeing what
+// it actually said.
+//
+// It is never parsed and nothing branches on it. Every target speaks its own
+// dialect — XML here, a line of plain text there, an empty body somewhere
+// else — and a device that decided whether to sound a siren from a body whose
+// shape it had guessed would be worse than one that always sounds it.
+//
+// Three things are done to it, and each is because this is untrusted input on
+// its way onto a page in a building somebody lives in:
+//
+//   - cut to maxLoggedBody, at a rune boundary, so a target answering with a
+//     web page cannot bury the log;
+//   - collapsed to printable characters on one line, so control bytes and
+//     binary never reach the renderer;
+//   - scrubbed of this webhook's own header values, because a far end that
+//     echoes the request back would otherwise put a credential into the event
+//     log by way of this device. "A header value is never logged" is a rule
+//     this side of the wire keeps whatever the other side does.
+func excerpt(body []byte, w config.Webhook) string {
+	text := string(body)
+	for _, h := range w.Headers {
+		if len(h.Value) >= minRedactedHeaderValue {
+			text = strings.ReplaceAll(text, h.Value, "…")
+		}
+	}
+
+	var b strings.Builder
+	space := false
+	for _, r := range text {
+		if b.Len() >= maxLoggedBody {
+			break
+		}
+		switch {
+		case unicode.IsSpace(r):
+			space = b.Len() > 0
+			continue
+		case r == utf8.RuneError || !unicode.IsPrint(r):
+			// A byte that is not valid UTF-8, or a control character. Both
+			// are dropped rather than replaced: a binary body would
+			// otherwise render as a wall of question marks that says less
+			// than nothing.
+			continue
+		}
+		if space {
+			b.WriteByte(' ')
+			space = false
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
+}
+
+// withAnswer joins what this device made of the request to what came back.
+// Either half can be empty: a target that answers with no body at all is
+// perfectly normal, and is not something to write an empty phrase about.
+func withAnswer(reason, answer string) string {
+	if answer == "" {
+		return reason
+	}
+	if reason == "" {
+		return "у відповідь: " + answer
+	}
+	return reason + " · у відповідь: " + answer
 }
 
 func (d *Dispatcher) timeout() time.Duration {
@@ -291,9 +380,10 @@ func (d *Dispatcher) timeout() time.Duration {
 // from "it never ran at all".
 //
 // What is never written here is a header value. The webhook's id is the whole
-// of the identification; the reason is the operator's own language and is
-// built from a status code or a transport failure, never from anything they
-// typed into a header.
+// of the identification; the reason is the operator's own language, built
+// from a status code or a transport failure and, where there was one, an
+// excerpt of what the far end answered — which excerpt() has already scrubbed
+// of anything the operator typed into a header.
 func (d *Dispatcher) record(w config.Webhook, ok bool, reason string) {
 	entry := eventlog.Entry{
 		At: d.now(), Kind: EventKind, EventID: w.ID, OK: ok, Err: reason,
