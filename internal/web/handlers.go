@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/b-ovsepian/spoloh/internal/alertsource"
 	"github.com/b-ovsepian/spoloh/internal/config"
 	"github.com/b-ovsepian/spoloh/internal/engine"
 	"github.com/b-ovsepian/spoloh/internal/eventlog"
@@ -83,6 +84,17 @@ type homeView struct {
 	// look like "no history" and mean very different things.
 	RecentNotice string
 
+	// Sources is the cascade the last poll walked, one row per configured
+	// key, in the order they are tried. Empty when there is nothing to
+	// report, and SourcesNotice then says why in the operator's own terms
+	// rather than leaving an empty card.
+	Sources []sourceHealthView
+	// SourcesNotice explains an empty Sources: on a device that has not
+	// polled yet there is no cascade to describe, and an empty list is not
+	// the same claim as a cascade of keys that went unreached — that one
+	// says a poll happened and stopped early.
+	SourcesNotice string
+
 	// Audio is the stored output as /audio's own block describes it —
 	// reused wholesale rather than restated, see homeAudio.
 	Audio currentAudioView
@@ -151,6 +163,99 @@ func (s *Server) status(loc *time.Location) engine.Status {
 		st.NextEventAt = at
 	}
 	return st
+}
+
+// sourceHealthView is one cascade key on the Стан джерел card.
+//
+// Key is the key the operator picked on /alerts — "default", "skog",
+// "alertsua" — and not the name the upstream reports for itself. They are
+// different strings: "default" answers as "Vadym Klymenko API", so a card
+// built from self-reported names could not tell an operator which of the
+// slots they configured is the one working, which is the only question this
+// card exists to answer. /alerts lists the same keys in the same order, so
+// the two screens can be read side by side.
+//
+// Failed and NotReached are separate because the three states are separate.
+// A key the cascade never got to is not healthy — nothing checked it — and
+// it is not broken either, and the row has to say which without the reader
+// having to know that the cascade stops at the first answer.
+type sourceHealthView struct {
+	Key        string
+	State      string
+	Reason     string
+	Failed     bool
+	NotReached bool
+}
+
+// sourceStateText is the three outcomes in the operator's language. Each
+// pairs a word with a mark, like every other state on this page: never
+// colour alone, since this screen is read behind glass and from across a
+// corridor.
+func sourceStateText(o alertsource.Outcome) string {
+	switch o {
+	case alertsource.OutcomeAnswered:
+		return "✓ відповів"
+	case alertsource.OutcomeFailed:
+		return "✕ не відповів"
+	default:
+		return "— не опитувався"
+	}
+}
+
+// sourceReasonText turns alertsource's closed vocabulary into the sentence
+// an operator can act on. It is reached only for a key that failed.
+//
+// The vocabulary is closed for a reason — see alertsource.Reason — and this
+// is the only thing this device says about why a source did not answer.
+// Nothing from upstream is echoed: engine.SourceHealth does not carry the
+// error text, so there is nothing here that could. A reason with no
+// classification (an unrecognised value, or a failure that carried no error
+// at all) says so rather than rendering an English identifier.
+func sourceReasonText(r alertsource.Reason) string {
+	switch r {
+	case alertsource.ReasonNoToken:
+		return "немає токена — його потрібно отримати й зберегти на сторінці «Джерела»"
+	case alertsource.ReasonTokenRejected:
+		return "токен відхилено — можливо, він застарів або введений з помилкою"
+	case alertsource.ReasonRateLimited:
+		return "перевищено ліміт запитів — обмеження рахується на всю вашу мережу"
+	case alertsource.ReasonUnreachable:
+		return "немає зв’язку — джерело не відповіло на запит"
+	case alertsource.ReasonBadResponse:
+		return "відповідь не вдалося прочитати"
+	default:
+		return "причина невідома"
+	}
+}
+
+// sourceHealth turns the engine's account of the last cascade into rows, and
+// answers with a notice instead when there is no account to show.
+//
+// An empty list is the honest answer before the first poll of a process, and
+// it is deliberately not rendered as a list of unreached keys: "not reached"
+// is a fact about a poll that happened, and saying it about a device that has
+// polled nothing yet would be inventing a poll. The same notice covers a
+// source that cannot describe a cascade at all — no provider in this
+// repository is one, both implement alertsource.Cascade, but a nil-tolerant
+// page beats a page that assumes.
+func sourceHealth(st engine.Status) ([]sourceHealthView, string) {
+	if len(st.Sources) == 0 {
+		return nil, "Джерела ще не опитувалися."
+	}
+	out := make([]sourceHealthView, len(st.Sources))
+	for i, s := range st.Sources {
+		v := sourceHealthView{
+			Key:        s.Key,
+			State:      sourceStateText(s.Outcome),
+			Failed:     s.Outcome == alertsource.OutcomeFailed,
+			NotReached: s.Outcome == alertsource.OutcomeNotReached,
+		}
+		if v.Failed {
+			v.Reason = sourceReasonText(s.Reason)
+		}
+		out[i] = v
+	}
+	return out, ""
 }
 
 // homeRecentEntries is how many event log rows the Останні дії card shows.
@@ -294,6 +399,7 @@ func (s *Server) handleHome(w http.ResponseWriter, r *http.Request) {
 			view.Sounds = sounds
 		}
 	}
+	view.Sources, view.SourcesNotice = sourceHealth(st)
 	view.Recent, view.RecentNotice = s.recentActivity()
 	// Handed st.PlayingEventID rather than asking the player again: the
 	// card must not probe the output the siren is coming out of, and the

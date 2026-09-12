@@ -89,10 +89,23 @@ type statusFrame struct {
 	LastError   string `json:"last_error"`
 	Source      string `json:"source"`
 	Failing     bool   `json:"failing"`
-	ClockSynced bool   `json:"clock_synced"`
-	NextEvent   string `json:"next_event"`
-	NextEventAt string `json:"next_event_at"`
-	Playing     string `json:"playing"`
+	// AllClearSeen and AllClearNeeded carry an all-clear upstream has
+	// reported and this device is not announcing yet — see
+	// engine.Status's own comment for why the screen has to say so.
+	//
+	// They are in the frame rather than rendered once, and that is the
+	// whole point of putting them here: the run is at most
+	// alertstate.EndConfirmations polls long and it is counted while
+	// somebody is standing in front of the screen asking why the thing is
+	// still red. A number that froze at whatever it was when the page
+	// loaded would be stuck during exactly the half-minute it exists for,
+	// which would make "my device looks stuck" worse rather than better.
+	AllClearSeen   int    `json:"all_clear_seen"`
+	AllClearNeeded int    `json:"all_clear_needed"`
+	ClockSynced    bool   `json:"clock_synced"`
+	NextEvent      string `json:"next_event"`
+	NextEventAt    string `json:"next_event_at"`
+	Playing        string `json:"playing"`
 }
 
 // location returns the device's configured time zone, falling back to UTC if
@@ -134,11 +147,15 @@ func (s *Server) currentFrame() ([]byte, error) {
 	st := s.status(loc)
 
 	f := statusFrame{
-		Region:      st.Region,
-		Alert:       st.Alert,
-		LastError:   st.LastError,
-		Source:      st.SourceName,
-		Failing:     st.Failing,
+		Region:    st.Region,
+		Alert:     st.Alert,
+		LastError: st.LastError,
+		Source:    st.SourceName,
+		Failing:   st.Failing,
+
+		AllClearSeen:   st.AllClearSeen,
+		AllClearNeeded: st.AllClearNeeded,
+
 		ClockSynced: st.ClockSynced,
 		NextEvent:   st.NextEventName,
 		Playing:     st.PlayingEventID,

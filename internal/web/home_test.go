@@ -1,16 +1,21 @@
 package web_test
 
 import (
+	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/b-ovsepian/spoloh/internal/alertsource"
 	"github.com/b-ovsepian/spoloh/internal/alertstate"
+	"github.com/b-ovsepian/spoloh/internal/clock"
 	"github.com/b-ovsepian/spoloh/internal/config"
 	"github.com/b-ovsepian/spoloh/internal/configstore"
 	"github.com/b-ovsepian/spoloh/internal/engine"
@@ -1120,21 +1125,23 @@ func TestHomeRendersWithNoAudioDependenciesAtAll(t *testing.T) {
 	}
 }
 
-// Six cards in a two-column grid leaves a hole unless two of them are told
-// to span it. Останні дії is one — it is a list of rows and reads better
+// Seven cards in a two-column grid leaves a hole unless three of them are
+// told to span it. Останні дії is one — it is a list of rows and reads better
 // across the full measure, the same argument /log makes for its own table —
-// and the map is the other, which it already was.
+// the map is the second, which it already was, and Стан джерел is the third:
+// a cascade can hold seven keys, and setting them in a narrow strip beside a
+// mostly empty neighbour would waste the width they need.
 //
 // The order is the claim: what the device is doing now, then what it will do
-// next, then the two controls, then the evidence that any of it works, then
-// the third party's map last. The banner and both standing warnings stay
-// outside the grid entirely, which TestHomeKeepsTheBannerAndItsWarningOutOf
-// TheCardGrid pins.
-func TestHomeLaysTheSixCardsOutWithoutARaggedHole(t *testing.T) {
+// next, then where that information came from, then the two controls, then
+// the evidence that any of it works, then the third party's map last. The
+// banner and both standing warnings stay outside the grid entirely, which
+// TestHomeKeepsTheBannerAndItsWarningOutOfTheCardGrid pins.
+func TestHomeLaysTheSevenCardsOutWithoutARaggedHole(t *testing.T) {
 	srv, _ := newServerWithStore(t)
 	body := homeBody(t, srv)
 
-	order := []string{"Стан", "Найближча подія", "Ручне відтворення", "Звук", "Останні дії", "Мапа тривог (alerts.in.ua)"}
+	order := []string{"Стан", "Найближча подія", "Стан джерел", "Ручне відтворення", "Звук", "Останні дії", "Мапа тривог (alerts.in.ua)"}
 	at := make([]int, len(order))
 	for i, heading := range order {
 		at[i] = strings.Index(body, ">"+heading+"</h2>")
@@ -1146,20 +1153,310 @@ func TestHomeLaysTheSixCardsOutWithoutARaggedHole(t *testing.T) {
 		}
 	}
 
-	// Two full-width cards among six is what makes the rows come out even.
-	// Counted as a literal class name because Tailwind compiles only the
-	// names it can see in the template.
-	if got := strings.Count(body, "sm:col-span-2"); got != 2 {
-		t.Errorf("%d cards span both columns, want 2: six cards in a two-column grid leave a ragged hole otherwise", got)
+	// Three full-width cards among seven is what makes the rows come out
+	// even. Counted as a literal class name because Tailwind compiles only
+	// the names it can see in the template.
+	if got := strings.Count(body, "sm:col-span-2"); got != 3 {
+		t.Errorf("%d cards span both columns, want 3: seven cards in a two-column grid leave a ragged hole otherwise", got)
 	}
 	// The span lives on the <section> tag, which opens before the heading
 	// cardNamed anchors on — so this reads the tag itself.
-	heading := strings.Index(body, ">Останні дії</h2>")
-	open := strings.LastIndex(body[:heading], "<section")
-	if open < 0 {
-		t.Fatal("the Останні дії heading is not inside a section")
+	for _, heading := range []string{"Останні дії", "Стан джерел"} {
+		at := strings.Index(body, ">"+heading+"</h2>")
+		open := strings.LastIndex(body[:at], "<section")
+		if open < 0 {
+			t.Fatalf("the %s heading is not inside a section", heading)
+		}
+		if !strings.Contains(body[open:at], "sm:col-span-2") {
+			t.Errorf("%s does not span the grid, so the row it shares ends short", heading)
+		}
 	}
-	if !strings.Contains(body[open:heading], "sm:col-span-2") {
-		t.Error("Останні дії does not span the grid, so the row it shares ends short")
+}
+
+// cascadeRegion is the oblast the Стан джерел tests monitor. It is not the
+// default one: the card has to render the location the device is actually
+// watching, and a test against the value that would appear anyway if the
+// field were dropped proves nothing.
+const cascadeRegion = "Львівська область"
+
+// newServerAfterPoll wires a dashboard over an engine that has polled once,
+// through a real alertsource.Client, against a fake upstream that answers
+// each cascade key however the test says.
+//
+// The client is the real one on purpose. What these tests are about is the
+// account a cascade gives of itself — which key answered, which failed and
+// why, which were never asked — and a hand-written source reporting attempts
+// of its own invention could describe a cascade the real code never produces.
+// The upstream is a local httptest server, so nothing here dials the
+// internet.
+//
+// reply is called with the "?source=" key of each request, in cascade order.
+func newServerAfterPoll(t *testing.T, keys []string, reply func(key string, w http.ResponseWriter)) *web.Server {
+	t.Helper()
+	srv, eng := dashboardOverUpstream(t, keys, reply)
+	// One poll, synchronously: the card describes the last cascade, and a
+	// dashboard rendered before any poll has a different thing to say.
+	// Whether it succeeded is the test's business, not this helper's.
+	_ = eng.PollOnce(context.Background())
+	return srv
+}
+
+// dashboardOverUpstream builds the store, the engine and the server, and
+// polls nothing. Tests that need a particular engine state — a cascade
+// walked once, an all-clear part way through its run — drive the polls
+// themselves.
+func dashboardOverUpstream(t *testing.T, keys []string, reply func(key string, w http.ResponseWriter)) (*web.Server, *engine.Engine) {
+	t.Helper()
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		reply(r.URL.Query().Get("source"), w)
+	}))
+	t.Cleanup(upstream.Close)
+
+	store, err := configstore.Open(filepath.Join(t.TempDir(), "config.json"))
+	if err != nil {
+		t.Fatalf("configstore.Open: %v", err)
+	}
+	if err := store.Update(func(c *config.Config) error {
+		c.Alerts.Region = cascadeRegion
+		c.Alerts.Sources = keys
+		return nil
+	}); err != nil {
+		t.Fatalf("store.Update: %v", err)
+	}
+
+	eng := engine.New(engine.Deps{
+		Config:  store.Get,
+		Source:  alertsource.New(upstream.URL, keys, upstream.Client()),
+		Machine: alertstate.New(),
+		Player:  player.New(nil, "default"),
+		Clock:   clock.System{Loc: time.UTC},
+	})
+	srv, err := web.New(web.Deps{Config: store, Engine: eng})
+	if err != nil {
+		t.Fatalf("web.New: %v", err)
+	}
+	return srv, eng
+}
+
+// answerState replies with a usable snapshot for the monitored oblast.
+func answerState(w http.ResponseWriter, alert bool) {
+	w.Header().Set("Content-Type", "application/json")
+	fmt.Fprintf(w, `{"source":"test","cachedat":"2026-09-12 10:00:00","states":{%q:{"alertnow":%t,"changed":"2026-09-12 09:00:00"}}}`, cascadeRegion, alert)
+}
+
+func answerCalm(w http.ResponseWriter) { answerState(w, false) }
+
+// newServerHoldingAnAllClear wires a dashboard over a device that upstream
+// says is calm and that is still announcing a raid: the window between the
+// first calm reading and the third, which is the state this counter exists
+// to explain.
+//
+// Two real polls rather than a hand-set field. The first adopts the raid
+// silently, exactly as a cold start does; the second is the calm reading
+// that starts the run. Anything faked here would be free to produce a run
+// alertstate.Machine never actually holds.
+func newServerHoldingAnAllClear(t *testing.T) *web.Server {
+	t.Helper()
+
+	var mu sync.Mutex
+	alert := true
+	srv, eng := dashboardOverUpstream(t, []string{"default"}, func(_ string, w http.ResponseWriter) {
+		mu.Lock()
+		a := alert
+		mu.Unlock()
+		answerState(w, a)
+	})
+
+	ctx := context.Background()
+	if err := eng.PollOnce(ctx); err != nil {
+		t.Fatalf("PollOnce adopting the raid: %v", err)
+	}
+	mu.Lock()
+	alert = false
+	mu.Unlock()
+	if err := eng.PollOnce(ctx); err != nil {
+		t.Fatalf("PollOnce on the first calm reading: %v", err)
+	}
+
+	if got := eng.Status().AllClearSeen; got != 1 {
+		t.Fatalf("the engine holds %d calm readings, want 1: this harness is not in the state it claims", got)
+	}
+	return srv
+}
+
+// The cascade stops at the first key that answers, so the keys behind it were
+// never consulted. Showing them as working is a promise nothing checked —
+// and it is the promise that has an operator walk away believing they have
+// two fallbacks standing by.
+func TestHomeSaysWhichSourcesTheCascadeNeverReached(t *testing.T) {
+	srv := newServerAfterPoll(t, []string{"default", "skog", "aiu"},
+		func(_ string, w http.ResponseWriter) { answerCalm(w) })
+	card := cardNamed(t, homeBody(t, srv), "Стан джерел")
+
+	for _, key := range []string{"default", "skog", "aiu"} {
+		if !strings.Contains(card, key) {
+			t.Errorf("the card does not name the configured key %q; card:\n%s", key, card)
+		}
+	}
+	if got := strings.Count(card, "відповів"); got != 1 {
+		t.Errorf("%d keys are reported as having answered, want exactly 1: the cascade stops at the first", got)
+	}
+	if got := strings.Count(card, "не опитувався"); got != 2 {
+		t.Errorf("%d keys are reported as not consulted, want 2; card:\n%s", got, card)
+	}
+}
+
+// A cascade that had to fall through twice: the two that failed say so and
+// say why, and the third is the one actually answering for this device.
+func TestHomeSaysWhyEachFailedSourceFailed(t *testing.T) {
+	srv := newServerAfterPoll(t, []string{"default", "skog", "aiu"}, func(key string, w http.ResponseWriter) {
+		switch key {
+		case "default":
+			w.Header().Set("Retry-After", "30")
+			w.WriteHeader(http.StatusTooManyRequests)
+		case "skog":
+			http.Error(w, "upstream is having a bad day", http.StatusInternalServerError)
+		default:
+			answerCalm(w)
+		}
+	})
+	card := cardNamed(t, homeBody(t, srv), "Стан джерел")
+
+	if !strings.Contains(card, "ліміт запитів") {
+		t.Errorf("the throttled key does not say it was rate limited; card:\n%s", card)
+	}
+	if !strings.Contains(card, "відповідь не вдалося прочитати") {
+		t.Errorf("the refusing key does not say its reply was unusable; card:\n%s", card)
+	}
+	if got := strings.Count(card, "не відповів"); got != 2 {
+		t.Errorf("%d keys are reported as failed, want 2; card:\n%s", got, card)
+	}
+	if got := strings.Count(card, "не опитувався"); got != 0 {
+		t.Errorf("%d keys are reported as not consulted, want 0 — the cascade walked all three", got)
+	}
+}
+
+// Every source down is the poll this card exists for, and it is the one the
+// reporting is easiest to lose: it travels out of PollOnce on the error path.
+func TestHomeReportsACascadeWhereEverySourceFailed(t *testing.T) {
+	srv := newServerAfterPoll(t, []string{"default", "skog"}, func(_ string, w http.ResponseWriter) {
+		http.Error(w, "upstream is having a bad day", http.StatusInternalServerError)
+	})
+	card := cardNamed(t, homeBody(t, srv), "Стан джерел")
+
+	if got := strings.Count(card, "не відповів"); got != 2 {
+		t.Errorf("%d keys are reported as failed, want both; card:\n%s", got, card)
+	}
+	if strings.Contains(card, "✓ відповів") {
+		t.Errorf("a source is reported as having answered when none did; card:\n%s", card)
+	}
+}
+
+// The card has to say which place these sources are being asked about. A
+// cascade reported without it is a list of verdicts about nothing in
+// particular — and the oblast is changed on /alerts, by the same person
+// reading this card.
+func TestHomeSourcesCardNamesTheMonitoredLocation(t *testing.T) {
+	srv := newServerAfterPoll(t, []string{"default"},
+		func(_ string, w http.ResponseWriter) { answerCalm(w) })
+	card := cardNamed(t, homeBody(t, srv), "Стан джерел")
+
+	if !strings.Contains(card, cascadeRegion) {
+		t.Errorf("the card does not name the monitored location %q; card:\n%s", cascadeRegion, card)
+	}
+}
+
+// Upstream text must not reach this card. alerts.in.ua authenticates with a
+// Bearer token, an error carries whatever the far end sent, and a wrapped
+// error is all it would take to print a credential on a page anyone on the
+// LAN can load. So the card renders alertsource's closed vocabulary and
+// nothing else.
+//
+// The echoed text here is real, not contrived: alertsource quotes the
+// upstream's own Content-Type in the error for a reply it cannot use, which
+// is exactly the sort of far-end string that ends up inside an error value.
+func TestHomeSourcesCardNeverRendersUpstreamErrorText(t *testing.T) {
+	const fromUpstream = "text/html; charset=utf-8-this-came-from-upstream"
+	srv := newServerAfterPoll(t, []string{"default"}, func(_ string, w http.ResponseWriter) {
+		w.Header().Set("Content-Type", fromUpstream)
+		_, _ = w.Write([]byte("<html>sign in to continue</html>"))
+	})
+	card := cardNamed(t, homeBody(t, srv), "Стан джерел")
+
+	if strings.Contains(card, "utf-8-this-came-from-upstream") {
+		t.Errorf("the card printed text the upstream chose; card:\n%s", card)
+	}
+	if !strings.Contains(card, "не відповів") {
+		t.Errorf("the card does not report the source as having failed at all; card:\n%s", card)
+	}
+}
+
+// Before the first poll nothing has asked anything, and that is not the same
+// fact as a cascade of keys that were not reached — that one says a poll
+// happened and stopped early. Rendering the configured list as unreached
+// would be inventing a poll that has not happened.
+func TestHomeSaysSoWhenNothingHasBeenPolledYet(t *testing.T) {
+	srv, _ := newServerWithStore(t) // no engine at all
+	card := cardNamed(t, homeBody(t, srv), "Стан джерел")
+
+	if !strings.Contains(card, "ще не опитувалися") {
+		t.Errorf("the card does not say that no poll has happened yet; card:\n%s", card)
+	}
+	if strings.Contains(card, "не опитувався") {
+		t.Errorf("the card reports keys as unreached before any poll; card:\n%s", card)
+	}
+}
+
+// allClearLine returns the opening tag of the held-back-all-clear line, so a
+// test can tell a line that is on the page from one that is on the page and
+// hidden. Both are rendered — x-show's own inline display:none is what a
+// browser with scripts off obeys — so asserting the words alone would pass
+// against a page that never shows them.
+func allClearLine(t *testing.T, body string) string {
+	t.Helper()
+	card := cardNamed(t, body, "Стан")
+	const open = `<p x-show="allClearSeen > 0"`
+	at := strings.Index(card, open)
+	if at < 0 {
+		t.Fatalf("the Стан card has no held-back-all-clear line at all; card:\n%s", card)
+	}
+	// From the end of the x-show attribute, not from the start of the tag:
+	// the condition itself contains a ">".
+	end := strings.Index(card[at+len(open):], ">")
+	if end < 0 {
+		t.Fatalf("the held-back-all-clear line's tag is never closed; card:\n%s", card)
+	}
+	return card[at : at+len(open)+end+1]
+}
+
+// A device upstream says is calm and that is still announcing a raid looks,
+// from the other side of a room, exactly like a device that has stopped
+// working — and that is the reading that gets it unplugged, during a raid,
+// by somebody who has concluded it is broken. The screen has to say that the
+// wait is deliberate, and how far along it is.
+func TestHomeSaysAnAllClearIsWaitingForConfirmation(t *testing.T) {
+	body := homeBody(t, newServerHoldingAnAllClear(t))
+	card := cardNamed(t, body, "Стан")
+
+	if !strings.Contains(card, "чекає на підтвердження") {
+		t.Errorf("the card does not say the all-clear is being confirmed; card:\n%s", card)
+	}
+	if strings.Contains(allClearLine(t, body), "display:none") {
+		t.Errorf("the line is rendered hidden while an all-clear is actually being held back; card:\n%s", card)
+	}
+	// How far through the run, and how long the run is. The second number
+	// is alertstate.EndConfirmations, which a page cannot read for itself.
+	if !strings.Contains(card, ">1</span> з <span class=\"font-mono\" x-text=\"allClearNeeded\">3<") {
+		t.Errorf("the card does not say how many confirmations have been seen out of how many; card:\n%s", card)
+	}
+}
+
+// And nothing to say when nothing is being held back. A counter that is
+// always on screen is a counter nobody reads on the one day it matters.
+func TestHomeHidesTheAllClearLineWhenNothingIsHeldBack(t *testing.T) {
+	srv, _ := newServerWithStore(t)
+	if line := allClearLine(t, homeBody(t, srv)); !strings.Contains(line, "display:none") {
+		t.Errorf("the all-clear line is shown on a device holding nothing back: %s", line)
 	}
 }

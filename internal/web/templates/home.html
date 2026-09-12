@@ -222,12 +222,99 @@ already widened.
       binding dropped in a reflow stops updating with nothing to say so.
       */}}
       <p>Останнє оновлення: <span class="font-mono" x-text="lastSuccess">{{.LastSuccessText}}</span></p>
+      {{/*
+      An all-clear upstream has reported and this device is not announcing
+      yet. Without it, «alerts.in.ua каже, що відбій, а пристрій досі
+      показує ТРИВОГА» reads as a device that has stopped working — which is
+      the reading that gets it unplugged, during a raid, by somebody who has
+      concluded it is broken. The wait is deliberate and it is short, so the
+      screen says so and says how far along it is.
+
+      Bound to the stream, not rendered once: the run lasts at most three
+      polls and it is counted while somebody is watching. A frozen counter
+      would be stuck during exactly the window it exists for. Both values
+      come from the frame — see sse.go — and the server-rendered pair is
+      what a browser with scripts off sees.
+
+      Hidden when nothing is being held back, the same shape as every other
+      conditional line on this page: rendered, with the inline display:none
+      x-show itself sets.
+      */}}
+      <p x-show="allClearSeen > 0"{{if not .Status.AllClearSeen}} style="display:none"{{end}}>
+        Джерело повідомляє про відбій — пристрій чекає на підтвердження:
+        <span class="font-mono" x-text="allClearSeen">{{.Status.AllClearSeen}}</span> з <span class="font-mono" x-text="allClearNeeded">{{.Status.AllClearNeeded}}</span>.
+      </p>
       <p class="font-semibold text-destructive" x-show="failing"{{if not .Status.Failing}} style="display:none"{{end}} x-text="lastError ? '✕ ' + lastError : ''">{{if .Status.Failing}}✕ {{.Status.LastError}}{{end}}</p>
     </section>
 
     <section class="card p-4">
       <h2 class="text-sm font-semibold text-muted-foreground">Найближча подія</h2>
       <p class="text-lg"><span x-text="nextEvent">{{.Status.NextEventName}}</span> — <span class="font-mono" x-text="nextEventAt">{{.NextEventAtText}}</span></p>
+    </section>
+
+    {{/*
+    Which of the configured sources actually answered, and what happened to
+    the rest. The Стан card above names the source by the name it reports for
+    itself — "default" answers as "Vadym Klymenko API" — which is no help at
+    all to an operator holding the list of keys they typed on /alerts; this
+    card is that list, in cascade order, with a verdict against each.
+
+    Three states, and the third is the whole reason the card exists. The
+    cascade stops at the first key that answers, so everything behind it was
+    never consulted: showing those as working promises fallbacks nothing has
+    checked, and showing them as broken sends somebody chasing a fault that
+    is not there. «Не опитувався» is its own answer, in muted text, and it is
+    the normal state of a healthy device — which is why it is worded as a
+    fact rather than as a warning.
+
+    Full width, between the two half-width rows above and below. Seven cards
+    do not divide into two columns, and this is the one that wants the width:
+    a cascade can hold seven keys, and a two-column card would set them in a
+    narrow strip beside a mostly empty neighbour.
+
+    Render-time, not live, like Звук and Останні дії. The cascade changes
+    once per poll interval, not once per second, and the alternative — an
+    x-for over a frame array — would mean this list existing twice in this
+    file, once for the server and once for Alpine, with nothing to keep the
+    two saying the same thing. The staleness badge above is what tells the
+    operator the whole page has stopped being current.
+    */}}
+    <section class="card p-4 sm:col-span-2">
+      <h2 class="text-sm font-semibold text-muted-foreground">Стан джерел</h2>
+      {{/*
+      The place this device is watching, said on the card that says where its
+      information comes from. It is bound to the stream like the copy in the
+      banner: the oblast is changed on /alerts, and two lines on one page
+      disagreeing about which oblast is monitored is the kind of thing that
+      gets noticed during a raid.
+      */}}
+      <p class="mt-2">Місцевість: <span x-text="region">{{.Status.Region}}</span></p>
+      {{if .SourcesNotice}}
+      <p class="mt-2 text-muted-foreground">{{.SourcesNotice}}</p>
+      {{else}}
+      {{/*
+      An ordered list because the order is a fact about the cascade, not a
+      presentation choice: the first key is tried first. The markers are not
+      drawn — the grid makes the items grid children — and the order is
+      carried by the element itself for anything reading this aloud.
+
+      A failure is told apart without reading it: a thick bar down the
+      leading edge and a tinted row, then the ✕ and the word. The same rule
+      as Останні дії below and the state banner above — never colour alone.
+      */}}
+      <ol class="mt-2 grid gap-2">
+        {{range .Sources}}
+        <li class="rounded-md border border-border border-l-4 p-3 {{if .Failed}}border-l-destructive bg-destructive/10{{else}}border-l-border{{end}}">
+          <div class="flex items-baseline justify-between gap-2">
+            <span class="font-mono text-sm">{{.Key}}</span>
+            <span class="text-sm font-semibold{{if .Failed}} text-destructive{{else if .NotReached}} text-muted-foreground{{end}}">{{.State}}</span>
+          </div>
+          {{if .Reason}}<p class="text-sm wrap-break-word">{{.Reason}}</p>{{end}}
+        </li>
+        {{end}}
+      </ol>
+      {{end}}
+      <p class="mt-4 text-sm"><a class="underline" href="/alerts">Налаштування джерел</a></p>
     </section>
 
     {{/*
@@ -439,6 +526,10 @@ function status() {
     alert: {{.Status.Alert}}, region: {{.Status.Region}}, since: {{.SinceText}},
     lastSuccess: {{.LastSuccessText}}, lastError: {{.Status.LastError}}, source: {{.Status.SourceName}},
     failing: {{.Status.Failing}}, clockSynced: {{.Status.ClockSynced}},
+    // How far along a held-back all-clear is, and how far it has to get.
+    // Needed is carried rather than written in here because the count is
+    // alertstate.EndConfirmations and a page cannot read a Go constant.
+    allClearSeen: {{.Status.AllClearSeen}}, allClearNeeded: {{.Status.AllClearNeeded}},
     nextEvent: {{.Status.NextEventName}}, nextEventAt: {{.NextEventAtText}},
     // Truthy exactly while the player has something current — see sse.go's
     // Playing field, which carries the event id for that same reason.
@@ -476,6 +567,7 @@ function status() {
         this.alert = d.alert; this.region = d.region; this.since = d.since;
         this.lastSuccess = d.last_success; this.lastError = d.last_error; this.source = d.source;
         this.failing = d.failing; this.clockSynced = d.clock_synced;
+        this.allClearSeen = d.all_clear_seen; this.allClearNeeded = d.all_clear_needed;
         this.nextEvent = d.next_event; this.nextEventAt = d.next_event_at;
         this.playing = d.playing;
         this.retitle();

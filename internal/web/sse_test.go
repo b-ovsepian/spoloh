@@ -136,3 +136,35 @@ func TestBroadcasterCountsItsSubscribers(t *testing.T) {
 		t.Fatalf("Len = %d once everyone left, want 0", got)
 	}
 }
+
+// The counter is in the frame rather than rendered once, and this is what
+// says so. An all-clear run is at most alertstate.EndConfirmations polls
+// long and it is counted while somebody is standing in front of the screen
+// asking why the device is still red: a number frozen at whatever it was
+// when the page loaded would be stuck during exactly the window it exists
+// for, which makes "my device looks stuck" worse rather than better.
+func TestEventsStreamCarriesAHeldBackAllClear(t *testing.T) {
+	srv := newServerHoldingAnAllClear(t)
+	setPassword(t, srv, "correct horse battery staple")
+	cookie := login(t, srv, "correct horse battery staple")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	req := httptest.NewRequest(http.MethodGet, "/stream", nil).WithContext(ctx)
+	req.AddCookie(cookie)
+	rec := httptest.NewRecorder()
+
+	done := make(chan struct{})
+	go func() { defer close(done); srv.Handler().ServeHTTP(rec, req) }()
+
+	time.Sleep(200 * time.Millisecond)
+	cancel()
+	<-done
+
+	body := rec.Body.String()
+	if !strings.Contains(body, `"all_clear_seen":1`) {
+		t.Errorf("the frame does not carry how many calm readings have been confirmed; body was %q", body)
+	}
+	if !strings.Contains(body, `"all_clear_needed":3`) {
+		t.Errorf("the frame does not carry how many confirmations it takes; body was %q", body)
+	}
+}
