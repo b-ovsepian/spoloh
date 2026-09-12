@@ -2,7 +2,10 @@ package web
 
 import (
 	"net/http"
+	"slices"
 	"strconv"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/b-ovsepian/spoloh/internal/alertsource"
@@ -34,19 +37,15 @@ func isKnownRegion(region string) bool {
 // this device, which is what decides whether that source may be chosen at all
 // (alertsource.SelectableSources).
 //
-// It is false today, and that is not a placeholder for something forgotten:
-// config.Alerts has no field to keep a token in yet. Until it does, the
-// source is not offered — which is the only honest of the two options. Offer
-// it without a credential and an operator can build a cascade whose every
-// slot fails to authenticate: a device that hears about no air raid at all,
-// behind a dashboard showing a complete, ordered, configured-looking list.
-// That is the exact failure this screen's other rules exist to prevent.
-//
-// When the field lands this becomes one field read, and every caller, view
-// and test on this screen goes on working unchanged.
+// The one field read this has always been meant to be. It answers false on
+// every device that has not been given a token, and a source whose credential
+// is missing is not offered — the only honest of the two options. Offer it
+// without a credential and an operator can build a cascade whose every slot
+// fails to authenticate: a device that hears about no air raid at all, behind
+// a dashboard showing a complete, ordered, configured-looking list. That is
+// the exact failure this screen's other rules exist to prevent.
 func alertsUATokenStored(cfg *config.Config) bool {
-	_ = cfg
-	return false
+	return cfg.Alerts.AlertsUAToken != ""
 }
 
 // selectableSources is the one list this screen offers, validates against and
@@ -54,6 +53,43 @@ func alertsUATokenStored(cfg *config.Config) bool {
 // from being checked against a different list than the one it was offered.
 func selectableSources(cfg *config.Config) []string {
 	return alertsource.SelectableSources(alertsUATokenStored(cfg))
+}
+
+// watch is where this device will look, exactly as the form currently reads:
+// the oblast, and the location under it that was picked — zero for "the whole
+// oblast", which is what a device with no location chosen has always done.
+//
+// The two are kept together because the honest answer to "what will this
+// source announce for" needs both. They cannot disagree once stored:
+// handleAlertsSave refuses a location whose alertsource.OblastOf is not the
+// submitted oblast, which is what lets forSource below answer with the
+// oblast field itself rather than re-deriving it.
+type watch struct {
+	Region      string
+	LocationUID int
+}
+
+// forSource is the sentence-worth of truth the page owes the operator for one
+// cascade slot: the place that source will actually report for.
+//
+// alerts.in.ua is the only provider that understands anything below oblast
+// level, so it is the only one that can answer for the chosen location. The
+// six Ubilling keys report a boolean per oblast, so a cascade that falls
+// through to one of them broadens to the whole oblast — more than was asked
+// for, never less, which is the safe direction but a genuine surprise if the
+// first time it is noticed is during a raid two districts away. Hence saying
+// it here, per source, before it happens.
+//
+// A UID the table no longer lists falls back to the oblast for the same
+// reason the daemon does: broadening announces too much, and refusing
+// announces nothing.
+func (w watch) forSource(key string) string {
+	if key == alertsource.AlertsUAKey {
+		if l, ok := alertsource.LookupLocation(w.LocationUID); ok {
+			return l.Label
+		}
+	}
+	return w.Region
 }
 
 // sourceSlotOption is one <option> inside a single cascade-position <select>.
@@ -78,6 +114,11 @@ type sourceSlotView struct {
 	// non-empty: a chosen source with no established URL renders no link at
 	// all, the same as an unused slot, rather than a broken one.
 	Source alertsource.SourceInfo
+
+	// Watches is the place this slot's source will report for — see
+	// watch.forSource. Empty for an unused slot, which renders no line at
+	// all rather than a claim about a source nobody chose.
+	Watches string
 }
 
 // buildSourceSlots turns a stored (or just-submitted) cascade into the
@@ -91,8 +132,9 @@ type sourceSlotView struct {
 // them — and never fewer slots than the stored cascade is long, so a cascade
 // saved while a source was selectable is still shown in full if that source
 // stops being offered. A shorter cascade is built by leaving slots on "not
-// used".
-func buildSourceSlots(current []string, keys []string) []sourceSlotView {
+// used". w is what each chosen slot's "will watch" line is built from — see
+// watch.forSource.
+func buildSourceSlots(current []string, keys []string, w watch) []sourceSlotView {
 	count := len(keys)
 	if len(current) > count {
 		count = len(current)
@@ -114,6 +156,9 @@ func buildSourceSlots(current []string, keys []string) []sourceSlotView {
 		// slot goes through.
 		source, _ := alertsource.Lookup(picked)
 		slots[i] = sourceSlotView{Position: i + 1, Options: options, Source: source}
+		if picked != "" {
+			slots[i].Watches = w.forSource(picked)
+		}
 	}
 	return slots
 }
@@ -193,6 +238,144 @@ func pollIntervalSeconds(d config.Duration) int {
 	return int(d.Std() / time.Second)
 }
 
+// locationOptionView is one <option> in the location picker.
+type locationOptionView struct {
+	UID int
+	// Label is alertsource.Location.Label, already disambiguated by the
+	// generator where a bare name repeats across the country — several
+	// oblasts hold a hromada of the same name, and a picker offering two
+	// identical lines is a picker that gets the wrong one chosen.
+	Label string
+}
+
+// locationGroupView is one <optgroup>: an oblast (or special-status city) and
+// every location inside it, in alertsource.SortLocations order.
+type locationGroupView struct {
+	Oblast    string
+	Locations []locationOptionView
+}
+
+// locationGroups is the whole picker, built once.
+//
+// The published table cannot change while the daemon runs, and rebuilding
+// 1,622 entries on every render of a screen an operator opens twice a year is
+// work no board here should do — least of all the armv6 ones, whose one CPU
+// may have a siren to start. The selected entry is not baked in: alerts.html
+// compares each UID against the view's own, so one shared slice serves every
+// request.
+//
+// Only locations under an oblast the region picker actually offers are
+// included. The published table carries two the 25-key Ubilling list does not
+// — an operator who chose one could never satisfy the "inside the chosen
+// oblast" rule, so offering it would be offering a dead end. The standing
+// rule on this screen is that a picker offers only what a submission may be
+// validated against; see selectableSources, which drops a source whose
+// credential is missing for the same reason.
+var locationGroups = sync.OnceValue(func() []locationGroupView {
+	offered := alertsource.Regions()
+
+	ls := alertsource.Locations()
+	alertsource.SortLocations(ls)
+
+	var groups []locationGroupView
+	for _, l := range ls {
+		oblast, ok := alertsource.OblastOf(l)
+		if !ok || !slices.Contains(offered, oblast.Name) {
+			continue
+		}
+		if len(groups) == 0 || groups[len(groups)-1].Oblast != oblast.Label {
+			groups = append(groups, locationGroupView{Oblast: oblast.Label})
+		}
+		g := &groups[len(groups)-1]
+		g.Locations = append(g.Locations, locationOptionView{UID: l.UID, Label: l.Label})
+	}
+	return groups
+})
+
+// The two ways a submitted location is refused. Each names the field in the
+// operator's own language rather than falling back to the generic "не вдалося
+// зберегти" every rejected Update ends in — the same contract
+// parsePollInterval keeps.
+const (
+	locationInvalidMessage = "Оберіть населений пункт зі списку."
+	locationOutsideMessage = "Обраний населений пункт не належить до обраної області."
+)
+
+// parseLocationUID reads the "location" form field and checks it against the
+// table it was offered from, the way every operator-choosable value here is.
+// An empty return message means it is valid.
+//
+// An empty field, and the explicit "0", are "the whole oblast" — not an
+// error. That is the state every device ships in and most will stay in, and
+// it is the only value a config written before the field existed can have.
+//
+// A UID that is real but sits under a different oblast is refused rather than
+// quietly accepted. The oblast field still drives the six Ubilling sources,
+// so an operator watching a hromada in one oblast while the fallbacks watch
+// another would have a cascade that changes which part of the country it
+// announces for depending on which source happened to answer — and would find
+// that out during a raid. alertsource.OblastOf is what pairs them.
+func parseLocationUID(s, region string) (int, string) {
+	s = strings.TrimSpace(s)
+	if s == "" || s == "0" {
+		return 0, ""
+	}
+	uid, err := strconv.Atoi(s)
+	if err != nil {
+		return 0, locationInvalidMessage
+	}
+	l, ok := alertsource.LookupLocation(uid)
+	if !ok {
+		return 0, locationInvalidMessage
+	}
+	oblast, ok := alertsource.OblastOf(l)
+	if !ok || oblast.Name != region {
+		return 0, locationOutsideMessage
+	}
+	return uid, ""
+}
+
+// maxAlertsUATokenLen is a sanity bound, not a claim about the format: the
+// issued tokens are far shorter, and nothing here should store a megabyte
+// because a field accepted whatever was posted at it.
+const maxAlertsUATokenLen = 256
+
+const (
+	tokenInvalidMessage = "Токен alerts.in.ua має складатися з друкованих символів без пробілів."
+	tokenTooLongMessage = "Токен alerts.in.ua задовгий."
+)
+
+// parseAlertsUAToken reads the "alerts_ua_token" field. An empty return
+// message means it is valid; an empty token means "leave the stored one
+// alone".
+//
+// That asymmetry is deliberate and is the whole reason this is not an
+// ordinary text field. The token is never rendered back — leak_test.go walks
+// every route to prove it — so a blank box is what an operator sees on every
+// visit, and reading blank as "delete" would wipe the credential the first
+// time somebody came here to change the poll interval. Removing one is its
+// own checkbox, which is a thing a person has to mean.
+//
+// The character check is not cosmetic. This value is sent as an Authorization
+// header, and a control character in a header value is header injection; a
+// space or a newline is far more likely to be a paste that picked up the text
+// around it than a token any API issued.
+func parseAlertsUAToken(s string) (string, string) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return "", ""
+	}
+	if len(s) > maxAlertsUATokenLen {
+		return "", tokenTooLongMessage
+	}
+	for _, r := range s {
+		if r <= ' ' || r > '~' {
+			return "", tokenInvalidMessage
+		}
+	}
+	return s, ""
+}
+
 // alertsView is what alerts.html reads.
 type alertsView struct {
 	// Regions is the fixed 25-key list a submitted oblast is validated
@@ -200,6 +383,12 @@ type alertsView struct {
 	// rejected submission, the one an operator just tried.
 	Regions       []string
 	CurrentRegion string
+
+	// LocationGroups is the location picker's whole content, shared between
+	// every request (see locationGroups), and CurrentLocationUID is the
+	// entry to mark selected — 0 for "the whole oblast".
+	LocationGroups     []locationGroupView
+	CurrentLocationUID int
 
 	// SourceSlots is the cascade-order picker: alertsSlotCount positions,
 	// each pre-selected from the stored (or just-submitted) cascade — see
@@ -213,6 +402,19 @@ type alertsView struct {
 	// polling every 5 seconds had every source rate-limit at once.
 	PollIntervalSeconds int
 
+	// TokenStored says whether an alerts.in.ua credential is on this device,
+	// and it is deliberately a boolean: the token itself never enters this
+	// view, because a view is what gets rendered. leak_test.go walks every
+	// route on this server to hold that line.
+	TokenStored bool
+
+	// TokenDocsURL is where an operator goes to get one. It comes from the
+	// registry rather than being typed into the template, for the reason
+	// alertsource.SourceInfo gives: a link this device shows is a claim
+	// about where its data comes from, and there is one place that owns
+	// those.
+	TokenDocsURL string
+
 	// Error is a rejected submission's reason; Message is a completed one's
 	// confirmation. Never both at once, the same contract every other
 	// screen here keeps.
@@ -223,11 +425,16 @@ type alertsView struct {
 // alertsBaseView builds the view a fresh GET, a success and a rejection all
 // start from, the same shape every other screen here uses.
 func (s *Server) alertsBaseView(cfg *config.Config) alertsView {
+	stored := watch{Region: cfg.Alerts.Region, LocationUID: cfg.Alerts.LocationUID}
 	return alertsView{
 		Regions:             alertsource.Regions(),
 		CurrentRegion:       cfg.Alerts.Region,
-		SourceSlots:         buildSourceSlots(cfg.Alerts.Sources, selectableSources(cfg)),
+		LocationGroups:      locationGroups(),
+		CurrentLocationUID:  cfg.Alerts.LocationUID,
+		SourceSlots:         buildSourceSlots(cfg.Alerts.Sources, selectableSources(cfg), stored),
 		PollIntervalSeconds: pollIntervalSeconds(cfg.Alerts.PollInterval),
+		TokenStored:         alertsUATokenStored(cfg),
+		TokenDocsURL:        alertsource.AlertsUADocsURL,
 	}
 }
 
@@ -250,15 +457,17 @@ func (s *Server) handleAlertsPage(w http.ResponseWriter, r *http.Request) {
 	s.renderAlertsPage(w, http.StatusOK, nil)
 }
 
-// handleAlertsSave writes the oblast, the source cascade and the poll
-// interval — the three settings that answer where alerts come from, for
-// where, and how often they are asked for. Every rule this handler owns
-// exists because getting one of them wrong stops the device hearing about an
-// air raid while the dashboard still looks configured: an unmatchable region
-// (isKnownRegion, moved here unchanged from network.go), an empty cascade
-// (parseSources always returns a slice that can only be empty when nothing
-// usable was submitted), or an interval fast enough for every source in that
-// cascade to rate-limit at once, which is what parsePollInterval refuses.
+// handleAlertsSave writes the oblast, the location under it, the source
+// cascade, the poll interval and the alerts.in.ua token — everything that
+// answers where alerts come from, for where, and how often they are asked
+// for. Every rule this handler owns exists because getting one of them wrong
+// stops the device hearing about an air raid while the dashboard still looks
+// configured: an unmatchable region (isKnownRegion, moved here unchanged from
+// network.go), a location under some other oblast than the fallbacks watch,
+// an empty cascade (parseSources always returns a slice that can only be
+// empty when nothing usable was submitted), or an interval fast enough for
+// every source in that cascade to rate-limit at once, which is what
+// parsePollInterval refuses.
 func (s *Server) handleAlertsSave(w http.ResponseWriter, r *http.Request) {
 	if !sameOrigin(r) {
 		http.Error(w, "cross-origin request rejected", http.StatusForbidden)
@@ -267,8 +476,17 @@ func (s *Server) handleAlertsSave(w http.ResponseWriter, r *http.Request) {
 
 	cfg := s.deps.Config.Get()
 	region := r.FormValue("region")
+	locationUID, locationErr := parseLocationUID(r.FormValue("location"), region)
+	// Validated against the list the page offered, which is the list the
+	// stored credential allows. A token arriving in this same submission
+	// cannot widen it: with no token stored the <select> has no alerts.in.ua
+	// option to pick, so the operator saves the token, the page comes back
+	// offering the source, and they choose it. Two steps, and the second one
+	// is a choice rather than something that happened to them.
 	sources := parseSources(r.Form["source"], selectableSources(cfg))
 	interval, intervalErr := parsePollInterval(r.FormValue("poll_interval"))
+	token, tokenErr := parseAlertsUAToken(r.FormValue("alerts_ua_token"))
+	removeToken := r.FormValue("remove_token") != ""
 
 	reject := func(status int, message string) {
 		// A rejected region cannot be re-selected in the <select>, which
@@ -293,16 +511,33 @@ func (s *Server) handleAlertsSave(w http.ResponseWriter, r *http.Request) {
 		if intervalErr == "" {
 			selectedInterval = interval
 		}
+		// And the same for the location, with one addition: a location is
+		// only re-selectable next to the oblast it belongs to, so a
+		// rejection that fell back to the stored oblast falls back to the
+		// stored location with it rather than leaving a pair on screen
+		// that this handler would refuse again.
+		selected := watch{Region: selectedRegion, LocationUID: locationUID}
+		if locationErr != "" || selectedRegion != region {
+			selected.LocationUID = 0
+			if selectedRegion == cfg.Alerts.Region {
+				selected.LocationUID = cfg.Alerts.LocationUID
+			}
+		}
 		s.renderAlertsPage(w, status, func(v *alertsView) {
 			v.Error = message
-			v.CurrentRegion = selectedRegion
-			v.SourceSlots = buildSourceSlots(sources, selectableSources(cfg))
+			v.CurrentRegion = selected.Region
+			v.CurrentLocationUID = selected.LocationUID
+			v.SourceSlots = buildSourceSlots(sources, selectableSources(cfg), selected)
 			v.PollIntervalSeconds = pollIntervalSeconds(selectedInterval)
 		})
 	}
 
 	if !isKnownRegion(region) {
 		reject(http.StatusBadRequest, "Оберіть область зі списку.")
+		return
+	}
+	if locationErr != "" {
+		reject(http.StatusBadRequest, locationErr)
 		return
 	}
 	if len(sources) == 0 {
@@ -313,14 +548,37 @@ func (s *Server) handleAlertsSave(w http.ResponseWriter, r *http.Request) {
 		reject(http.StatusBadRequest, intervalErr)
 		return
 	}
+	if tokenErr != "" {
+		reject(http.StatusBadRequest, tokenErr)
+		return
+	}
+	// Deleting the credential a chosen source authenticates with would leave
+	// a cascade slot that can only fail. Dropping alerts.in.ua from the
+	// cascade on the operator's behalf would be quieter and worse: they
+	// ordered that cascade, and a device silently reordering what it tries
+	// is a device nobody can reason about during a raid. So it is refused,
+	// and the sentence says which of the two things to undo.
+	if removeToken && slices.Contains(sources, alertsource.AlertsUAKey) {
+		reject(http.StatusBadRequest, "Спершу приберіть alerts.in.ua з черги джерел, а тоді видаляйте токен.")
+		return
+	}
 
 	err := s.deps.Config.Update(func(c *config.Config) error {
 		c.Alerts.Region = region
+		c.Alerts.LocationUID = locationUID
 		c.Alerts.Sources = sources
 		c.Alerts.PollInterval = interval
+		switch {
+		case removeToken:
+			c.Alerts.AlertsUAToken = ""
+		case token != "":
+			c.Alerts.AlertsUAToken = token
+		}
 		return nil
 	})
 	if err != nil {
+		// The token is never in an error this logs, and must never become
+		// so: the value is a credential and this line goes to the journal.
 		s.deps.Logger.Error("alerts: save rejected", "err", err)
 		reject(http.StatusBadRequest, "Не вдалося зберегти налаштування сповіщень. Перевірте введені дані.")
 		return

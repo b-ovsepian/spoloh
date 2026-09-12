@@ -24,6 +24,28 @@
       </div>
 
       {{/*
+      A plain <select> with an <optgroup> per oblast, and nothing else: this
+      is safety equipment, so the control has to work with scripts off, and a
+      native picker is what every browser already gives a keyboard and a
+      screen reader for free. The list is long — every published hromada in
+      the country — but it is also the only place an operator can say
+      anything more exact than "my oblast".
+
+      "Вся область" is first and is what a device ships on. Only alerts.in.ua
+      can act on anything finer; every other source in the queue reports by
+      oblast, which is what the per-source line under each picker below says
+      out loud.
+      */}}
+      <div class="field">
+        <label for="location">Населений пункт</label>
+        <select class="select" id="location" name="location">
+          <option value="0"{{if eq 0 .CurrentLocationUID}} selected{{end}}>— вся область —</option>
+          {{range .LocationGroups}}<optgroup label="{{.Oblast}}">{{range .Locations}}<option value="{{.UID}}"{{if eq .UID $.CurrentLocationUID}} selected{{end}}>{{.Label}}</option>{{end}}</optgroup>{{end}}
+        </select>
+        <p class="text-sm text-muted-foreground">Має належати до обраної області. Точніше за область розуміє лише alerts.in.ua — решта джерел у черзі повідомляють по всій області.</p>
+      </div>
+
+      {{/*
       One <select> per cascade position rather than a set of checkboxes: a
       checkbox can say which sources are in, but not which one is tried
       first — and the whole point of a cascade is which one that is. Any
@@ -68,6 +90,14 @@
               <a class="flex shrink-0 items-center gap-1 text-sm underline" href="{{.Source.URL}}" target="_blank" rel="noopener noreferrer" aria-label="Документація джерела «{{.Source.Name}}» — відкриється в новій вкладці">API<svg aria-hidden="true" viewBox="0 0 24 24" width="14" height="14" class="shrink-0" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 4h6v6"/><path d="M20 4 10 14"/><path d="M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"/></svg></a>
               {{end}}
             </div>
+            {{/*
+            What this slot will actually watch, said before it happens
+            rather than discovered during a raid in the next district. A
+            source that only reports by oblast shows the oblast here even
+            when a hromada is chosen: it announces more than was asked for,
+            never less. An unused slot claims nothing.
+            */}}
+            {{if .Watches}}<p class="text-sm text-muted-foreground">Стежитиме за: {{.Watches}}</p>{{end}}
           </div>
           {{end}}
         </div>
@@ -77,6 +107,25 @@
         <label for="poll_interval">Інтервал опитування, секунд</label>
         <input class="input" type="number" min="10" step="1" id="poll_interval" name="poll_interval" value="{{.PollIntervalSeconds}}" required>
         <p class="text-sm text-muted-foreground">Як часто пристрій запитує джерела. Не частіше ніж раз на 10 секунд: надто часті запити впираються в обмеження джерел, і тоді пристрій може не дізнатися про тривогу.</p>
+      </div>
+
+      {{/*
+      The stored token is never rendered, not even masked: a value that is
+      not on the page cannot leak from it, and leak_test.go walks every route
+      on this server to keep that true. So the box is always empty, and an
+      empty box means "leave it alone" — otherwise every visit here to change
+      the poll interval would quietly delete the credential. Removing one is
+      the checkbox, which somebody has to mean.
+      */}}
+      <div class="field">
+        <label for="alerts_ua_token">Токен alerts.in.ua</label>
+        <input class="input" type="password" id="alerts_ua_token" name="alerts_ua_token" autocomplete="off" spellcheck="false" value="">
+        {{if .TokenStored}}
+        <p class="text-sm text-muted-foreground">Токен збережено. Залиште поле порожнім, щоб не змінювати його.</p>
+        <label class="flex items-center gap-2 text-sm"><input type="checkbox" name="remove_token" value="1"> Видалити збережений токен</label>
+        {{else}}
+        <p class="text-sm text-muted-foreground">Без токена джерело alerts.in.ua недоступне — саме воно повідомляє рівень тривоги й місце точніше за область. Отримати токен: <a class="underline" href="{{.TokenDocsURL}}" target="_blank" rel="noopener noreferrer" aria-label="Документація alerts.in.ua, де видають токен — відкриється в новій вкладці">devs.alerts.in.ua</a>.</p>
+        {{end}}
       </div>
 
       <button class="btn w-fit" type="submit">Зберегти</button>

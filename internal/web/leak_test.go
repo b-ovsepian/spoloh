@@ -8,9 +8,11 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/b-ovsepian/spoloh/internal/config"
 )
 
-// TestNoPageRendersAnAuthSecret walks every route srv.Patterns() registers
+// TestNoPageRendersASecret walks every route srv.Patterns() registers
 // and requests each one twice with a live session — once with GET, once with
 // POST and an empty form — failing if either response body contains the
 // password hash or the session secret. The POST leg matters as much as the
@@ -41,15 +43,32 @@ import (
 // anything. And this only ever sends GET and an empty POST — a rejection
 // or success render reachable solely through a specific field value (rather
 // than an empty one) is not exercised here.
-func TestNoPageRendersAnAuthSecret(t *testing.T) {
+func TestNoPageRendersASecret(t *testing.T) {
 	const password = "correct horse battery staple"
+	// A token distinctive enough that finding it in a body means it was
+	// rendered, not that two ordinary words happened to line up.
+	const alertsUAToken = "alerts-ua-token-0123456789abcdef"
+
 	srv, store := newServerWithStore(t)
 	setPassword(t, srv, password)
+	// The alerts.in.ua token is a credential the operator hands this device,
+	// and /alerts is a form that writes it — so it is exactly the kind of
+	// value a re-render echoes back into an <input> without anyone meaning
+	// to. It is stored here so the walk below has something to find: the
+	// admin hash has never leaked because this test existed before it did,
+	// and this token must not become the first exception.
+	if err := store.Update(func(c *config.Config) error {
+		c.Alerts.AlertsUAToken = alertsUAToken
+		return nil
+	}); err != nil {
+		t.Fatalf("store the alerts.in.ua token: %v", err)
+	}
 
 	cfg := store.Get()
 	secrets := map[string]string{
-		"password hash":  cfg.Auth.PasswordHash,
-		"session secret": cfg.Auth.SessionSecret,
+		"password hash":      cfg.Auth.PasswordHash,
+		"session secret":     cfg.Auth.SessionSecret,
+		"alerts.in.ua token": cfg.Alerts.AlertsUAToken,
 	}
 	for name, v := range secrets {
 		if v == "" {

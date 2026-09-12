@@ -11,6 +11,7 @@ import (
 
 	"github.com/b-ovsepian/spoloh/internal/alertsource"
 	"github.com/b-ovsepian/spoloh/internal/config"
+	"github.com/b-ovsepian/spoloh/internal/web"
 )
 
 // This is the screen operator feedback asked for: the oblast used to live on
@@ -691,6 +692,366 @@ func TestAlertsPageLinksEveryChosenSource(t *testing.T) {
 		// its <path> elements would match the looser prefix.
 		if strings.Contains(field, "<p class=") {
 			t.Errorf("%s: the link is still a paragraph of its own rather than a control beside the picker; field markup: %s", key, field)
+		}
+	}
+}
+
+// The operator's own site, and the worked example for everything below:
+// UID 1198 is м. Шостка, a hromada under Шосткинський район under Сумська
+// область. internal/alertsource pins that chain; if it ever breaks, the
+// device announces for somewhere else.
+const (
+	shostkaUID   = "1198"
+	shostkaLabel = "м. Шостка та Шосткинська територіальна громада"
+	sumyOblast   = "Сумська область"
+)
+
+// sourceSlotBlockHTML returns everything the page renders for one cascade
+// position — the <select>, its documentation link and the line saying what
+// that source will watch — by cutting at the next position's marker. The
+// narrower helpers above stop inside the slot and cannot see the line.
+func sourceSlotBlockHTML(t *testing.T, body string, position int) string {
+	t.Helper()
+	start := strings.Index(body, fmt.Sprintf(`id="source-%d"`, position))
+	if start < 0 {
+		t.Fatalf("no source slot rendered for position %d", position)
+	}
+	end := strings.Index(body[start:], fmt.Sprintf(`id="source-%d"`, position+1))
+	if end < 0 {
+		return body[start:]
+	}
+	return body[start : start+end]
+}
+
+// alertsPage fetches /alerts with a live session and returns the body.
+func alertsPage(t *testing.T, srv *web.Server, cookie *http.Cookie) string {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodGet, "/alerts", nil)
+	req.AddCookie(cookie)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /alerts = %d, want 200", rec.Code)
+	}
+	return rec.Body.String()
+}
+
+// A device with no location chosen — every device, until somebody chooses one
+// — must show "the whole oblast" as the selection rather than silently
+// landing on whichever entry the table happens to list first.
+func TestAlertsPageDefaultsTheLocationToTheWholeOblast(t *testing.T) {
+	srv, store := newServerWithStore(t)
+	setPassword(t, srv, "correct horse battery staple")
+	cookie := login(t, srv, "correct horse battery staple")
+
+	if store.Get().Alerts.LocationUID != 0 {
+		t.Fatalf("setup: a fresh device already has a location")
+	}
+
+	body := alertsPage(t, srv, cookie)
+	if !strings.Contains(body, `<option value="0" selected>`) {
+		t.Error(`the location picker does not default to "вся область"`)
+	}
+	// And the operator can actually get further than an oblast: the hromada
+	// this device's own site sits in has to be offerable, or the picker adds
+	// nothing over the region <select> beside it.
+	if !strings.Contains(body, fmt.Sprintf(`<option value="%s"`, shostkaUID)) {
+		t.Errorf("the location picker does not offer UID %s (%s)", shostkaUID, shostkaLabel)
+	}
+}
+
+// The happy path for the location: chosen, stored, and shown as selected the
+// next time the screen is opened.
+func TestAlertsSaveStoresTheChosenLocation(t *testing.T) {
+	srv, store := newServerWithStore(t)
+	setPassword(t, srv, "correct horse battery staple")
+	cookie := login(t, srv, "correct horse battery staple")
+
+	req := postForm("/alerts", url.Values{
+		"region": {sumyOblast}, "location": {shostkaUID},
+		"source": {"default", "skog"}, "poll_interval": {"15"},
+	})
+	req.AddCookie(cookie)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+	if got := store.Get().Alerts.LocationUID; got != 1198 {
+		t.Fatalf("stored LocationUID = %d, want 1198", got)
+	}
+	if !strings.Contains(alertsPage(t, srv, cookie), fmt.Sprintf(`<option value="%s" selected>`, shostkaUID)) {
+		t.Error("the stored location is not rendered as selected")
+	}
+}
+
+// A crafted form must not be able to write a UID that is in no published
+// table. The device would then be watching a place nothing upstream ever
+// reports — the location half of the failure isKnownRegion exists to stop.
+func TestAlertsSaveRefusesALocationThatIsNotInTheTable(t *testing.T) {
+	srv, store := newServerWithStore(t)
+	setPassword(t, srv, "correct horse battery staple")
+	cookie := login(t, srv, "correct horse battery staple")
+
+	for _, bad := range []string{"999999", "not-a-number", "-1"} {
+		req := postForm("/alerts", url.Values{
+			"region": {sumyOblast}, "location": {bad},
+			"source": {"default"}, "poll_interval": {"15"},
+		})
+		req.AddCookie(cookie)
+		rec := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("location %q = %d, want 400", bad, rec.Code)
+		}
+		if got := store.Get().Alerts.LocationUID; got != 0 {
+			t.Fatalf("location %q was stored as %d", bad, got)
+		}
+	}
+}
+
+// A real UID under a different oblast is refused too. The oblast field still
+// drives the six Ubilling sources, so a mismatched pair is a cascade that
+// announces for a different part of the country depending on which source
+// answered — and nobody finds that out on a quiet day.
+func TestAlertsSaveRefusesALocationOutsideTheChosenOblast(t *testing.T) {
+	srv, store := newServerWithStore(t)
+	setPassword(t, srv, "correct horse battery staple")
+	cookie := login(t, srv, "correct horse battery staple")
+
+	req := postForm("/alerts", url.Values{
+		"region": {"Львівська область"}, "location": {shostkaUID},
+		"source": {"default"}, "poll_interval": {"15"},
+	})
+	req.AddCookie(cookie)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", rec.Code)
+	}
+	if got := store.Get().Alerts; got.LocationUID != 0 || got.Region == "Львівська область" {
+		t.Fatalf("stored alerts config changed: %+v", got)
+	}
+	if !strings.Contains(rec.Body.String(), "не належить до обраної області") {
+		t.Error("the rejection does not say what was wrong with the pair")
+	}
+}
+
+// The line the whole location feature owes the operator: which place each
+// source in the cascade will actually report for. alerts.in.ua answers for
+// the hromada; every Ubilling key broadens to the oblast, because a boolean
+// per oblast is all it has. More than was asked for, never less — said on
+// the page, before a raid two districts away says it instead.
+func TestAlertsPageSaysWhatEachSourceWillWatch(t *testing.T) {
+	srv, store := newServerWithStore(t)
+	setPassword(t, srv, "correct horse battery staple")
+	cookie := login(t, srv, "correct horse battery staple")
+
+	if err := store.Update(func(c *config.Config) error {
+		c.Alerts.Region = sumyOblast
+		c.Alerts.LocationUID = 1198
+		c.Alerts.AlertsUAToken = "token-for-the-cascade"
+		c.Alerts.Sources = []string{alertsource.AlertsUAKey, "default"}
+		return nil
+	}); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	body := alertsPage(t, srv, cookie)
+
+	first := sourceSlotBlockHTML(t, body, 1)
+	if !strings.Contains(first, shostkaLabel) {
+		t.Errorf("slot 1 (alerts.in.ua) does not say it watches %q: %s", shostkaLabel, first)
+	}
+	second := sourceSlotBlockHTML(t, body, 2)
+	if !strings.Contains(second, sumyOblast) {
+		t.Errorf("slot 2 (default) does not say it broadens to %q: %s", sumyOblast, second)
+	}
+	if strings.Contains(second, shostkaLabel) {
+		t.Errorf("slot 2 claims to watch the hromada; it reports by oblast and nothing finer: %s", second)
+	}
+}
+
+// With no location chosen, every slot says the oblast — and none of them
+// claims anything finer than the device is actually asking for.
+func TestAlertsPageSaysTheOblastWhenNoLocationIsChosen(t *testing.T) {
+	srv, store := newServerWithStore(t)
+	setPassword(t, srv, "correct horse battery staple")
+	cookie := login(t, srv, "correct horse battery staple")
+
+	cfg := store.Get()
+	if cfg.Alerts.LocationUID != 0 {
+		t.Fatal("setup: a fresh device already has a location")
+	}
+
+	body := alertsPage(t, srv, cookie)
+	for i := range cfg.Alerts.Sources {
+		slot := sourceSlotBlockHTML(t, body, i+1)
+		if !strings.Contains(slot, cfg.Alerts.Region) {
+			t.Errorf("slot %d does not say it watches %q: %s", i+1, cfg.Alerts.Region, slot)
+		}
+	}
+}
+
+// The credential arrives through this form, is stored, and unlocks the one
+// source that needs it. It is never rendered back — leak_test.go walks every
+// route to hold that line; this pins the half that screen owns.
+func TestAlertsSaveStoresTheTokenAndOffersTheSourceItUnlocks(t *testing.T) {
+	srv, store := newServerWithStore(t)
+	setPassword(t, srv, "correct horse battery staple")
+	cookie := login(t, srv, "correct horse battery staple")
+
+	const token = "alerts-ua-token-for-this-device"
+	req := postForm("/alerts", url.Values{
+		"region": {sumyOblast}, "location": {shostkaUID},
+		"source": {"default"}, "poll_interval": {"15"},
+		"alerts_ua_token": {token},
+	})
+	req.AddCookie(cookie)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+	if got := store.Get().Alerts.AlertsUAToken; got != token {
+		t.Fatalf("stored token = %q, want it kept", got)
+	}
+	if strings.Contains(rec.Body.String(), token) {
+		t.Fatal("the page that confirms the save renders the token back")
+	}
+
+	// And the source it exists for is now choosable, which is the only
+	// reason to have typed it.
+	body := alertsPage(t, srv, cookie)
+	if !strings.Contains(body, fmt.Sprintf(`<option value="%s"`, alertsource.AlertsUAKey)) {
+		t.Errorf("%q is still not offered with a token stored", alertsource.AlertsUAKey)
+	}
+	if strings.Contains(body, token) {
+		t.Fatal("the alerts page renders the stored token")
+	}
+}
+
+// The field is never re-rendered with its value, so a blank box is what an
+// operator sees on every visit. Reading blank as "delete" would wipe the
+// credential the first time somebody came here to change the poll interval.
+func TestAlertsSaveWithABlankTokenFieldKeepsTheStoredToken(t *testing.T) {
+	srv, store := newServerWithStore(t)
+	setPassword(t, srv, "correct horse battery staple")
+	cookie := login(t, srv, "correct horse battery staple")
+
+	const token = "alerts-ua-token-already-here"
+	if err := store.Update(func(c *config.Config) error {
+		c.Alerts.AlertsUAToken = token
+		return nil
+	}); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	req := postForm("/alerts", url.Values{
+		"region": {sumyOblast}, "source": {"default"},
+		"poll_interval": {"20"}, "alerts_ua_token": {""},
+	})
+	req.AddCookie(cookie)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if got := store.Get().Alerts.AlertsUAToken; got != token {
+		t.Fatalf("stored token = %q after a save that did not mention it, want %q", got, token)
+	}
+}
+
+// Removing one is its own checkbox, which somebody has to mean.
+func TestAlertsSaveRemovesTheTokenWhenAsked(t *testing.T) {
+	srv, store := newServerWithStore(t)
+	setPassword(t, srv, "correct horse battery staple")
+	cookie := login(t, srv, "correct horse battery staple")
+
+	if err := store.Update(func(c *config.Config) error {
+		c.Alerts.AlertsUAToken = "alerts-ua-token-on-its-way-out"
+		return nil
+	}); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	req := postForm("/alerts", url.Values{
+		"region": {sumyOblast}, "source": {"default"},
+		"poll_interval": {"20"}, "remove_token": {"1"},
+	})
+	req.AddCookie(cookie)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+	if got := store.Get().Alerts.AlertsUAToken; got != "" {
+		t.Fatalf("stored token = %q, want it gone", got)
+	}
+}
+
+// Deleting the credential while the source that needs it is still in the
+// cascade would leave a slot that can only fail. Dropping the source on the
+// operator's behalf would be quieter and worse, so the submission is refused
+// and says which of the two to undo.
+func TestAlertsSaveRefusesToRemoveATokenACascadeStillNeeds(t *testing.T) {
+	srv, store := newServerWithStore(t)
+	setPassword(t, srv, "correct horse battery staple")
+	cookie := login(t, srv, "correct horse battery staple")
+
+	const token = "alerts-ua-token-still-in-use"
+	if err := store.Update(func(c *config.Config) error {
+		c.Alerts.AlertsUAToken = token
+		c.Alerts.Sources = []string{alertsource.AlertsUAKey, "default"}
+		return nil
+	}); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	req := postForm("/alerts", url.Values{
+		"region": {sumyOblast}, "source": {alertsource.AlertsUAKey, "default"},
+		"poll_interval": {"20"}, "remove_token": {"1"},
+	})
+	req.AddCookie(cookie)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", rec.Code)
+	}
+	if got := store.Get().Alerts.AlertsUAToken; got != token {
+		t.Fatalf("stored token = %q; a refused submission must change nothing", got)
+	}
+}
+
+// The token goes into an Authorization header. A control character there is
+// header injection, and whitespace is far more likely to be a paste that
+// picked up the text around it than a token any API issued.
+func TestAlertsSaveRefusesATokenThatCouldNotBeAHeader(t *testing.T) {
+	srv, store := newServerWithStore(t)
+	setPassword(t, srv, "correct horse battery staple")
+	cookie := login(t, srv, "correct horse battery staple")
+
+	for _, bad := range []string{"token with spaces", "token\nX-Injected: 1", strings.Repeat("t", 300)} {
+		req := postForm("/alerts", url.Values{
+			"region": {sumyOblast}, "source": {"default"},
+			"poll_interval": {"20"}, "alerts_ua_token": {bad},
+		})
+		req.AddCookie(cookie)
+		rec := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("token %q = %d, want 400", bad, rec.Code)
+		}
+		if got := store.Get().Alerts.AlertsUAToken; got != "" {
+			t.Fatalf("token %q was stored as %q", bad, got)
 		}
 	}
 }
