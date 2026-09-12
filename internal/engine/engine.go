@@ -17,6 +17,7 @@ import (
 	"github.com/b-ovsepian/spoloh/internal/config"
 	"github.com/b-ovsepian/spoloh/internal/eventlog"
 	"github.com/b-ovsepian/spoloh/internal/library"
+	"github.com/b-ovsepian/spoloh/internal/netmgr"
 	"github.com/b-ovsepian/spoloh/internal/player"
 	"github.com/b-ovsepian/spoloh/internal/rules"
 	"github.com/b-ovsepian/spoloh/internal/scheduler"
@@ -48,6 +49,19 @@ type Deps struct {
 	// Pinging from the loop rather than from a timer is the point: a stalled
 	// loop stops pinging and systemd restarts the daemon.
 	Watchdog *watchdog.Notifier
+
+	// Network, when non-nil, is where the poll loop learns that the device
+	// is serving its own access point with nothing above it. It is the same
+	// netmgr.StatusFeed the network supervisor publishes to, so the two
+	// cannot hold different beliefs about one radio — and so the answer
+	// costs no nmcli invocation of its own on a tick that runs once a
+	// second.
+	//
+	// Nil means nobody is watching the network, which reads as a device
+	// with an upstream. That is the only safe default: the alternative is a
+	// daemon wired without a supervisor deciding, on no evidence, to stop
+	// polling for air raids.
+	Network *netmgr.StatusFeed
 }
 
 // heartbeatInterval bounds how often the liveness line is written. Without
@@ -91,6 +105,15 @@ type Engine struct {
 	// goroutine, like nextPoll and attempt above.
 	pollRegion string
 
+	// netPaused is what the previous tick found: true while the poll is
+	// being skipped because the device is up on its own access point with no
+	// upstream. It exists so that entering and leaving that state are events
+	// — logged once, acted on once — rather than a condition re-derived
+	// every second. Written and read only from Tick, on the poll loop's own
+	// goroutine, like nextPoll and attempt above; the copy the dashboard
+	// reads is mirrored under mu below.
+	netPaused bool
+
 	// mu guards the fields below, which the dashboard reads from an HTTP
 	// goroutine while the engine writes them from its own. alertstate.Machine
 	// is single-goroutine by contract, so the two values the dashboard needs
@@ -130,6 +153,13 @@ type Engine struct {
 	// that failed everywhere is exactly the poll an operator most needs the
 	// dashboard to describe.
 	sources []SourceHealth
+
+	// paused mirrors netPaused above for the dashboard, on the same terms
+	// alert and allClearSeen are mirrored: the poll loop writes it at the
+	// moment it changes rather than having an HTTP goroutine read a field
+	// that belongs to the loop. A device that has quietly stopped polling
+	// and cannot say so is indistinguishable from one that is wedged.
+	paused bool
 }
 
 func New(d Deps) *Engine {
@@ -193,6 +223,17 @@ func (e *Engine) Tick(ctx context.Context) {
 	defer e.heartbeat(now)
 
 	e.sched.Tick(now)
+
+	// Scheduled events first and always: a chime at noon needs a clock and a
+	// speaker, not an upstream. Only the poll below has nothing to talk to
+	// while the device is serving its own access point.
+	if e.pollPaused(now) {
+		// Paused is not stalled. The loop is running, the scheduler above
+		// just ran, and systemd must not restart a daemon that is doing
+		// exactly what it was asked to.
+		e.d.Watchdog.Alive()
+		return
+	}
 
 	// A clock that steps backwards must not leave the poll gate shut for the
 	// whole of the step. clock.System.Now() calls time.Time.In, which strips
@@ -258,8 +299,71 @@ func (e *Engine) heartbeat(now time.Time) {
 	if !last.IsZero() {
 		lastSuccess = last.Format(time.RFC3339)
 	}
-	e.d.Logger.Info("heartbeat", "last_success", lastSuccess, "alert", e.d.Machine.Alert())
+	// poll_paused on every heartbeat, not only on the tick that entered the
+	// state: whoever is reading the journal is usually reading it well after
+	// that tick scrolled past, and "last_success" hours old means something
+	// entirely different depending on whether this device is choosing not to
+	// poll or failing to.
+	e.d.Logger.Info("heartbeat", "last_success", lastSuccess, "alert", e.d.Machine.Alert(), "poll_paused", e.netPaused)
 	e.nextHeartbeat = now.Add(heartbeatInterval)
+}
+
+// pollPaused reports whether this tick should skip the poll, and handles the
+// two edges of that state.
+//
+// There is nothing upstream to ask while the device is serving its own access
+// point with no network above it. Polling anyway burns the interval, fills
+// the journal with identical failures, and spends requests against a rate
+// limit that is shared by every device behind one public address — including
+// the neighbours' devices, which still have a network.
+//
+// What it must not do is turn missing data into calm. The machine keeps
+// believing whatever it last read: if a raid was running when the network
+// went, this device still says so and its siren is still the right siren.
+// Nothing here touches the alert, and PollOnce — the only thing that can
+// change it — is not reached.
+//
+// Entering the pause does break the run of calm readings building towards an
+// all-clear, by the same rule PollFailed states: that run has to be unbroken
+// to confirm anything, and a pause is the largest break there is. Two calm
+// readings, a quarter of an hour with no network, and one more calm reading
+// is not thirty seconds of watching a raid end — it is two readings with a
+// hole between them, and announcing an all-clear off that is the bet
+// EndConfirmations exists to refuse.
+func (e *Engine) pollPaused(now time.Time) bool {
+	apOnly := e.d.Network.APOnly(now)
+	if apOnly == e.netPaused {
+		return apOnly
+	}
+	e.netPaused = apOnly
+
+	e.mu.Lock()
+	e.paused = apOnly
+	if apOnly {
+		e.allClearSeen = 0
+	}
+	e.mu.Unlock()
+
+	if apOnly {
+		e.d.Machine.PollFailed()
+		// Loud, and once. A device that has stopped polling and says nothing
+		// about it reads in the journal exactly like one that is wedged,
+		// which is the reading that gets it restarted — or unplugged — by
+		// somebody trying to help.
+		e.d.Logger.Warn("no upstream and the access point is up; pausing the alert poll",
+			"alert", e.d.Machine.Alert())
+		return true
+	}
+
+	// Now, not when the backoff that was running before the network went
+	// says so. Those failures were against a network that no longer exists,
+	// and nobody has been able to ask about a raid for however long the
+	// pause lasted, so the first thing to do with an upstream is use it.
+	e.attempt = 0
+	e.nextPoll = now
+	e.pollWait = 0
+	e.d.Logger.Info("upstream is back; resuming the alert poll")
+	return false
 }
 
 // pollInterval jitters the configured interval by up to a second either way.

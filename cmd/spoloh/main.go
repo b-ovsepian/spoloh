@@ -276,6 +276,7 @@ func run(configPath, dataDir, listen, socket string) error {
 		// internal/webhook. Nothing on the announcement path waits for a
 		// box that may be unplugged.
 		Webhooks: hooks.Dispatch,
+		Network:  netStatus,
 	})
 
 	// netManager drives NetworkManager through nmcli. A value type: see

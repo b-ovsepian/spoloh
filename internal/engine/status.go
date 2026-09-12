@@ -69,6 +69,17 @@ type Status struct {
 	AllClearSeen   int
 	AllClearNeeded int
 
+	// PollPaused is true while the device is serving its own access point
+	// with no upstream and the poll loop has therefore stopped asking. It is
+	// the answer to the only question that matters about this dashboard
+	// while it is showing: is what I am reading current, or is it the last
+	// thing this device managed to find out before the network went.
+	//
+	// It never shortens a raid. Everything else on this struct is still the
+	// state the device believes and is still what it is announcing — the
+	// pause stops the reading, not the siren.
+	PollPaused bool
+
 	// Sources is the cascade as the last poll walked it: one entry per
 	// configured key, in the order they are tried, whether or not the poll
 	// got that far. Nil before the first poll of the process, and nil for a
@@ -110,6 +121,8 @@ func (e *Engine) Status() Status {
 
 		AllClearSeen:   e.allClearSeen,
 		AllClearNeeded: alertstate.EndConfirmations,
+
+		PollPaused: e.paused,
 	}
 	// Copied, not aliased, like every other field here: the next poll
 	// replaces e.sources wholesale, and a caller still holding the old
