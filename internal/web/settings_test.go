@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"github.com/b-ovsepian/spoloh/internal/eventlog"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
@@ -662,4 +663,49 @@ func postUpdate(t *testing.T, srv *web.Server, cookie *http.Cookie, origin strin
 	rec := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rec, req)
 	return rec
+}
+
+// The update restarts this process, so there is no second row saying how it
+// went — this one is the whole record. Without it the log shows a device
+// that announced normally, fell silent for two or three minutes, and
+// announced normally again, with no reason given.
+func TestStartingAnUpdateIsRecordedInTheEventLog(t *testing.T) {
+	store, err := configstore.Open(filepath.Join(t.TempDir(), "config.json"))
+	if err != nil {
+		t.Fatalf("configstore.Open: %v", err)
+	}
+	lg, err := eventlog.Open(filepath.Join(t.TempDir(), "log.db"), 100)
+	if err != nil {
+		t.Fatalf("eventlog.Open: %v", err)
+	}
+	t.Cleanup(func() { lg.Close() })
+
+	runner := &runRecorder{}
+	srv, err := web.New(web.Deps{
+		Config: store, Version: "v1.0.0", Run: runner.Run, Log: lg,
+		Updater: &fakeReleaseChecker{rel: updater.Release{Version: "v1.0.1"}},
+	})
+	if err != nil {
+		t.Fatalf("web.New: %v", err)
+	}
+	setPassword(t, srv, "correct horse battery staple")
+	cookie := login(t, srv, "correct horse battery staple")
+
+	req := postForm("/settings/update", url.Values{})
+	req.AddCookie(cookie)
+	srv.Handler().ServeHTTP(httptest.NewRecorder(), req)
+
+	entries, err := lg.Recent(10)
+	if err != nil {
+		t.Fatalf("Recent: %v", err)
+	}
+	var found bool
+	for _, e := range entries {
+		if e.Kind == eventlog.KindUpdateStarted {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("starting an update left no row in the event log; entries: %+v", entries)
+	}
 }

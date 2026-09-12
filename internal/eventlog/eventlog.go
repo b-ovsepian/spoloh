@@ -77,6 +77,20 @@ const (
 	// account of what it did during a real air raid, that difference is the
 	// whole point of having a log at all.
 	KindLogCleared = "log_cleared"
+
+	// KindUpdateStarted is the operator asking this device to replace its
+	// own binary and restart.
+	//
+	// It is written before the unit is started, and it is the only row there
+	// will be. The update restarts this process, so nothing here survives to
+	// record how it went — the outcome is in the journal, under the update
+	// unit, and that is said on the page.
+	//
+	// Without it the log shows a device that announced normally, then
+	// nothing for two or three minutes, then announced normally again, with
+	// no reason given. On an appliance whose value is that it speaks,
+	// unexplained silence is the one gap in the record worth closing.
+	KindUpdateStarted = "update_started"
 )
 
 // pruneEvery limits how often the capacity sweep runs; sweeping on every insert

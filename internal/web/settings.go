@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/b-ovsepian/spoloh/internal/eventlog"
 	"io"
 	"net/http"
 	"net/url"
@@ -367,6 +368,24 @@ func (s *Server) handleUpdateStart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.deps.Logger.Info("update: the update unit was started", "unit", updateUnit)
+	// Recorded after the unit started, so the row means the update is
+	// actually running rather than that somebody pressed a button. There
+	// will be no second row: the update restarts this process, so nothing
+	// here lives long enough to write how it went. Without this one, /log
+	// shows a device that fell silent for minutes and never says why.
+	//
+	// A log that cannot be written does not hold the update back. The
+	// operator asked for this and the unit has it; refusing now would trade
+	// a working update for a tidy record.
+	if s.deps.Log != nil {
+		if err := s.deps.Log.Append(eventlog.Entry{
+			At:   s.now(),
+			Kind: eventlog.KindUpdateStarted,
+			OK:   true,
+		}); err != nil {
+			s.deps.Logger.Error("update: could not record the update in the event log", "err", err)
+		}
+	}
 	s.redirectUpdate(w, r, "updating", "1")
 }
 

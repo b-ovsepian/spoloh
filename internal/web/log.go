@@ -104,6 +104,8 @@ func kindLabel(kind string) string {
 		return "Вебхук"
 	case eventlog.KindAlertSuppressed:
 		return "Тривогу не озвучено"
+	case eventlog.KindUpdateStarted:
+		return "Оновлення почато"
 	case eventlog.KindLogCleared:
 		return "Журнал очищено"
 	default:
