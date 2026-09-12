@@ -92,7 +92,10 @@ the network it just joined.
         standing next to a network that is not on the list concludes it is
         not there. This asks the radio to sweep.
         */}}
-        <p class="mb-2"><a class="btn" data-variant="outline" data-size="sm" href="/network?rescan=1">Оновити список мереж</a> <span class="text-sm text-muted-foreground">Пошук триває кілька секунд.</span></p>
+        <div class="mb-3 flex flex-wrap items-center gap-x-3 gap-y-1">
+          <a class="btn no-underline" data-variant="outline" data-size="sm" href="/network?rescan=1">Оновити список мереж</a>
+          <span class="text-sm text-muted-foreground">Пошук триває кілька секунд.</span>
+        </div>
         {{if .Networks}}
         <div class="grid gap-2">
           {{range .Networks}}

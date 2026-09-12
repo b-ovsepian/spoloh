@@ -89,7 +89,10 @@ inside home.html.
         A link rather than a script: there is no internet here, nothing else
         about the device is working, and this is the one control that has to.
         */}}
-        <p class="mb-2"><a class="btn" data-variant="outline" data-size="sm" href="/?rescan=1">Оновити список мереж</a> <span class="text-sm text-muted-foreground">Пошук триває кілька секунд.</span></p>
+        <div class="mb-3 flex flex-wrap items-center gap-x-3 gap-y-1">
+          <a class="btn no-underline" data-variant="outline" data-size="sm" href="/?rescan=1">Оновити список мереж</a>
+          <span class="text-sm text-muted-foreground">Пошук триває кілька секунд.</span>
+        </div>
         {{if .Networks}}
         <div class="grid gap-2">
           {{range .Networks}}

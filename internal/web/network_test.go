@@ -702,3 +702,26 @@ func TestNetworkOffersARefreshLink(t *testing.T) {
 		t.Errorf("no refresh link on the page; body:\n%s", body)
 	}
 }
+
+// Basecoat's .btn does not clear the underline an anchor gets, so a link
+// styled as a button renders as underlined text in a box — which is what the
+// operator saw. Every anchor-button on this screen carries the reset.
+func TestAnchorButtonsAreNotUnderlined(t *testing.T) {
+	srv, _, _ := newServerWithNetwork(t)
+	setPassword(t, srv, "correct horse battery staple")
+	cookie := login(t, srv, "correct horse battery staple")
+
+	req := httptest.NewRequest(http.MethodGet, "/network", nil)
+	req.AddCookie(cookie)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+
+	body := rec.Body.String()
+	// Every <a> carrying the button class, exactly as rendered.
+	for _, chunk := range strings.Split(body, `<a class="btn`)[1:] {
+		attrs := chunk[:strings.Index(chunk, ">")]
+		if !strings.HasPrefix(attrs, " no-underline") {
+			t.Errorf("an anchor-button is missing the underline reset; attributes: %s", attrs)
+		}
+	}
+}
