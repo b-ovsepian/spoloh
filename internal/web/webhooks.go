@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -101,6 +102,10 @@ func webhookFieldMessage(err error) string {
 		return fmt.Sprintf("Тіло запиту задовге — максимум %d символів.", config.MaxWebhookBodyLen)
 	case config.WebhookFieldName:
 		return fmt.Sprintf("Назва задовга — максимум %d символів.", config.MaxWebhookNameLen)
+	case config.WebhookFieldPhase:
+		return "Оберіть момент зі списку."
+	case config.WebhookFieldDelay:
+		return fmt.Sprintf("Затримка має бути від 0 до %d секунд.", int(config.MaxWebhookDelay.Seconds()))
 	default:
 		return "Не вдалося зберегти вебхук. Перевірте введені дані."
 	}
@@ -118,6 +123,13 @@ type webhookRowView struct {
 	Headers      string
 	Body         string
 	Enabled      bool
+	Phase        string
+	PhaseLabel   string
+	// DelaySec is the delay in whole seconds, as the number input holds it.
+	// Seconds and not a Go duration string: this form is filled in on a
+	// phone standing next to the device, and "5" is a thing a numeric
+	// keypad can type while "5s" is not.
+	DelaySec int
 
 	// Invalid is why a stored webhook cannot be fired as it stands, empty
 	// when it can. A hand-edited config.json can hold one — config.Validate
@@ -131,7 +143,13 @@ type webhookRowView struct {
 type webhooksView struct {
 	Rows     []webhookRowView
 	Triggers []webhookTriggerOption
+	Phases   []webhookPhaseOption
 	Methods  []string
+
+	// MaxDelaySec is the cap the delay field is held to, shown on the page
+	// rather than only enforced: an operator typing thirty and being told
+	// no has learned less than one who could see the limit first.
+	MaxDelaySec int
 
 	// Error is a rejected submission's reason; Message is a completed one's
 	// confirmation. Never both at once, the contract every screen here
@@ -147,12 +165,69 @@ type webhooksView struct {
 	AddURL     string
 	AddHeaders string
 	AddBody    string
+	AddPhase   string
+	AddDelay   int
 }
 
 type webhookTriggerOption struct {
 	Value    string
 	Label    string
 	Selected bool
+}
+
+// webhookPhaseOption is one entry in the "when" picker.
+type webhookPhaseOption struct {
+	Value string
+	Label string
+	// Hint is the one sentence under the option that says what it is for.
+	// It is on the page rather than in a manual because there is no manual
+	// and no second screen: whoever is setting this up is holding a phone
+	// in front of a device on a wall.
+	Hint     string
+	Selected bool
+}
+
+// webhookPhaseLabel names one phase for a card header, where there is room
+// for the label and none for the sentence under it.
+func webhookPhaseLabel(phase string) string {
+	for _, p := range webhookPhases(phase) {
+		if p.Value == phase {
+			return p.Label
+		}
+	}
+	return phase
+}
+
+// webhookPhases is the "when" picker, in the order the moments happen.
+//
+// The wording deliberately describes this device and not the far end. What is
+// on the other side is the operator's — a relay, a controller for whatever
+// else shares the speakers, a light, a script somewhere — and a page that
+// called it "the amplifier" would be wrong at most sites and misleading at
+// the rest.
+func webhookPhases(selected string) []webhookPhaseOption {
+	phases := []struct{ value, label, hint string }{
+		{
+			config.PhaseOnTrigger, "Коли подія стається",
+			"Запит іде одразу, навіть якщо звук не пролунає — наприклад, якщо тихі години його приглушили.",
+		},
+		{
+			config.PhaseBefore, "Перед звуком",
+			"Запит іде, коли пристрій починає говорити, і звук чекає стільки, скільки вказано нижче.",
+		},
+		{
+			config.PhaseAfter, "Після звуку",
+			"Запит іде, коли пристрій замовкає. Саме він повертає все, що змінив запит «перед звуком».",
+		},
+	}
+	out := make([]webhookPhaseOption, 0, len(phases))
+	for _, p := range phases {
+		out = append(out, webhookPhaseOption{
+			Value: p.value, Label: p.label, Hint: p.hint,
+			Selected: p.value == selected,
+		})
+	}
+	return out
 }
 
 // webhookTriggers is the picker, in the order the things happen: a raid
@@ -208,6 +283,10 @@ type webhookForm struct {
 	Headers []config.WebhookHeader
 	Body    string
 	Enabled bool
+	Phase   string
+	// DelaySec is what the delay field held, in seconds. Kept as the typed
+	// number so a rejection can hand it straight back.
+	DelaySec int
 
 	// HeadersText is what was typed, kept so a rejection can hand it back
 	// rather than making the operator retype a header block.
@@ -223,6 +302,17 @@ func readWebhookForm(r *http.Request) (webhookForm, string) {
 		Body:        r.FormValue("body"),
 		Enabled:     r.FormValue("enabled") != "",
 		HeadersText: r.FormValue("headers"),
+		Phase:       r.FormValue("phase"),
+	}
+	// An empty delay field is zero, not an error: it is what the field holds
+	// on every phase but one, and refusing a blank box would make an
+	// operator type a number into a setting that does not apply to them.
+	if raw := strings.TrimSpace(r.FormValue("delay")); raw != "" {
+		sec, err := strconv.Atoi(raw)
+		if err != nil {
+			return f, "Затримка має бути цілим числом секунд."
+		}
+		f.DelaySec = sec
 	}
 	headers, message := parseWebhookHeaders(f.HeadersText)
 	if message != "" {
@@ -233,8 +323,12 @@ func readWebhookForm(r *http.Request) (webhookForm, string) {
 }
 
 // asWebhook builds the stored value a form describes.
+//
+// The delay is dropped for every phase but before. It is the only phase that
+// has one — see config.Webhook.Delay — and storing a number that nothing will
+// ever read would put a setting on the screen that does not do what it says.
 func (f webhookForm) asWebhook(id string) config.Webhook {
-	return config.Webhook{
+	w := config.Webhook{
 		ID:      id,
 		Name:    f.Name,
 		Trigger: f.Trigger,
@@ -243,17 +337,25 @@ func (f webhookForm) asWebhook(id string) config.Webhook {
 		Headers: f.Headers,
 		Body:    f.Body,
 		Enabled: f.Enabled,
+		Phase:   f.Phase,
 	}
+	if config.WebhookPhase(w) == config.PhaseBefore {
+		w.Delay = config.Duration(time.Duration(f.DelaySec) * time.Second)
+	}
+	return w
 }
 
 // webhooksBaseView builds the view a fresh GET, a success and a rejection all
 // start from.
 func webhooksBaseView(cfg *config.Config) webhooksView {
 	view := webhooksView{
-		Triggers:   webhookTriggers(config.TriggerAlertStart),
-		Methods:    config.WebhookMethods,
-		AddTrigger: config.TriggerAlertStart,
-		AddMethod:  http.MethodGet,
+		Triggers:    webhookTriggers(config.TriggerAlertStart),
+		Phases:      webhookPhases(config.PhaseOnTrigger),
+		Methods:     config.WebhookMethods,
+		MaxDelaySec: int(config.MaxWebhookDelay.Seconds()),
+		AddTrigger:  config.TriggerAlertStart,
+		AddPhase:    config.PhaseOnTrigger,
+		AddMethod:   http.MethodGet,
 	}
 	for _, w := range cfg.Webhooks {
 		row := webhookRowView{
@@ -266,6 +368,12 @@ func webhooksBaseView(cfg *config.Config) webhooksView {
 			Headers:      webhookHeadersText(w.Headers),
 			Body:         w.Body,
 			Enabled:      w.Enabled,
+			// WebhookPhase, not w.Phase: a stored webhook written before
+			// phases existed has none, and the card must show the moment it
+			// actually fires at rather than an empty box.
+			Phase:      config.WebhookPhase(w),
+			PhaseLabel: webhookPhaseLabel(config.WebhookPhase(w)),
+			DelaySec:   int(w.Delay.Std().Seconds()),
 		}
 		if err := config.ValidateWebhook(w); err != nil {
 			row.Invalid = webhookFieldMessage(err)
@@ -312,7 +420,10 @@ func (s *Server) handleWebhooksAdd(w http.ResponseWriter, r *http.Request) {
 			v.AddURL = form.URL
 			v.AddHeaders = form.HeadersText
 			v.AddBody = form.Body
+			v.AddPhase = form.Phase
+			v.AddDelay = form.DelaySec
 			v.Triggers = webhookTriggers(form.Trigger)
+			v.Phases = webhookPhases(form.Phase)
 		})
 	}
 	if message != "" {

@@ -13,8 +13,20 @@
   <div class="card p-6 grid gap-2">
     <h1 class="text-lg font-semibold">Вебхуки</h1>
     <p class="text-sm text-muted-foreground">
-      Коли пристрій оголошує подію, він може надіслати ваш власний HTTP-запит — наприклад, щоб замкнути реле
-      чи увімкнути підсилювач. Запит надсилається окремо від звуку: сирена ніколи не чекає на нього.
+      Коли пристрій оголошує подію, він може надіслати ваш власний HTTP-запит — наприклад, щоб замкнути реле,
+      перемкнути вхід чи приглушити те, що звучить у тих самих колонках. Запит надсилається окремо від звуку:
+      сирена ніколи не чекає на відповідь.
+    </p>
+    {{/*
+    The pairing is the thing an operator has to understand, and it is the
+    thing that costs them if they get it wrong: a "before" with no "after"
+    leaves whatever it switched switched, silently, until somebody notices.
+    Said here, once, in the operator's own terms.
+    */}}
+    <p class="text-sm text-muted-foreground">
+      Запити «перед звуком» і «після звуку» працюють парою: перший готує ваше обладнання, другий повертає його
+      назад. Додайте обидва — інакше те, що змінив перший, залишиться зміненим. Пара охоплює всю мову пристрою:
+      якщо тривога переб’є оголошення за розкладом, запити не спрацюють двічі між ними.
     </p>
     <p class="text-sm text-muted-foreground">
       Результат кожного запиту — успішний чи ні — записується в <a href="/log">журнал</a>.
@@ -30,12 +42,13 @@
   {{range .Rows}}
   {{$id := .ID}}
   {{$trigger := .Trigger}}
+  {{$phase := .Phase}}
   {{$method := .Method}}
   <section class="card p-4 grid gap-3" data-webhook="{{$id}}">
     <header class="flex items-center justify-between gap-2">
       <div>
         <h2 class="font-semibold">{{if .Name}}{{.Name}}{{else}}{{.TriggerLabel}}{{end}}</h2>
-        <p class="text-sm text-muted-foreground">{{.TriggerLabel}} · {{.Method}}</p>
+        <p class="text-sm text-muted-foreground">{{.TriggerLabel}} · {{.PhaseLabel}} · {{.Method}}</p>
       </div>
       <form method="post" action="/webhooks/delete">
         <input type="hidden" name="id" value="{{$id}}">
@@ -62,6 +75,24 @@
         <select class="select" id="trigger-{{$id}}" name="trigger" required>
           {{range $.Triggers}}<option value="{{.Value}}"{{if eq .Value $trigger}} selected{{end}}>{{.Label}}</option>{{end}}
         </select>
+      </div>
+
+
+      <div class="field">
+        <label for="phase-{{$id}}">Коли надсилати</label>
+        <select class="select" id="phase-{{$id}}" name="phase" required>
+          {{range $.Phases}}<option value="{{.Value}}"{{if eq .Value $phase}} selected{{end}}>{{.Label}}</option>{{end}}
+        </select>
+        {{range $.Phases}}{{if eq .Value $phase}}<p class="text-sm text-muted-foreground">{{.Hint}}</p>{{end}}{{end}}
+      </div>
+
+      <div class="field">
+        <label for="delay-{{$id}}">Затримка перед звуком, с</label>
+        <input class="input" type="number" id="delay-{{$id}}" name="delay" value="{{.DelaySec}}" min="0" max="{{$.MaxDelaySec}}" step="1">
+        <p class="text-sm text-muted-foreground">
+          Скільки звук чекає після запиту, щоб ваше обладнання встигло спрацювати. Діє лише для «перед звуком»;
+          максимум {{$.MaxDelaySec}} с.
+        </p>
       </div>
 
       <div class="field">
@@ -110,6 +141,32 @@
         <select class="select" id="add-trigger" name="trigger" required>
           {{range .Triggers}}<option value="{{.Value}}"{{if .Selected}} selected{{end}}>{{.Label}}</option>{{end}}
         </select>
+      </div>
+
+
+      <div class="field">
+        <label for="add-phase">Коли надсилати</label>
+        <select class="select" id="add-phase" name="phase" required>
+          {{range .Phases}}<option value="{{.Value}}"{{if .Selected}} selected{{end}}>{{.Label}}</option>{{end}}
+        </select>
+        {{/*
+        Every hint, not only the selected one. This page has to work with
+        scripts off, so nothing can swap the sentence when the picker
+        changes — and an operator choosing between three moments needs to
+        read what all three mean before choosing, not after.
+        */}}
+        <ul class="text-sm text-muted-foreground grid gap-1">
+          {{range .Phases}}<li><span class="font-medium">{{.Label}}</span> — {{.Hint}}</li>{{end}}
+        </ul>
+      </div>
+
+      <div class="field">
+        <label for="add-delay">Затримка перед звуком, с</label>
+        <input class="input" type="number" id="add-delay" name="delay" value="{{.AddDelay}}" min="0" max="{{.MaxDelaySec}}" step="1">
+        <p class="text-sm text-muted-foreground">
+          Скільки звук чекає після запиту, щоб ваше обладнання встигло спрацювати. Діє лише для «перед звуком»;
+          максимум {{.MaxDelaySec}} с.
+        </p>
       </div>
 
       <div class="field">

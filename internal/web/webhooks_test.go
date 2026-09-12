@@ -377,7 +377,7 @@ func TestAnEscalationWebhookFiresOnItsOwnTriggerAndNoOther(t *testing.T) {
 	d.Timeout = 2 * time.Second
 
 	for _, trigger := range []string{config.TriggerAlertStart, config.TriggerAlertEnd, config.TriggerScheduled} {
-		d.Dispatch(trigger)
+		d.Dispatch(config.PhaseOnTrigger, trigger)
 	}
 	d.Wait()
 	mu.Lock()
@@ -387,7 +387,7 @@ func TestAnEscalationWebhookFiresOnItsOwnTriggerAndNoOther(t *testing.T) {
 		t.Fatalf("the escalation webhook fired %d times on triggers that are not its own", strays)
 	}
 
-	d.Dispatch(config.TriggerAlertEscalated)
+	d.Dispatch(config.PhaseOnTrigger, config.TriggerAlertEscalated)
 	d.Wait()
 	mu.Lock()
 	defer mu.Unlock()
