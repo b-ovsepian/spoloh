@@ -102,6 +102,27 @@ type Player struct {
 	// queued when Stop drops them never started, and never claimed to.
 	OnTruncated func(r Request, reason string)
 
+	// OnIdle reports that the voice has fallen silent: the request being
+	// played has ended and there is nothing queued behind it. Set it before
+	// Run.
+	//
+	// It is about the voice, not about a request, and that difference is
+	// the whole reason it exists next to OnTruncated rather than inside it.
+	// A siren preempting a chime ends the chime's request and does not end
+	// the sound — the queue still holds the siren, the device never stops
+	// speaking — so this does not fire, and OnTruncated does. A request that
+	// Stop cancelled with nothing behind it fires both: it was cut short,
+	// and the device is now silent. The two answer different questions and
+	// neither is the negation of the other.
+	//
+	// Every other ending reaches it: a sound played to the end, a sound
+	// abandoned after MaxPlayback, a stage that failed outright, a Stop that
+	// also dropped the queue. The rule is the voice and not the outcome,
+	// because of what the caller does with it — whatever was switched so
+	// this device could be heard is only safe to switch back once it has
+	// stopped being heard, and after every one of those it has.
+	OnIdle func()
+
 	// MaxPlayback caps one request. Zero means defaultMaxPlayback. Set it
 	// before Run; tests inject a short limit.
 	MaxPlayback time.Duration
@@ -110,6 +131,11 @@ type Player struct {
 	queue []Request
 	cur   *current
 	wake  chan struct{}
+
+	// spoke records that something has actually reached the output since the
+	// queue was last found empty, so OnIdle reports the fall into silence
+	// rather than every trip around an idle loop.
+	spoke bool
 }
 
 func New(b Backend, device string) *Player {
@@ -180,6 +206,37 @@ func (p *Player) Stop() {
 	p.mu.Unlock()
 }
 
+// Pending reports how much the player still has to say: the request being
+// played, if any, plus everything queued behind it. Zero means the device is
+// making no sound and has none lined up.
+//
+// It exists so a caller keeping its own idea of whether this device is
+// speaking can confirm it against the player's, under that caller's own
+// lock. OnIdle is a report of a moment that has already passed by the time it
+// is delivered; this is the question asked now.
+func (p *Player) Pending() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	n := len(p.queue)
+	if p.cur != nil {
+		n++
+	}
+	return n
+}
+
+// fellSilent reports whether the queue has just run dry having played
+// something, and arms the next report. Read under the lock so that it cannot
+// fire twice for one silence.
+func (p *Player) fellSilent() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if !p.spoke {
+		return false
+	}
+	p.spoke = false
+	return true
+}
+
 // Current reports the request being played, if any.
 func (p *Player) Current() (Request, bool) {
 	p.mu.Lock()
@@ -198,6 +255,14 @@ func (p *Player) Run(ctx context.Context) {
 		}
 		r, playCtx, cancel, ok := p.start(ctx)
 		if !ok {
+			// Nothing playing and nothing waiting: the device has stopped
+			// making a sound. Reported here rather than at the end of
+			// playOne because that is the only place the two facts are
+			// known together — a request that ended with another behind it
+			// did not end the sound, and a preemption is exactly that case.
+			if p.fellSilent() && p.OnIdle != nil {
+				p.OnIdle()
+			}
 			select {
 			case <-ctx.Done():
 				return
@@ -224,6 +289,7 @@ func (p *Player) start(parent context.Context) (Request, context.Context, contex
 	p.queue = p.queue[1:]
 	ctx, cancel := context.WithCancel(parent)
 	p.cur = &current{req: r, cancel: cancel}
+	p.spoke = true
 	return r, ctx, cancel, true
 }
 
