@@ -304,6 +304,101 @@ type Webhook struct {
 	Headers []WebhookHeader `json:"headers,omitempty"`
 	Body    string          `json:"body,omitempty"`
 	Enabled bool            `json:"enabled"`
+
+	// Phase is when in an announcement this fires: PhaseOnTrigger,
+	// PhaseBefore or PhaseAfter. Empty means PhaseOnTrigger, which is what
+	// every webhook stored before this field existed is. Read it through
+	// WebhookPhase and nowhere else.
+	Phase string `json:"phase,omitempty"`
+
+	// Delay is how long the sound waits after this webhook has been fired.
+	//
+	// It belongs to PhaseBefore and to nothing else. "Wait, then say the
+	// announcement is over" is a thing nobody has asked for, and it would
+	// hold a goroutine to no end; the /webhooks form clears this field when
+	// the phase is not before, and internal/webhook reads it for no other
+	// phase.
+	//
+	// Capped at MaxWebhookDelay. A stored value above the cap is lowered on
+	// load rather than refused — see lowerWebhookDelaysToMaximum — because
+	// nothing about a webhook may stop this daemon starting. The same value
+	// typed into the form is rejected outright.
+	Delay Duration `json:"delay,omitempty"`
+}
+
+// Webhook phases. The trigger says what happened; the phase says when in the
+// announcing of it the request is made.
+//
+// This device speaks in sessions: a stretch between falling silent and
+// falling silent again, which may hold one sound, a repeated one, or a
+// scheduled sound that a siren cut across. PhaseBefore and PhaseAfter
+// bracket that stretch, once each. internal/engine's speak.go is where that
+// is built and argued.
+const (
+	// PhaseOnTrigger fires the request the moment this device decides
+	// something happened, whether or not a sound follows it.
+	//
+	// It is what every webhook stored before this field existed does, and
+	// what an empty Phase still means, so no device in the field changes
+	// behaviour because it was upgraded. It is also the only phase that
+	// fires for an announcement quiet hours silenced, and that is not an
+	// accident: a switch closed when the raid began has to be opened when
+	// it ends, at three in the morning like any other time.
+	PhaseOnTrigger = "on_trigger"
+
+	// PhaseBefore fires when this device starts speaking, and then holds
+	// the sound back by Delay.
+	//
+	// It is for whatever has to be true before this device can be heard.
+	// The far end is the operator's, not this project's: one site mutes the
+	// music feed that shares the speakers, another closes a relay, another
+	// selects an input or wakes an amplifier. All of them need a moment
+	// afterwards, and today that moment is stolen from the front of the
+	// announcement, because the request and the sound leave here together.
+	PhaseBefore = "before"
+
+	// PhaseAfter fires when this device stops speaking, and is how whatever
+	// the before phase did gets undone. Nothing else will undo it: a feed
+	// left muted or a relay left closed is silent, self-inflicted, and
+	// invisible until somebody notices.
+	PhaseAfter = "after"
+)
+
+// MaxWebhookDelay caps how long a before-phase webhook may hold a sound back.
+//
+// This number is latency on a siren, so it is argued rather than picked. On
+// one side, the far end needs a moment: a controller told to mute a feed,
+// close a relay or switch an input does not pass audio on the same
+// millisecond it answers 200, and the seconds it needs are exactly the ones
+// lost today. On the other, somebody standing in a room who may already have
+// the alert on their phone, waiting for this device to say it.
+//
+// Ten seconds, and the argument for that rather than five or thirty is
+// MinPollInterval. This device already learns of a raid up to one poll
+// interval late; a delay longer than that would make its own wiring the
+// largest source of latency it has, which is a thing no operator asked for.
+// Anything that genuinely needs longer than ten seconds before it will pass
+// audio needs to be ready before the raid, not woken during it.
+const MaxWebhookDelay = 10 * time.Second
+
+// WebhookPhase reports w's phase, and is the only thing that should read
+// Webhook.Phase directly.
+//
+// Anything it does not recognise reads as PhaseOnTrigger. That is the
+// least-silent answer: a phase this build cannot place still fires, at the
+// moment the old ones did, rather than being quietly dropped on the floor.
+// A stored one is repaired at load anyway (repairWebhookPhases) and the form
+// refuses to write one, so this is the third of three answers to the same
+// question and the only one that runs on the announcing path.
+func WebhookPhase(w Webhook) string {
+	switch w.Phase {
+	case PhaseBefore:
+		return PhaseBefore
+	case PhaseAfter:
+		return PhaseAfter
+	default:
+		return PhaseOnTrigger
+	}
 }
 
 // WebhookHeader is one request header, exactly as the operator typed it.
@@ -357,6 +452,8 @@ const (
 	WebhookFieldHeaders = "headers"
 	WebhookFieldBody    = "body"
 	WebhookFieldCount   = "count"
+	WebhookFieldPhase   = "phase"
+	WebhookFieldDelay   = "delay"
 )
 
 // WebhookError names the part of a webhook that was refused. The message is
@@ -416,6 +513,23 @@ func ValidateWebhook(w Webhook) error {
 	}
 	if len(w.Body) > MaxWebhookBodyLen {
 		return webhookErr(WebhookFieldBody, "body is %d bytes, the maximum is %d", len(w.Body), MaxWebhookBodyLen)
+	}
+	switch w.Phase {
+	case "", PhaseOnTrigger, PhaseBefore, PhaseAfter:
+	default:
+		return webhookErr(WebhookFieldPhase, "unknown phase %q", w.Phase)
+	}
+	// The delay is checked for every phase, not only before. A phase the
+	// operator later switches to before would otherwise carry a number this
+	// build refuses past the one screen that could have told them so.
+	//
+	// Both callers can afford this: the form rejects the submission, and
+	// internal/webhook is never handed a webhook that fails it, because Load
+	// lowers an over-cap delay before Validate ever sees the file. That
+	// ordering is what keeps a number in a config.json from costing an
+	// operator their relay entirely.
+	if d := w.Delay.Std(); d < 0 || d > MaxWebhookDelay {
+		return webhookErr(WebhookFieldDelay, "delay %s is outside 0..%s", d, MaxWebhookDelay)
 	}
 	return nil
 }

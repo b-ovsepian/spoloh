@@ -29,6 +29,8 @@ func Load(path string) (*Config, error) {
 	restoreMissingAlertEvents(&c)
 	restoreMissingRepeat(&c)
 	raisePollIntervalToMinimum(&c)
+	repairWebhookPhases(&c)
+	lowerWebhookDelaysToMaximum(&c)
 	if err := c.Validate(); err != nil {
 		return nil, fmt.Errorf("validate %s: %w", path, err)
 	}
@@ -120,6 +122,70 @@ func raisePollIntervalToMinimum(c *Config) {
 		"raised alerts.poll_interval to the minimum: the stored value would rate-limit every alert source",
 		"stored", stored, "using", MinPollInterval,
 	)
+}
+
+// repairWebhookPhases rewrites a stored webhook phase this build does not
+// recognise to PhaseOnTrigger, and logs at Error that it did. It is the same
+// repair its three neighbours above make, run at the same point in Load and
+// for the same reason.
+//
+// The reason is narrower here than for an alert event, and worth saying
+// plainly. ValidateWebhook refuses an unknown phase, and internal/webhook
+// refuses to fire any webhook ValidateWebhook refuses — so without this, one
+// mistyped word in a hand-edited config.json would cost the operator that
+// webhook entirely, silently, at the moment it mattered. PhaseOnTrigger is
+// the phase every webhook had before phases existed, and the one that fires
+// unconditionally; a phase nobody can place is better answered by firing at
+// the old moment than by not firing at all.
+//
+// Only ever rewrites what it cannot place. A phase this build understands is
+// left exactly as loaded — this repairs "not a phase", never "not the phase
+// I would have chosen", exactly like its precedents.
+func repairWebhookPhases(c *Config) {
+	for i := range c.Webhooks {
+		switch c.Webhooks[i].Phase {
+		case "", PhaseOnTrigger, PhaseBefore, PhaseAfter:
+			continue
+		}
+		slog.Default().Error(
+			"a webhook names a phase this build does not know; it will fire when the trigger happens",
+			"webhook", c.Webhooks[i].ID, "stored", c.Webhooks[i].Phase, "using", PhaseOnTrigger,
+		)
+		c.Webhooks[i].Phase = PhaseOnTrigger
+	}
+}
+
+// lowerWebhookDelaysToMaximum brings a stored webhook delay outside
+// 0..MaxWebhookDelay back inside it, and logs at Error that it did.
+//
+// It is raisePollIntervalToMinimum's shape, pointed the other way, and for
+// the same reason: the value is refused by Validate, Validate is what every
+// load runs through, and a daemon that will not start is the one outcome
+// worse than a corrected number. The direction is the difference. A poll
+// interval is raised because too small a one rate-limits the source; a delay
+// is lowered because too large a one is a siren held back, and the cap is
+// the most this device is willing to hold it (see MaxWebhookDelay). A
+// negative delay — which only a hand-edited file can hold — lands on zero
+// and the sound starts at once.
+//
+// Only ever clamps. A delay already inside the range is left exactly as
+// loaded, exactly like its precedents.
+func lowerWebhookDelaysToMaximum(c *Config) {
+	for i := range c.Webhooks {
+		stored := c.Webhooks[i].Delay.Std()
+		switch {
+		case stored < 0:
+			c.Webhooks[i].Delay = 0
+		case stored > MaxWebhookDelay:
+			c.Webhooks[i].Delay = Duration(MaxWebhookDelay)
+		default:
+			continue
+		}
+		slog.Default().Error(
+			"brought a webhook delay back inside the allowed range: the stored value would have held a sound back too long",
+			"webhook", c.Webhooks[i].ID, "stored", stored, "using", c.Webhooks[i].Delay.Std(),
+		)
+	}
 }
 
 func hasEventTrigger(events []Event, trigger string) bool {
