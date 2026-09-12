@@ -321,3 +321,52 @@ func TestFooterWidthTracksThePageWidth(t *testing.T) {
 		}
 	}
 }
+
+// Nine entries wrapped to two rows on a phone, and six of the nine were
+// configuration. What stays at the top level is what an operator looks at
+// while the device is working and what they reach for when it is not.
+func TestNavIsFourEntriesAndKeepsNetworkAtTheTop(t *testing.T) {
+	srv, _ := newServerWithStore(t)
+	setPassword(t, srv, "correct horse battery staple")
+	cookie := login(t, srv, "correct horse battery staple")
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.AddCookie(cookie)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+	body := rec.Body.String()
+
+	nav := body[strings.Index(body, `<nav aria-label="Розділи"`):]
+	nav = nav[:strings.Index(nav, "</nav>")]
+
+	for _, want := range []string{`href="/"`, `href="/log"`, `href="/network"`, `href="/settings"`} {
+		if !strings.Contains(nav, want) {
+			t.Errorf("the nav does not carry %s", want)
+		}
+	}
+	// Six screens moved behind /settings. Left in the nav they made it wrap
+	// to two rows on a phone.
+	for _, gone := range []string{`href="/alerts"`, `href="/events"`, `href="/sounds"`, `href="/audio"`, `href="/webhooks"`, `href="/time"`} {
+		if strings.Contains(nav, gone) {
+			t.Errorf("the nav still carries %s; it belongs behind /settings", gone)
+		}
+	}
+}
+
+func TestTheMovedScreensAreStillReachableDirectly(t *testing.T) {
+	srv, _ := newServerWithStore(t)
+	setPassword(t, srv, "correct horse battery staple")
+	cookie := login(t, srv, "correct horse battery staple")
+
+	// A bookmark, a link in a note, a URL somebody wrote down. Moving a
+	// screen in the nav must not move the screen.
+	for _, path := range []string{"/alerts", "/events", "/sounds", "/audio", "/webhooks", "/time"} {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		req.AddCookie(cookie)
+		rec := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Errorf("%s = %d, want 200", path, rec.Code)
+		}
+	}
+}

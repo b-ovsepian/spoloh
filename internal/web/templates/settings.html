@@ -1,0 +1,24 @@
+{{define "title"}}Налаштування — Сполох{{end}}
+{{define "content"}}
+<div class="grid gap-4">
+  <div class="card p-6">
+    <header class="mb-4"><h1 class="text-lg font-semibold">Налаштування</h1></header>
+    {{/*
+    Each row carries a sentence, not just a name. The operator who already
+    knows what «Джерела» configures never opens this page; the one who does
+    not is exactly who does, and a column of bare nouns would leave them
+    opening screens to find out what they are.
+    */}}
+    <ul class="grid gap-2">
+      {{range .Links}}
+      <li>
+        <a class="block rounded-md border border-border p-3 hover:bg-accent" href="{{.Href}}">
+          <span class="font-medium">{{.Title}}</span>
+          <span class="block text-sm text-muted-foreground">{{.Blurb}}</span>
+        </a>
+      </li>
+      {{end}}
+    </ul>
+  </div>
+</div>
+{{end}}

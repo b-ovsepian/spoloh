@@ -92,31 +92,28 @@ operator opens to change a setting rather than leaves up watching.
     JavaScript the links still work — only the highlight is missing.
     */}}
     {{/*
-    Nine sections do not fit one line on a phone. They wrap rather than
-    scroll sideways or hide behind a menu button: a horizontal scroller
-    leaves later sections invisible with nothing saying they exist, and a
-    menu behind a button would put every screen of this device one tap
-    further away and behind JavaScript — which nothing here may require.
-    Two short rows cost a few pixels of header and keep every section
-    reachable and visible.
+    Four entries: what an operator looks at while the device is working
+    (Головна, Журнал), what they reach for when it is not (Мережа), and one
+    door to everything they set once (Налаштування). Nine wrapped to two rows
+    on a phone, and six of the nine were configuration.
+
+    Мережа is not behind Налаштування, deliberately. It is the screen someone
+    opens over the device's own access point when nothing else about it is
+    reachable, and one level deeper is one tap more at the worst moment.
+
+    The wrap stays even though four fit one row. It is what keeps the next
+    entry somebody adds dropping to a second line rather than pushing the
+    logout button off the side of a phone — and the sections wrap rather than
+    scroll sideways or hide behind a menu button, because a horizontal
+    scroller leaves later sections invisible with nothing saying they exist,
+    and a menu behind a button would put every screen of this device one tap
+    further away and behind JavaScript, which nothing here may require.
     */}}
     <nav aria-label="Розділи" class="flex flex-wrap items-center gap-1" x-data>
       <a href="/" class="rounded-md px-3 py-2 text-sm hover:bg-accent aria-[current=page]:bg-accent aria-[current=page]:font-semibold" :aria-current="location.pathname === '/' ? 'page' : null">Головна</a>
-      <a href="/alerts" class="rounded-md px-3 py-2 text-sm hover:bg-accent aria-[current=page]:bg-accent aria-[current=page]:font-semibold" :aria-current="location.pathname === '/alerts' ? 'page' : null">Джерела</a>
-      <a href="/events" class="rounded-md px-3 py-2 text-sm hover:bg-accent aria-[current=page]:bg-accent aria-[current=page]:font-semibold" :aria-current="location.pathname === '/events' ? 'page' : null">Події</a>
-      <a href="/sounds" class="rounded-md px-3 py-2 text-sm hover:bg-accent aria-[current=page]:bg-accent aria-[current=page]:font-semibold" :aria-current="location.pathname === '/sounds' ? 'page' : null">Звуки</a>
-      {{/*
-      "Аудіовихід" rather than "Звук": that reads one root away from "Звуки"
-      (the sound library) right next to it, and someone scanning this nav
-      under pressure — the whole reason this screen exists is a fresh device
-      that cannot make a sound at all — needs to tell them apart at a glance,
-      not by reading past the first four letters.
-      */}}
-      <a href="/audio" class="rounded-md px-3 py-2 text-sm hover:bg-accent aria-[current=page]:bg-accent aria-[current=page]:font-semibold" :aria-current="location.pathname === '/audio' ? 'page' : null">Аудіовихід</a>
-      <a href="/webhooks" class="rounded-md px-3 py-2 text-sm hover:bg-accent aria-[current=page]:bg-accent aria-[current=page]:font-semibold" :aria-current="location.pathname === '/webhooks' ? 'page' : null">Вебхуки</a>
-      <a href="/time" class="rounded-md px-3 py-2 text-sm hover:bg-accent aria-[current=page]:bg-accent aria-[current=page]:font-semibold" :aria-current="location.pathname === '/time' ? 'page' : null">Час</a>
       <a href="/log" class="rounded-md px-3 py-2 text-sm hover:bg-accent aria-[current=page]:bg-accent aria-[current=page]:font-semibold" :aria-current="location.pathname === '/log' ? 'page' : null">Журнал</a>
       <a href="/network" class="rounded-md px-3 py-2 text-sm hover:bg-accent aria-[current=page]:bg-accent aria-[current=page]:font-semibold" :aria-current="location.pathname === '/network' ? 'page' : null">Мережа</a>
+      <a href="/settings" class="rounded-md px-3 py-2 text-sm hover:bg-accent aria-[current=page]:bg-accent aria-[current=page]:font-semibold" :aria-current="location.pathname === '/settings' ? 'page' : null">Налаштування</a>
     </nav>
     <form method="post" action="/logout" class="ms-auto">
       <button class="btn" data-variant="outline" data-size="sm" type="submit">Вийти</button>

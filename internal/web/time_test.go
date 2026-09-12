@@ -128,15 +128,15 @@ func TestTheZonePickerOffersKyivFirstEvenWhenItIsNotConfigured(t *testing.T) {
 	}
 }
 
-// The nav is how the screen is reached at all; a page nothing links to is a
-// page an operator finds only by guessing the URL.
-func TestTimePageIsReachableFromTheNavigation(t *testing.T) {
+// The settings index is how the screen is reached at all now that it is no
+// longer in the nav; a page nothing links to is a page an operator finds only
+// by guessing the URL.
+func TestTimePageIsReachableFromTheSettingsIndex(t *testing.T) {
 	srv, _, _ := newServerWithTimedate(t, timedate.State{})
 	cookie := timeSession(t, srv)
 
-	body := timeGet(t, srv, cookie).Body.String()
-	if !strings.Contains(body, `'/time' ? 'page' : null">Час</a>`) {
-		t.Errorf("the navigation has no entry for /time; body:\n%s", body)
+	if row := settingsRow(t, settingsIndex(t, srv, cookie), "/time"); !strings.Contains(row, "Час") {
+		t.Errorf("the settings index has no entry for /time; row:\n%s", row)
 	}
 }
 

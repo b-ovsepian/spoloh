@@ -562,7 +562,10 @@ func TestDefaultRegionIsAKnownRegion(t *testing.T) {
 // Task 5's «Аудіовихід» rename ran into. "Джерела" says what the screen is
 // for: choosing where alert data comes from. "Тривоги" read as though the
 // screen showed the alerts themselves, which is the home page's job.
-func TestAlertsPageHeadingAndNavLabelReadDzherela(t *testing.T) {
+//
+// The second place the label appears used to be the nav; the screen now sits
+// behind /settings, so that index is where it has to hold.
+func TestAlertsPageHeadingAndSettingsLabelReadDzherela(t *testing.T) {
 	srv := newServer(t)
 	setPassword(t, srv, "correct horse battery staple")
 	cookie := login(t, srv, "correct horse battery staple")
@@ -576,8 +579,8 @@ func TestAlertsPageHeadingAndNavLabelReadDzherela(t *testing.T) {
 	if !strings.Contains(body, `<h1 class="text-lg font-semibold">Джерела</h1>`) {
 		t.Errorf("the page heading is not \"Джерела\"; body:\n%s", body)
 	}
-	if !strings.Contains(body, `'/alerts' ? 'page' : null">Джерела</a>`) {
-		t.Errorf("the nav link to /alerts is not labelled \"Джерела\"; body:\n%s", body)
+	if row := settingsRow(t, settingsIndex(t, srv, cookie), "/alerts"); !strings.Contains(row, "Джерела") {
+		t.Errorf("the settings index does not label /alerts \"Джерела\"; row:\n%s", row)
 	}
 }
 

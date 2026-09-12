@@ -55,6 +55,7 @@ func TestEveryRouteIsPublicOrPrivateAsIntended(t *testing.T) {
 		"/time/ntp":           false,
 		"/time/manual":        false,
 		"/time/server":        false,
+		"/settings":           false,
 	}
 
 	seen := map[string]bool{}

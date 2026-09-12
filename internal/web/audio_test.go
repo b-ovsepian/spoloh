@@ -69,13 +69,14 @@ func TestAudioPageRequiresSession(t *testing.T) {
 	}
 }
 
-// "Аудіовихід" sits one letter from "Звуки" (the sound library) in the nav —
-// two near-identical Ukrainian words leading to unrelated screens is exactly
-// the mix-up this label was chosen to avoid, on the one device whose first
-// act, out of the box, is to fail to make a sound. Pinned here so a future
-// edit that quietly drifts the heading or the nav link back towards "Звук"
-// fails a test instead of only a reviewer's eye.
-func TestAudioPageHeadingAndNavLabelReadAudiovyhid(t *testing.T) {
+// "Аудіовихід" sits one letter from "Звуки" (the sound library), directly
+// above it on the settings index — two near-identical Ukrainian words leading
+// to unrelated screens is exactly the mix-up this label was chosen to avoid,
+// on the one device whose first act, out of the box, is to fail to make a
+// sound. Pinned here so a future edit that quietly drifts the heading or the
+// index entry back towards "Звук" fails a test instead of only a reviewer's
+// eye.
+func TestAudioPageHeadingAndSettingsLabelReadAudiovyhid(t *testing.T) {
 	srv, _ := newServerWithDevices(t, realBoardDevices)
 	setPassword(t, srv, "correct horse battery staple")
 	cookie := login(t, srv, "correct horse battery staple")
@@ -89,8 +90,8 @@ func TestAudioPageHeadingAndNavLabelReadAudiovyhid(t *testing.T) {
 	if !strings.Contains(body, `<h1 class="text-lg font-semibold">Аудіовихід</h1>`) {
 		t.Errorf("the page heading is not \"Аудіовихід\"; body:\n%s", body)
 	}
-	if !strings.Contains(body, `'/audio' ? 'page' : null">Аудіовихід</a>`) {
-		t.Errorf("the nav link to /audio is not labelled \"Аудіовихід\"; body:\n%s", body)
+	if row := settingsRow(t, settingsIndex(t, srv, cookie), "/audio"); !strings.Contains(row, "Аудіовихід") {
+		t.Errorf("the settings index does not label /audio \"Аудіовихід\"; row:\n%s", row)
 	}
 }
 
