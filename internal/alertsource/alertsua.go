@@ -250,10 +250,16 @@ func ParseAlertsUA(data []byte) (Snapshot, error) {
 		Source: alertsUASourceName,
 		States: make(map[string]RegionState, len(locations)),
 	}
+	// Every published location, not only the oblasts.
+	//
+	// Seeding oblasts alone made a calm hromada indistinguishable from one
+	// this build does not know: both were absent, and engine.resolveWatched
+	// reads absent as "this provider cannot serve that granularity" and
+	// broadens to the oblast. So a device set to watch a hromada silently
+	// watched the whole oblast for as long as the hromada was calm, and
+	// narrowed only in the moments it was not — the opposite of what an
+	// operator asks for by choosing one.
 	for _, l := range locations {
-		if l.Kind != KindOblast && l.Kind != KindSpecialCity {
-			continue
-		}
 		snap.States[l.Name] = RegionState{Region: l.Name, UID: l.UID}
 	}
 	if body.Meta.LastUpdatedAt != "" {
@@ -323,5 +329,73 @@ func ParseAlertsUA(data []byte) (Snapshot, error) {
 		}
 		snap.States[name] = st
 	}
+
+	propagateDownward(&snap)
 	return snap, nil
+}
+
+// propagateDownward raises every location inside one that is already raised.
+//
+// Alerts are declared at whatever level the authorities announce them, and on
+// a real board that is usually the raion: «Шосткинський район», red, air raid,
+// with nothing on the oblast above it and nothing on the hromadas below. A
+// device watching «м. Шостка та Шосткинська територіальна громада» read no
+// alert for that UID, fell back to the oblast, found it calm, and reported
+// calm — while the raion containing Shostka was under a red air raid alert.
+// Observed on the operator's own device, against the live API.
+//
+// Containment is not a heuristic here. A raion under alert means every
+// hromada in it is under alert; that is what the declaration says. So the
+// state of a location is the most severe of its own and every ancestor's.
+//
+// It does not run the other way. A single hromada raised does not raise the
+// oblast around it, because an oblast watcher hearing a siren for a raid two
+// districts away would learn to ignore the siren — and the /iot endpoints'
+// own vocabulary separates "alert across the whole location" from "alert in
+// part of it" for the same reason. An operator who wants every part of their
+// oblast picks the oblast, which upstream raises when it declares one.
+func propagateDownward(snap *Snapshot) {
+	raised := make(map[int]RegionState, len(snap.States))
+	for _, st := range snap.States {
+		if st.Alert && st.UID != 0 {
+			raised[st.UID] = st
+		}
+	}
+	if len(raised) == 0 {
+		return
+	}
+
+	for name, st := range snap.States {
+		l, ok := LookupLocation(st.UID)
+		if !ok {
+			continue
+		}
+		// Walk up to the oblast, taking the most severe thing found. The
+		// bound is the table's own size: the generated parent links form a
+		// tree, but a future hand-edit that made a cycle must not hang a
+		// poll.
+		for hops := 0; l.Parent != 0 && hops < len(locations); hops++ {
+			parent, ok := LookupLocation(l.Parent)
+			if !ok {
+				break
+			}
+			l = parent
+			anc, ok := raised[l.UID]
+			if !ok {
+				continue
+			}
+			if !st.Alert {
+				// Inherit the ancestor's alert wholesale, including when it
+				// started: this location has been under it since it was
+				// declared, not since this poll noticed.
+				st.Alert, st.Level, st.Type, st.Changed = true, anc.Level, anc.Type, anc.Changed
+				continue
+			}
+			st.Level = moreSevere(st.Level, anc.Level)
+			if !anc.Changed.IsZero() && (st.Changed.IsZero() || anc.Changed.Before(st.Changed)) {
+				st.Changed = anc.Changed
+			}
+		}
+		snap.States[name] = st
+	}
 }

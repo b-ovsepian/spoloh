@@ -353,3 +353,93 @@ func TestAlertsUAFetchRejectsHTMLWith200(t *testing.T) {
 func TestAlertsUASatisfiesSource(t *testing.T) {
 	var _ alertsource.Source = alertsource.NewAlertsUA("", "", nil)
 }
+
+// The live failure this exists for, with the real UIDs off the operator's
+// own device: alerts.in.ua declared «Шосткинський район» (115) under a red
+// air raid, with nothing on Сумська область (20) above it and nothing on
+// «м. Шостка та Шосткинська територіальна громада» (1198) below. The device
+// was watching 1198, found no alert for it, broadened to the oblast, found
+// that calm, and announced nothing — through a red alert over the district
+// it stands in.
+func TestARaionAlertRaisesTheHromadasInsideIt(t *testing.T) {
+	body := []byte(`{"alerts":[{
+		"id": 1,
+		"location_uid": "115",
+		"location_title": "Шосткинський район",
+		"location_type": "raion",
+		"location_oblast": "Сумська область",
+		"location_oblast_uid": "20",
+		"started_at": "2026-09-12T08:00:00.000Z",
+		"finished_at": null,
+		"alert_type": "air_raid",
+		"alert_level": "red"
+	}]}`)
+
+	snap, err := alertsource.ParseAlertsUA(body)
+	if err != nil {
+		t.Fatalf("ParseAlertsUA: %v", err)
+	}
+
+	hromada, ok := snap.Location(1198)
+	if !ok {
+		t.Fatal("the hromada is not in the snapshot at all, so a calm one cannot be told from an unsupported one")
+	}
+	if !hromada.Alert {
+		t.Error("the raion containing Шостка is under a red alert and the hromada reports calm")
+	}
+	if hromada.Level != alertsource.LevelRed {
+		t.Errorf("hromada level = %v, want the raion's red", hromada.Level)
+	}
+	if hromada.Changed.IsZero() {
+		t.Error("the inherited alert carries no start time: it began when the raion's did, not when this poll noticed")
+	}
+}
+
+// A hromada raised on its own must not raise the oblast around it. An oblast
+// watcher hearing a siren for a raid two districts away learns to ignore the
+// siren, and that is a worse device than one that stays quiet.
+func TestAHromadaAlertDoesNotRaiseTheOblastAroundIt(t *testing.T) {
+	body := []byte(`{"alerts":[{
+		"id": 2,
+		"location_uid": "1198",
+		"location_title": "м. Шостка та Шосткинська територіальна громада",
+		"location_type": "hromada",
+		"started_at": "2026-09-12T08:00:00.000Z",
+		"finished_at": null,
+		"alert_type": "air_raid",
+		"alert_level": "yellow"
+	}]}`)
+
+	snap, err := alertsource.ParseAlertsUA(body)
+	if err != nil {
+		t.Fatalf("ParseAlertsUA: %v", err)
+	}
+
+	if st, ok := snap.Location(1198); !ok || !st.Alert {
+		t.Fatal("the hromada named by the alert is not raised")
+	}
+	if st, ok := snap.Location(20); ok && st.Alert {
+		t.Error("one raised hromada raised the whole oblast")
+	}
+	if st, ok := snap.Location(115); ok && st.Alert {
+		t.Error("one raised hromada raised the raion above it")
+	}
+}
+
+// A calm hromada must be present and calm, not absent. Absent is read one
+// level up as "this provider cannot serve that granularity" and broadens to
+// the oblast, which is how a device set to one hromada quietly watched a
+// whole oblast for as long as nothing was happening.
+func TestACalmHromadaIsPresentAndCalm(t *testing.T) {
+	snap, err := alertsource.ParseAlertsUA([]byte(`{"alerts":[]}`))
+	if err != nil {
+		t.Fatalf("ParseAlertsUA: %v", err)
+	}
+	st, ok := snap.Location(1198)
+	if !ok {
+		t.Fatal("a calm hromada is missing from the snapshot")
+	}
+	if st.Alert {
+		t.Error("a hromada with no alert anywhere reports one")
+	}
+}
