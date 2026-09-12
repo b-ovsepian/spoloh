@@ -40,6 +40,19 @@ type Status struct {
 	SourceName  string
 	Failing     bool
 
+	// Level is how severe the running alert is, as last named upstream, and
+	// alertsource.LevelUnknown when nothing is running or when no source
+	// has ever named one — every Ubilling key is such a source. Unknown is
+	// handled as red everywhere else in this repository, and a page reading
+	// this field must do the same: read alertsource.Level before branching
+	// on it, and use Level.TreatAsRed rather than testing for "red".
+	//
+	// It is on the dashboard because a yellow warning and a red air raid
+	// ask different things of whoever is looking at the screen, and because
+	// a device that has just announced an escalation must be able to show
+	// which of the two it is now saying.
+	Level alertsource.Level
+
 	// AllClearSeen and AllClearNeeded expose an all-clear that upstream has
 	// reported and this device is not announcing yet: how many consecutive
 	// calm readings have been seen, and how many it takes. Seen is zero
@@ -93,6 +106,7 @@ func (e *Engine) Status() Status {
 		LastError:   e.lastError,
 		SourceName:  e.sourceName,
 		Failing:     e.failing,
+		Level:       e.level,
 
 		AllClearSeen:   e.allClearSeen,
 		AllClearNeeded: alertstate.EndConfirmations,

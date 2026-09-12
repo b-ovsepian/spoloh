@@ -117,6 +117,14 @@ type Engine struct {
 	// moment it changes rather than read across the boundary.
 	allClearSeen int
 
+	// level mirrors alertstate.Machine.Level, on the same terms again. It
+	// is on the dashboard because the two words mean different things to
+	// whoever is reading the screen — a yellow warning and a red air raid
+	// ask different things of them — and because a device that announced an
+	// escalation must be able to show, afterwards, which of the two it is
+	// currently saying.
+	level alertsource.Level
+
 	// sources is what the last poll's cascade did, one entry per configured
 	// key. Written by fetch on every poll, successful or not — a cascade
 	// that failed everywhere is exactly the poll an operator most needs the
@@ -147,6 +155,7 @@ func New(d Deps) *Engine {
 	if d.Machine != nil {
 		e.alert = d.Machine.Alert()
 		e.alertSince = d.Machine.Since()
+		e.level = d.Machine.Level()
 	}
 	// The player is the only thing that sees a sound cut short, and the
 	// engine is where every other row about an announcement is written, so
@@ -337,6 +346,7 @@ func (e *Engine) PollOnce(ctx context.Context) error {
 	e.alert = e.d.Machine.Alert()
 	e.alertSince = e.d.Machine.Since()
 	e.allClearSeen = e.d.Machine.CalmRun()
+	e.level = e.d.Machine.Level()
 	e.mu.Unlock()
 
 	// An all-clear being held back is the state an operator debugging "the
@@ -353,6 +363,9 @@ func (e *Engine) PollOnce(ctx context.Context) error {
 		e.announce(config.TriggerAlertStart, eventlog.KindAlert, now)
 	case alertstate.Ended:
 		e.announce(config.TriggerAlertEnd, eventlog.KindAlert, now)
+	case alertstate.Escalated:
+		e.d.Logger.Warn("the raid has been declared red", "region", watched, "was", "yellow")
+		e.announceEscalation(now)
 	default:
 		// A re-baseline writes too, even though it announced nothing. The
 		// file now names the oblast its reading came from, and until the new
@@ -492,7 +505,6 @@ func (e *Engine) StopManual() {
 }
 
 func (e *Engine) announce(trigger, kind string, at time.Time) {
-	cfg := e.d.Config()
 	// Fired on the transition itself, before the event list or quiet hours
 	// get a say in whether anything is played — and deliberately so for
 	// TriggerAlertEnd. A webhook usually drives something that latches: the
@@ -509,6 +521,54 @@ func (e *Engine) announce(trigger, kind string, at time.Time) {
 	// EndConfirmations consecutive calm readings. A webhook therefore never
 	// says the raid is over on the strength of one source blinking.
 	e.fireWebhooks(trigger)
+	e.playTrigger(trigger, kind, at)
+}
+
+// announceEscalation announces a raid that was declared yellow and has been
+// declared red.
+//
+// The webhook always fires on TriggerAlertEscalated. It is a name no
+// configuration written before this build can carry, so an operator who has
+// one meant it, and firing the start's webhook instead would close a relay
+// that is already closed while leaving theirs alone.
+//
+// The sound falls back to TriggerAlertStart when no enabled event names the
+// escalation, which is every configuration in the field today. An escalation
+// answered with silence because nobody had opened a form yet would be this
+// device gaining a level and losing its siren, and a rise in severity is a
+// start's kind of news: people who heard the lesser warning need to be told
+// the threat has grown, with the same sound that told them it existed.
+func (e *Engine) announceEscalation(at time.Time) {
+	e.fireWebhooks(config.TriggerAlertEscalated)
+
+	trigger := config.TriggerAlertEscalated
+	if !configured(e.d.Config(), trigger) {
+		trigger = config.TriggerAlertStart
+	}
+	e.playTrigger(trigger, eventlog.KindAlert, at)
+}
+
+// configured reports whether the operator has an enabled event on this
+// trigger.
+//
+// It reads the event list rather than asking whether rules.Resolve returns
+// anything, because "nothing is configured for this" and "quiet hours
+// silenced it" must not be the same answer. Conflating them would let a
+// silenced escalation fall back to the start trigger, be silenced again, and
+// write the operator two suppression rows for one raid.
+func configured(cfg *config.Config, trigger string) bool {
+	for _, ev := range cfg.Events {
+		if ev.Trigger == trigger && ev.Enabled {
+			return true
+		}
+	}
+	return false
+}
+
+// playTrigger is the half of an announcement that reaches the speaker: what
+// quiet hours silenced, written down, and what survives, played.
+func (e *Engine) playTrigger(trigger, kind string, at time.Time) {
+	cfg := e.d.Config()
 	// Quiet hours can be configured to cover alerts, and then this is a
 	// trigger that produces no decisions, no playback and — without the
 	// loop below — no trace of any kind. That is the one outcome this
