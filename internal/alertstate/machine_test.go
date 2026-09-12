@@ -501,3 +501,268 @@ func TestLoadPersistedUnreadableFileReportsError(t *testing.T) {
 		t.Fatal("returned state must be the usable zero value (quiet)")
 	}
 }
+
+// leveled is state() with a severity attached, for the cases where what
+// upstream said about the level is the whole point.
+func leveled(alert bool, l alertsource.Level, changed time.Time) alertsource.RegionState {
+	st := state(alert, changed)
+	st.Level = l
+	return st
+}
+
+// raise drives a machine from a cold start to a raid at the given level and
+// returns it, so the tests below start where they mean to.
+func raise(t *testing.T, l alertsource.Level) *alertstate.Machine {
+	t.Helper()
+	m := alertstate.New()
+	m.Apply(state(false, now), now)
+	if got := m.Apply(leveled(true, l, now), now); got != alertstate.Started {
+		t.Fatalf("the reading that raised the alert = %v, want Started", got)
+	}
+	if m.Level() != l {
+		t.Fatalf("Level() = %v after a start at %v", m.Level(), l)
+	}
+	return m
+}
+
+// A raid is announced at whatever severity upstream declared it, on the
+// reading that declares it — including the severity a source that has no
+// level concept declines to name, which is unknown and is handled as red.
+func TestAStartCarriesTheLevelUpstreamReported(t *testing.T) {
+	for _, l := range []alertsource.Level{alertsource.LevelYellow, alertsource.LevelRed, alertsource.LevelUnknown} {
+		t.Run(l.String(), func(t *testing.T) {
+			m := raise(t, l)
+			if m.Level() != l {
+				t.Fatalf("Level() = %v, want %v", m.Level(), l)
+			}
+		})
+	}
+}
+
+// The transition this task exists for. «Шосткинський район» was declared red
+// while a device watching a hromada inside it had already announced a lesser
+// warning; the people who heard that warning are holding a picture of the
+// danger that is now wrong, and a device that stays quiet leaves them with
+// it. Announced on the reading that says so, like a start and unlike an
+// ending — see EndConfirmations for which direction is allowed to wait.
+func TestYellowRisingToRedIsAnnouncedImmediately(t *testing.T) {
+	m := raise(t, alertsource.LevelYellow)
+
+	if got := m.Apply(leveled(true, alertsource.LevelRed, now), now); got != alertstate.Escalated {
+		t.Fatalf("the first reading that says red = %v, want Escalated on that reading alone", got)
+	}
+	if m.Level() != alertsource.LevelRed {
+		t.Fatalf("Level() = %v after the escalation, want red", m.Level())
+	}
+	if !m.Alert() {
+		t.Fatal("an escalation is a raid growing, not one ending")
+	}
+	// Once, not once per poll: a siren every fifteen seconds reads as a
+	// malfunction and gets the device unplugged.
+	for i := 0; i < 20; i++ {
+		if got := m.Apply(leveled(true, alertsource.LevelRed, now), now); got != alertstate.NoChange {
+			t.Fatalf("poll %d after the escalation = %v, want NoChange", i, got)
+		}
+	}
+}
+
+// A cascade falling from alerts.in.ua to one of the six Ubilling keys turns a
+// named level into no level at all, and back again when it recovers. Nothing
+// about the raid changed — the reporting did — so nothing may be announced in
+// either direction.
+func TestUnknownIsNotALevelChange(t *testing.T) {
+	for _, l := range []alertsource.Level{alertsource.LevelRed, alertsource.LevelYellow} {
+		t.Run(l.String(), func(t *testing.T) {
+			m := raise(t, l)
+
+			// The level-blind source answers for a while.
+			for i := 0; i < 10; i++ {
+				if got := m.Apply(leveled(true, alertsource.LevelUnknown, now), now); got != alertstate.NoChange {
+					t.Fatalf("reading %d from a source with no level concept = %v, want NoChange", i, got)
+				}
+				if m.Level() != l {
+					t.Fatalf("Level() = %v after an unknown reading, want the last level actually reported (%v)", m.Level(), l)
+				}
+			}
+			// And the one that can name it comes back.
+			if got := m.Apply(leveled(true, l, now), now); got != alertstate.NoChange {
+				t.Fatalf("the reading that recovered the level = %v, want NoChange: the alert did not change, the reporting did", got)
+			}
+		})
+	}
+}
+
+// A raid that began under a level-blind source has been announced at red's
+// weight all along, because unknown is handled as red. A source that can name
+// the level then saying "red" has told us nothing new, and announcing an
+// escalation for it would sound a second siren for a threat that never grew.
+func TestUnknownBecomingRedIsNotAnEscalation(t *testing.T) {
+	m := raise(t, alertsource.LevelUnknown)
+
+	if got := m.Apply(leveled(true, alertsource.LevelRed, now), now); got != alertstate.NoChange {
+		t.Fatalf("unknown becoming red = %v, want NoChange", got)
+	}
+	if m.Level() != alertsource.LevelRed {
+		t.Fatalf("Level() = %v, want red once a source named it", m.Level())
+	}
+}
+
+// A de-escalation is never announced, and it is not taken on one reading
+// either. The reading that matters is the one after it: a blink of yellow
+// that dropped the stored level would make the return to red an escalation,
+// and the device would sound a siren because upstream rearranged its list.
+func TestADeEscalationIsSilentAndConfirmed(t *testing.T) {
+	for blinks := 1; blinks < alertstate.EndConfirmations; blinks++ {
+		m := raise(t, alertsource.LevelRed)
+		for i := 0; i < blinks; i++ {
+			if got := m.Apply(leveled(true, alertsource.LevelYellow, now), now); got != alertstate.NoChange {
+				t.Fatalf("yellow reading %d = %v, want NoChange: a de-escalation is never announced", i, got)
+			}
+			if m.Level() != alertsource.LevelRed {
+				t.Fatalf("Level() = %v after %d unconfirmed yellow readings, want red", m.Level(), i+1)
+			}
+		}
+		if got := m.Apply(leveled(true, alertsource.LevelRed, now), now); got != alertstate.NoChange {
+			t.Fatalf("red returning after %d yellow readings = %v, want NoChange: the raid never stopped being red", blinks, got)
+		}
+	}
+
+	// A full run is believed, silently, and the level the dashboard shows
+	// follows upstream again.
+	m := raise(t, alertsource.LevelRed)
+	for i := 0; i < alertstate.EndConfirmations; i++ {
+		if got := m.Apply(leveled(true, alertsource.LevelYellow, now), now); got != alertstate.NoChange {
+			t.Fatalf("yellow reading %d of a confirmed de-escalation = %v, want NoChange", i, got)
+		}
+	}
+	if m.Level() != alertsource.LevelYellow {
+		t.Fatalf("Level() = %v after %d consecutive yellow readings, want yellow", m.Level(), alertstate.EndConfirmations)
+	}
+
+	// And a rise out of the confirmed yellow is announced at once. The
+	// confirmation delays a fall; it must never delay a rise.
+	if got := m.Apply(leveled(true, alertsource.LevelRed, now), now); got != alertstate.Escalated {
+		t.Fatalf("the rise back to red = %v, want Escalated with no wait", got)
+	}
+}
+
+// A blind poll is a hole in the run, not a yellow reading — the same rule
+// PollFailed applies to a pending all-clear, for the same reason.
+func TestAFailedPollDiscardsThePendingDeEscalation(t *testing.T) {
+	m := raise(t, alertsource.LevelRed)
+	for i := 1; i < alertstate.EndConfirmations; i++ {
+		m.Apply(leveled(true, alertsource.LevelYellow, now), now)
+	}
+	m.PollFailed()
+
+	if m.Level() != alertsource.LevelRed {
+		t.Fatalf("Level() = %v after a failed poll, want the red it was still reporting", m.Level())
+	}
+	if got := m.Apply(leveled(true, alertsource.LevelYellow, now), now); got != alertstate.NoChange {
+		t.Fatalf("the first yellow after the gap = %v, want NoChange", got)
+	}
+	if m.Level() != alertsource.LevelRed {
+		t.Fatalf("Level() = %v: the run after the gap is a new one, not the old one resumed", m.Level())
+	}
+}
+
+// The all-clear's confirmation is untouched by any of this, and an announced
+// all-clear leaves no level behind: with nothing running there is nothing to
+// be severe about.
+func TestTheAllClearStillNeedsItsConfirmationsWithALevel(t *testing.T) {
+	m := raise(t, alertsource.LevelRed)
+
+	for i := 1; i < alertstate.EndConfirmations; i++ {
+		if got := m.Apply(state(false, now), now); got != alertstate.NoChange {
+			t.Fatalf("calm reading %d of %d = %v, want NoChange", i, alertstate.EndConfirmations, got)
+		}
+	}
+	if got := m.Apply(state(false, now), now); got != alertstate.Ended {
+		t.Fatalf("the confirming calm reading = %v, want Ended", got)
+	}
+	if m.Level() != alertsource.LevelUnknown {
+		t.Fatalf("Level() = %v after the all-clear, want unknown: no raid, no severity", m.Level())
+	}
+}
+
+// A state.json written before levels existed has no "level" key and decodes
+// with the zero value, which is unknown. It must load, and the first reading
+// after it must not read as a level change in either direction.
+func TestAPreLevelsStateFileRestoresWithoutAnnouncing(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json")
+	// Written out by hand in the old shape, because that is the file this
+	// test is about: a Persisted marshalled by this build would carry the
+	// new key and prove nothing.
+	old := `{"region":"` + region + `","alert":true,"since":"` + now.Add(-time.Hour).Format(time.RFC3339Nano) + `"}`
+	if err := os.WriteFile(path, []byte(old), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	p, err := alertstate.LoadPersisted(path)
+	if err != nil {
+		t.Fatalf("a state file written before levels existed must load: %v", err)
+	}
+	if !p.Alert {
+		t.Fatal("the stored alert was lost")
+	}
+	if p.Level != alertsource.LevelUnknown {
+		t.Fatalf("Level = %q, want unknown for a file that never had the field", p.Level)
+	}
+
+	m := alertstate.New()
+	m.Restore(p, region)
+	// Red, the level the old file could not name. Nothing may be announced:
+	// the raid is the same one, and unknown is not a level change.
+	if got := m.Apply(leveled(true, alertsource.LevelRed, now.Add(-time.Hour)), now); got != alertstate.NoChange {
+		t.Fatalf("first Apply after restoring a pre-levels file = %v, want NoChange", got)
+	}
+	if m.Level() != alertsource.LevelRed {
+		t.Fatalf("Level() = %v, want the level the first reading named", m.Level())
+	}
+}
+
+// The level survives a restart, so a board that loses power mid-raid comes
+// back reporting the severity it was already announcing.
+func TestPersistedCarriesTheLevel(t *testing.T) {
+	m := raise(t, alertsource.LevelYellow)
+
+	path := filepath.Join(t.TempDir(), "state.json")
+	if err := alertstate.SavePersisted(path, m.Persisted()); err != nil {
+		t.Fatalf("SavePersisted: %v", err)
+	}
+	p, err := alertstate.LoadPersisted(path)
+	if err != nil {
+		t.Fatalf("LoadPersisted: %v", err)
+	}
+	if p.Level != alertsource.LevelYellow {
+		t.Fatalf("Level = %q, want yellow", p.Level)
+	}
+
+	next := alertstate.New()
+	next.Restore(p, region)
+	if next.Level() != alertsource.LevelYellow {
+		t.Fatalf("Level() = %v after Restore, want yellow", next.Level())
+	}
+	// And the escalation the next process sees is still an escalation.
+	if got := next.Apply(leveled(true, alertsource.LevelYellow, now), now); got != alertstate.NoChange {
+		t.Fatalf("the baselining reading = %v, want NoChange", got)
+	}
+	if got := next.Apply(leveled(true, alertsource.LevelRed, now), now); got != alertstate.Escalated {
+		t.Fatalf("the escalation after a restart = %v, want Escalated", got)
+	}
+}
+
+// A transition the device did not witness is still announced when upstream
+// can prove it happened while we were down — levels changed nothing about
+// that, and the level the first reading names rides along with it.
+func TestAMissedStartAcrossARestartStillAnnouncesWithItsLevel(t *testing.T) {
+	m := alertstate.New()
+	m.Restore(alertstate.Persisted{Region: region, Alert: false, Since: now.Add(-time.Hour)}, region)
+
+	got := m.Apply(leveled(true, alertsource.LevelYellow, now.Add(-30*time.Second)), now)
+	if got != alertstate.Started {
+		t.Fatalf("a raid that began during the restart = %v, want Started", got)
+	}
+	if m.Level() != alertsource.LevelYellow {
+		t.Fatalf("Level() = %v, want the level upstream named", m.Level())
+	}
+}

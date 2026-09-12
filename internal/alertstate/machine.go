@@ -17,6 +17,10 @@ const (
 	NoChange Transition = iota
 	Started
 	Ended
+	// Escalated is a raid that was announced as yellow and is now red. It
+	// is a rise, not a start and not an ending, and it is announced with a
+	// start's urgency: see Machine.yellowRun and observeLevelWhileRaised.
+	Escalated
 )
 
 func (t Transition) String() string {
@@ -25,6 +29,8 @@ func (t Transition) String() string {
 		return "started"
 	case Ended:
 		return "ended"
+	case Escalated:
+		return "escalated"
 	default:
 		return "no_change"
 	}
@@ -53,6 +59,12 @@ func (t Transition) String() string {
 // late, too low means the device tells a building the raid is over while it
 // is still on. Only one of those is something this project can survive
 // saying.
+//
+// It also bounds the only other run of readings this machine keeps — the
+// pending de-escalation in yellowRun — because that run exists to ride out
+// the same thing: a source that lags, disagrees, or rearranges its list
+// between two polls. One constant, one reason, and nothing that has to be
+// kept in step with it by hand.
 const EndConfirmations = 3
 
 // Machine tracks one oblast. It is driven from the poll loop's single
@@ -81,6 +93,41 @@ type Machine struct {
 	// which is what CalmRun is for. Any reading that says alert clears it,
 	// and so does PollFailed.
 	calmRun int
+
+	// level is how severe the alert above is, as last positively reported.
+	//
+	// An unknown reading never overwrites a known level. A cascade that
+	// falls from alerts.in.ua to one of the six Ubilling keys stops
+	// reporting severity at all — every state those produce is
+	// LevelUnknown — and letting that erase a red would make the first
+	// reading after the recovery look like a level change the alert never
+	// made. What changed was who answered. Holding the last positive
+	// report also means an escalation that really did happen while the
+	// cascade was on a level-blind source is announced the moment a source
+	// that can see it answers again.
+	//
+	// Cleared when the alert ends: with no raid running there is no
+	// severity to report, and the next raid's level is the next raid's.
+	level alertsource.Level
+
+	// yellowRun counts consecutive yellow readings seen while the machine
+	// still reports something more severe — the pending half of a
+	// de-escalation, which is confirmed on the same terms as an all-clear.
+	//
+	// A de-escalation is never announced, so on its own it could be taken
+	// on the first reading. The run is not there to delay it; it is there
+	// to stop a wobble becoming a siren. alertsource.propagateDownward
+	// collapses a raion's red and a hromada's yellow into one state, so a
+	// single poll in which upstream omits the raion's alert reads as
+	// red → yellow → red, and the rise back is an escalation this machine
+	// would announce. Riding out the blink is the difference between a
+	// device that speaks when the threat grows and one that speaks
+	// whenever upstream's list is rearranged — and people taught to ignore
+	// the second stop hearing the first.
+	//
+	// Broken by any reading that is not yellow, and by PollFailed, for the
+	// reason calmRun is.
+	yellowRun int
 }
 
 func New() *Machine { return &Machine{} }
@@ -116,6 +163,21 @@ func (m *Machine) Apply(st alertsource.RegionState, now time.Time) Transition {
 		m.restored = false
 		m.alert = st.Alert
 		m.since = since
+		// The level is adopted, never announced — including one that
+		// provably moved while the device was down, because no such proof
+		// exists to be had. The evidence the missed-transition rule runs on
+		// is upstream's own "changed", and that timestamp marks when the
+		// alert began rather than when its level last moved: a raid raised
+		// an hour ago and escalated during a thirty-second restart carries
+		// the same timestamp on both sides of the restart. So the level is
+		// taken silently, which is what §5.2 requires of anything this
+		// device cannot prove it witnessed.
+		m.yellowRun = 0
+		if st.Alert {
+			m.level = observeLevel(m.level, st.Level)
+		} else {
+			m.level = alertsource.LevelUnknown
+		}
 
 		missed := restored &&
 			st.Alert != restoredAlert &&
@@ -136,7 +198,13 @@ func (m *Machine) Apply(st alertsource.RegionState, now time.Time) Transition {
 		// consecutive, or it confirms nothing: one calm reading now and
 		// another two raids later are not two readings of the same calm.
 		m.calmRun = 0
-		return NoChange
+		if !st.Alert {
+			m.yellowRun = 0
+			return NoChange
+		}
+		// The raid goes on, but its severity may not have. That is the one
+		// thing left that a reading agreeing on the boolean can still say.
+		return m.observeLevelWhileRaised(st.Level)
 	}
 
 	if st.Alert {
@@ -144,13 +212,19 @@ func (m *Machine) Apply(st alertsource.RegionState, now time.Time) Transition {
 		// poll of latency, no second opinion: see EndConfirmations for why
 		// only one of the two directions is allowed to wait.
 		m.calmRun = 0
+		m.yellowRun = 0
 		m.alert = true
 		m.since = since
+		// This reading's level, not whatever the last raid left behind: a
+		// new raid's severity is its own, and an unknown here is unknown —
+		// which alertsource.Level has handled as red since it was written.
+		m.level = st.Level
 		return Started
 	}
 
 	// Calm, while this machine still reports a raid. Count it and say
 	// nothing until the run is long enough to be believed.
+	m.yellowRun = 0
 	m.calmRun++
 	if m.calmRun < EndConfirmations {
 		return NoChange
@@ -158,7 +232,60 @@ func (m *Machine) Apply(st alertsource.RegionState, now time.Time) Transition {
 	m.calmRun = 0
 	m.alert = false
 	m.since = since
+	m.level = alertsource.LevelUnknown
 	return Ended
+}
+
+// observeLevelWhileRaised folds one reading's level into a raid this machine
+// is already reporting, and says whether the threat grew.
+func (m *Machine) observeLevelWhileRaised(seen alertsource.Level) Transition {
+	if seen == alertsource.LevelUnknown || seen == m.level {
+		// Nothing was said, or the same thing was said again. Either way
+		// any pending de-escalation is discarded: that run has to be
+		// unbroken to confirm anything, exactly as the all-clear's does.
+		m.yellowRun = 0
+		return NoChange
+	}
+
+	if seen.TreatAsRed() {
+		m.yellowRun = 0
+		rose := m.level == alertsource.LevelYellow
+		m.level = seen
+		if rose {
+			// People heard a lesser warning and the threat has grown. A
+			// device that says nothing now leaves them holding a picture
+			// of the danger that is wrong, which is the silence this
+			// project exists to refuse — so this is announced on the
+			// reading that says so, with no confirmation, exactly as a
+			// start is.
+			return Escalated
+		}
+		// Unknown becoming red is not a rise. Unknown is handled as red
+		// already, so the raid has been announced at red's weight all
+		// along; the only thing that changed is that a source able to name
+		// the level answered this time.
+		return NoChange
+	}
+
+	// Yellow, while this machine reports something more severe. Counted and
+	// never announced: see Machine.yellowRun for both halves of that.
+	m.yellowRun++
+	if m.yellowRun < EndConfirmations {
+		return NoChange
+	}
+	m.yellowRun = 0
+	m.level = alertsource.LevelYellow
+	return NoChange
+}
+
+// observeLevel folds an observed level into a raid that is already raised: a
+// level upstream named replaces what was there, and one it did not name
+// leaves it alone. See Machine.level.
+func observeLevel(have, seen alertsource.Level) alertsource.Level {
+	if seen == alertsource.LevelUnknown {
+		return have
+	}
+	return seen
 }
 
 // PollFailed tells the machine that a poll produced no usable reading — the
@@ -174,9 +301,13 @@ func (m *Machine) Apply(st alertsource.RegionState, now time.Time) Transition {
 // Being strict costs an all-clear that waits for polling to steady — late,
 // not wrong.
 //
+// The pending de-escalation goes the same way, for the same reason: a run of
+// yellow readings with a blind poll in the middle is two readings and a hole,
+// not evidence that a raid has calmed down a step.
+//
 // Nothing else is touched. A failed poll is not evidence of anything, least
 // of all that a raid ended, so what the machine reports does not move.
-func (m *Machine) PollFailed() { m.calmRun = 0 }
+func (m *Machine) PollFailed() { m.calmRun, m.yellowRun = 0, 0 }
 
 // CalmRun reports how many consecutive calm readings have been seen towards
 // an all-clear that has not been announced yet; zero when nothing is being
@@ -209,8 +340,15 @@ func (m *Machine) Region() string { return m.region }
 func (m *Machine) Alert() bool      { return m.alert }
 func (m *Machine) Since() time.Time { return m.since }
 func (m *Machine) Baselined() bool  { return m.baselined }
+
+// Level reports how severe the raid the machine is reporting is, as last
+// positively named upstream, and alertsource.LevelUnknown when nothing is
+// running or when no source has ever named one. Unknown is handled as red —
+// read alertsource.Level before branching on this.
+func (m *Machine) Level() alertsource.Level { return m.level }
+
 func (m *Machine) Persisted() Persisted {
-	return Persisted{Region: m.region, Alert: m.alert, Since: m.since}
+	return Persisted{Region: m.region, Alert: m.alert, Since: m.since, Level: m.level}
 }
 
 // Restore seeds the machine from disk so the dashboard can show an alert as
@@ -242,6 +380,7 @@ func (m *Machine) Restore(p Persisted, region string) {
 	}
 	m.alert = p.Alert
 	m.since = p.Since
+	m.level = p.Level
 	m.restored = true
 }
 
@@ -255,6 +394,18 @@ type Persisted struct {
 	Region string    `json:"region"`
 	Alert  bool      `json:"alert"`
 	Since  time.Time `json:"since"`
+
+	// Level is how severe Alert was, so a board that loses power mid-raid
+	// comes back reporting the severity it was already announcing rather
+	// than waiting for a source that can name one to answer again.
+	//
+	// A file written before this field existed decodes with the empty
+	// string, which is alertsource.LevelUnknown — "nobody said" — and
+	// unknown is never a level change. Such a file therefore restores and
+	// the first reading after it announces nothing about the level: the
+	// zero value doing the right thing, not a case anyone has to remember
+	// to write.
+	Level alertsource.Level `json:"level,omitempty"`
 }
 
 // LoadPersisted reads the state file. The returned Persisted is always safe to
