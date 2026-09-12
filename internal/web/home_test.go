@@ -1589,3 +1589,45 @@ func TestHomeNamesNoLevelOnACalmDevice(t *testing.T) {
 		}
 	}
 }
+
+// A yellow raid and a red one ask different things of the people who hear
+// the siren, and the operator found one word under an identical banner too
+// quiet to read at a glance. Colour and word now say it twice — colour alone
+// would exclude anyone who cannot tell the two apart.
+func TestHomeColoursTheBannerByLevel(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		level alertsource.Level
+		want  string
+		deny  string
+	}{
+		{"red", alertsource.LevelRed, "bg-destructive", "bg-amber-500"},
+		{"yellow", alertsource.LevelYellow, "bg-amber-500", "bg-destructive"},
+		// Every Ubilling source reports no level at all. It is handled as
+		// red everywhere else, so an amber banner here would be this page
+		// contradicting the engine and under-warning a raid nobody graded.
+		{"unnamed", alertsource.LevelUnknown, "bg-destructive", "bg-amber-500"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			banner := alertBanner(t, homeBody(t, newServerInAlertAtLevel(t, tc.level)))
+
+			// The rendered class attribute only. The :class binding beside
+			// it names both palettes by design — that is what repaints the
+			// banner on an escalation without a reload — so searching the
+			// whole element would find either colour whatever the level is.
+			at := strings.Index(banner, ` class="`)
+			if at < 0 {
+				t.Fatalf("the banner has no rendered class attribute; markup:\n%s", banner)
+			}
+			rest := banner[at+len(` class="`):]
+			classes := rest[:strings.Index(rest, `"`)]
+
+			if !strings.Contains(classes, tc.want) {
+				t.Errorf("the %s banner does not carry %s; classes: %s", tc.name, tc.want, classes)
+			}
+			if strings.Contains(classes, tc.deny) {
+				t.Errorf("the %s banner carries %s, which belongs to the other level; classes: %s", tc.name, tc.deny, classes)
+			}
+		})
+	}
+}

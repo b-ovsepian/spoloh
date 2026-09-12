@@ -125,6 +125,16 @@ type alertLevelView struct {
 	// Note is the qualifier an unknown level needs and the two named levels
 	// do not, empty for them.
 	Note string
+	// Severe drives the banner's colour: red for a red or an unnamed level,
+	// amber for a declared yellow one.
+	//
+	// It is a boolean decided here rather than a level string the template
+	// branches on, for the same reason Label is. "Is this red" has exactly
+	// one implementation — Level.TreatAsRed — and an unknown level, which
+	// every Ubilling source reports, must come out of it as red. A second
+	// answer to that question living in a template is how the amber banner
+	// would end up on a raid nobody had graded.
+	Severe bool
 }
 
 // The three things the banner can say about severity. A raid declared
@@ -166,11 +176,11 @@ func alertLevel(st engine.Status) alertLevelView {
 	case !st.Alert:
 		return alertLevelView{}
 	case !st.Level.TreatAsRed():
-		return alertLevelView{Label: levelYellowLabel}
+		return alertLevelView{Label: levelYellowLabel, Severe: false}
 	case st.Level == alertsource.LevelUnknown:
-		return alertLevelView{Label: levelRedLabel, Note: levelUnknownNote}
+		return alertLevelView{Label: levelRedLabel, Note: levelUnknownNote, Severe: true}
 	default:
-		return alertLevelView{Label: levelRedLabel}
+		return alertLevelView{Label: levelRedLabel, Severe: true}
 	}
 }
 

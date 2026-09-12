@@ -103,6 +103,9 @@ type statusFrame struct {
 	// page-load would still be saying yellow while the siren says otherwise.
 	LevelLabel string `json:"level_label"`
 	LevelNote  string `json:"level_note"`
+	// LevelSevere carries the banner's colour, so an escalation repaints
+	// the page rather than waiting for a reload that may never come.
+	LevelSevere bool `json:"level_severe"`
 	// AllClearSeen and AllClearNeeded carry an all-clear upstream has
 	// reported and this device is not announcing yet — see
 	// engine.Status's own comment for why the screen has to say so.
@@ -168,8 +171,9 @@ func (s *Server) currentFrame() ([]byte, error) {
 		Source:    st.SourceName,
 		Failing:   st.Failing,
 
-		LevelLabel: level.Label,
-		LevelNote:  level.Note,
+		LevelLabel:  level.Label,
+		LevelNote:   level.Note,
+		LevelSevere: level.Severe,
 
 		AllClearSeen:   st.AllClearSeen,
 		AllClearNeeded: st.AllClearNeeded,

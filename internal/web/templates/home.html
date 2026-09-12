@@ -80,8 +80,24 @@ already widened.
   corridor.
   */}}
   <section aria-live="polite" class="grid gap-3">
+    {{/*
+    Two colours, one for each thing the level can mean, and the class names
+    are written out in full on both branches because Tailwind compiles only
+    the names it can read in this file — a class assembled from a variable
+    ships as an unstyled element on the device and fails nothing here.
+
+    Amber carries black text rather than white. On a screen read from across
+    a corridor, white on amber is the pair that disappears first.
+
+    The colour is bound as well as rendered. An escalation is watched from in
+    front of the screen, so a banner that only repaints on reload would stay
+    yellow through the minute that matters most.
+    */}}
     <div data-state="alert" x-show="alert"{{if not .Status.Alert}} style="display:none"{{end}}
-         class="flex flex-col items-center gap-3 rounded-xl border-4 border-destructive bg-destructive px-4 py-10 text-white">
+         :class="levelSevere
+           ? 'border-destructive bg-destructive text-white'
+           : 'border-amber-500 bg-amber-500 text-black'"
+         class="flex flex-col items-center gap-3 rounded-xl border-4 px-4 py-10 {{if .Level.Severe}}border-destructive bg-destructive text-white{{else}}border-amber-500 bg-amber-500 text-black{{end}}">
       <svg class="size-16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
         <path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z"/>
         <path d="M12 9v5"/><path d="M12 17.5h.01"/>
@@ -105,8 +121,9 @@ already widened.
       where an unknown level, which every Ubilling source reports, would come
       out as the lesser warning.
 
-      No colour of its own: the banner is already solid red for every raid,
-      and the difference between the two levels is carried by the word. The
+      The word and the colour say the same thing twice on purpose: colour
+      alone excludes anyone who cannot tell these two apart, and the word
+      alone was what the operator found too quiet to read at a glance. The
       note under it is the qualifier an unknown level gets — it is hidden by
       the server for a level upstream actually named, the same
       rendered-and-hidden shape everything else on this page uses.
@@ -568,7 +585,7 @@ function status() {
     // How severe the raid is, in the words the server chose. Nothing here
     // decides whether a level counts as red — see sse.go's LevelLabel for
     // why that branch may live in exactly one place, and it is not this one.
-    levelLabel: {{.Level.Label}}, levelNote: {{.Level.Note}},
+    levelLabel: {{.Level.Label}}, levelNote: {{.Level.Note}}, levelSevere: {{.Level.Severe}},
     // How far along a held-back all-clear is, and how far it has to get.
     // Needed is carried rather than written in here because the count is
     // alertstate.EndConfirmations and a page cannot read a Go constant.
@@ -610,7 +627,7 @@ function status() {
         this.alert = d.alert; this.region = d.region; this.since = d.since;
         this.lastSuccess = d.last_success; this.lastError = d.last_error; this.source = d.source;
         this.failing = d.failing; this.clockSynced = d.clock_synced;
-        this.levelLabel = d.level_label; this.levelNote = d.level_note;
+        this.levelLabel = d.level_label; this.levelNote = d.level_note; this.levelSevere = d.level_severe;
         this.allClearSeen = d.all_clear_seen; this.allClearNeeded = d.all_clear_needed;
         this.nextEvent = d.next_event; this.nextEventAt = d.next_event_at;
         this.playing = d.playing;
