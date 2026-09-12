@@ -32,8 +32,9 @@ jobs:
           generate_release_notes: true
           # This workflow triggers on v*, which matches v1.5.0-rc1, and the
           # updater follows /releases/latest. Without this, tagging a release
-          # candidate publishes it as the latest release and every school
-          # device installs it — nothing but discipline stood between the two.
+          # candidate publishes it as the latest release and every device in
+          # the field installs it — nothing but discipline stood between the
+          # two.
           # A tag carrying a pre-release suffix (anything with a hyphen, the
           # semver convention) publishes as a pre-release, which /latest skips.
           prerelease: ${{ contains(github.ref_name, '-') }}
