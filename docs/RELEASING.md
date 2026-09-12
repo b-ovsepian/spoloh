@@ -21,6 +21,7 @@ of this writing it is the per-board binary plus:
 spoloh.service  spoloh.sysusers  spoloh.tmpfiles
 50-spoloh-networkmanager.rules
 spoloh-timesync.service  50-spoloh-timedate.rules
+spoloh-update.service    50-spoloh-update.rules
 ```
 
 On top of that a release carries all three binaries (`spoloh-linux-armv6`,
@@ -81,8 +82,8 @@ on this one — then `make dist`, and uploads every file in `dist/`.
 git push origin v0.1.0
 ```
 
-**3. Read the assets on the release page.** Three binaries, the six
-deployment files, `install.sh` and `SHA256SUMS` — eleven in all, and the
+**3. Read the assets on the release page.** Three binaries, the eight
+deployment files, `install.sh` and `SHA256SUMS` — thirteen in all, and the
 count changes whenever `deploy/` does. A partial upload is the
 failure this step exists to catch: `install.sh` verifies what it downloads
 against `SHA256SUMS` and stops, so a release missing one file is not
