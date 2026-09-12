@@ -14,10 +14,33 @@ import (
 const Schema = 1
 
 // Event triggers.
+//
+// The level an alert is declared at adds exactly one name here, and
+// deliberately only one. The alternative weighed against it was a trigger per
+// level — alert_start_yellow and alert_start_red in place of alert_start —
+// and it fails on the config that is already on every device in the field: a
+// stored events list has one alert_start entry and nothing else, so a build
+// that fired a level-specific name instead would find no event to play and
+// answer an air raid with silence. A device that gains a level and loses its
+// siren is the worst trade this project can make. alert_start therefore
+// keeps meaning "a raid began", at whatever level, and per-level behaviour is
+// built as a refinement of it rather than a replacement for it.
 const (
 	TriggerAlertStart = "alert_start"
 	TriggerAlertEnd   = "alert_end"
 	TriggerScheduled  = "scheduled"
+
+	// TriggerAlertEscalated is a raid that was announced as yellow and has
+	// been declared red. It is a new transition, not a new spelling of an
+	// old one: nothing fired for it before, so no stored configuration can
+	// be made worse by its existence.
+	//
+	// An operator who configures nothing for it still hears the escalation.
+	// The engine plays TriggerAlertStart in its place — see
+	// Engine.announceEscalation — because a rise in severity is a start's
+	// kind of news, and because the fallback is what keeps the name from
+	// being a way for this device to go quiet.
+	TriggerAlertEscalated = "alert_escalated"
 )
 
 // Quiet-hour categories. Quiet hours default to suppressing CategoryScheduled
@@ -272,9 +295,9 @@ type Network struct {
 type Webhook struct {
 	ID   string `json:"id"`
 	Name string `json:"name,omitempty"`
-	// Trigger is one of TriggerAlertStart, TriggerAlertEnd or
-	// TriggerScheduled — the same vocabulary Event uses, so "when this
-	// fires" means the same thing on both screens.
+	// Trigger is one of TriggerAlertStart, TriggerAlertEnd,
+	// TriggerAlertEscalated or TriggerScheduled — the same vocabulary Event
+	// uses, so "when this fires" means the same thing on both screens.
 	Trigger string          `json:"trigger"`
 	Method  string          `json:"method"`
 	URL     string          `json:"url"`
@@ -373,7 +396,7 @@ func ValidateWebhook(w Webhook) error {
 		return webhookErr(WebhookFieldName, "name is %d characters, the maximum is %d", len(w.Name), MaxWebhookNameLen)
 	}
 	switch w.Trigger {
-	case TriggerAlertStart, TriggerAlertEnd, TriggerScheduled:
+	case TriggerAlertStart, TriggerAlertEnd, TriggerAlertEscalated, TriggerScheduled:
 	default:
 		return webhookErr(WebhookFieldTrigger, "unknown trigger %q", w.Trigger)
 	}
@@ -648,7 +671,7 @@ func (e Event) validate() error {
 		return fmt.Errorf("event id is required")
 	}
 	switch e.Trigger {
-	case TriggerAlertStart, TriggerAlertEnd:
+	case TriggerAlertStart, TriggerAlertEnd, TriggerAlertEscalated:
 	case TriggerScheduled:
 		if _, err := ParseHM(e.Time); err != nil {
 			return fmt.Errorf("event %q: %w", e.ID, err)

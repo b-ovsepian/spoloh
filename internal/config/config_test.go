@@ -694,3 +694,32 @@ func walkStrings(t *testing.T, path string, v reflect.Value, fn func(path, value
 		}
 	}
 }
+
+// An escalation event and an escalation webhook have to survive a round trip
+// through the daemon's own loader. A stored config this build writes but
+// refuses to read would not be a validation bug; it would be a device that
+// will not start, which is the failure this whole file is written to avoid.
+func TestTheEscalationTriggerIsAcceptedWhereverATriggerIs(t *testing.T) {
+	c := config.Default()
+	c.Events = append(c.Events, config.Event{
+		ID: "alert-escalated", Trigger: config.TriggerAlertEscalated,
+		Sound: "siren.wav", Volume: 100, Repeat: 1, Enabled: true,
+	})
+	c.Webhooks = append(c.Webhooks, config.Webhook{
+		ID: "relay-red", Trigger: config.TriggerAlertEscalated,
+		Method: "GET", URL: "http://192.168.1.50/Sendkey?key=9", Enabled: true,
+	})
+
+	if err := c.Validate(); err != nil {
+		t.Fatalf("a config carrying an escalation would stop the daemon starting: %v", err)
+	}
+	if err := config.ValidateWebhook(c.Webhooks[len(c.Webhooks)-1]); err != nil {
+		t.Fatalf("/webhooks would refuse the escalation an operator typed: %v", err)
+	}
+	// Quiet hours reason in categories, not triggers: an escalation is an
+	// alert, so a window covering alerts covers it and one covering only
+	// scheduled announcements leaves it alone.
+	if got := c.Events[len(c.Events)-1].Category(); got != config.CategoryAlerts {
+		t.Fatalf("Category() = %q, want %q", got, config.CategoryAlerts)
+	}
+}
