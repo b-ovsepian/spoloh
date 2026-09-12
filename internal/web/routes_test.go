@@ -57,6 +57,7 @@ func TestEveryRouteIsPublicOrPrivateAsIntended(t *testing.T) {
 		"/time/server":            false,
 		"/settings":               false,
 		"/settings/config/export": false,
+		"/settings/config/import": false,
 	}
 
 	seen := map[string]bool{}
@@ -95,7 +96,8 @@ func TestEveryRouteIsPublicOrPrivateAsIntended(t *testing.T) {
 		switch path {
 		case "/log/clear", "/play", "/stop", "/events/save", "/events/add", "/events/delete", "/events/quiet-hours", "/sounds/upload", "/sounds/delete",
 			"/webhooks/add", "/webhooks/save", "/webhooks/delete",
-			"/time/timezone", "/time/ntp", "/time/manual", "/time/server":
+			"/time/timezone", "/time/ntp", "/time/manual", "/time/server",
+			"/settings/config/import":
 			method = http.MethodPost
 		}
 		rec := httptest.NewRecorder()

@@ -1,6 +1,27 @@
 {{define "title"}}Налаштування — Сполох{{end}}
 {{define "content"}}
 <div class="grid gap-4">
+  {{/*
+  The banners sit above the index, not inside the backup card: a restore
+  re-renders this whole page, and an operator who has just pressed
+  «Відновити» must not have to find out how it went by scrolling.
+
+  Neither one fades, unlike the confirmation on /sounds. A restore's
+  confirmation carries the sentence about restarting the device, and a
+  timed-out notice is how somebody walks away from a board still announcing
+  on yesterday's settings.
+  */}}
+  {{if .Error}}
+  <div class="alert" data-variant="destructive" role="alert">
+    <section><p>{{.Error}}</p></section>
+  </div>
+  {{end}}
+  {{if .Message}}
+  <div class="alert" role="status">
+    <section><p>{{.Message}}</p></section>
+  </div>
+  {{end}}
+
   <div class="card p-6">
     <header class="mb-4"><h1 class="text-lg font-semibold">Налаштування</h1></header>
     {{/*
@@ -35,6 +56,23 @@
       <a class="btn" data-variant="outline" href="/settings/config/export?secrets=1">Завантажити з ключами</a>
     </div>
     <p class="mt-3 text-sm text-muted-foreground">Файл з ключами містить токен alerts.in.ua, заголовки вебхуків і пароль точки доступу. Не надсилайте його нікому.</p>
+
+    {{/*
+    Restoring lives in the card it belongs to rather than one of its own: a
+    backup that cannot be put back is not a backup, and an operator looking
+    for the way back is looking where they took the file from.
+
+    A plain multipart POST, no Alpine anywhere on it. The upload on /sounds
+    can afford a progress bar because a recording is megabytes; this file is
+    a few kilobytes, and the one thing this form must do is work on a phone
+    over the device's own access point with whatever scripting it has.
+    */}}
+    <form method="post" action="/settings/config/import" enctype="multipart/form-data" class="mt-4 grid gap-2">
+      <label class="text-sm" for="config">Відновити з файлу</label>
+      <input class="input" type="file" id="config" name="config" accept="application/json,.json" required>
+      <button class="btn w-fit" type="submit">Відновити</button>
+      <p class="text-sm text-muted-foreground">Пароль до панелі не зміниться — він не зберігається у файлі.</p>
+    </form>
   </div>
 </div>
 {{end}}

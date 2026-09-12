@@ -1,9 +1,12 @@
 package web_test
 
 import (
+	"bytes"
 	"encoding/json"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 
@@ -262,4 +265,198 @@ func getWithSession(t *testing.T, srv *web.Server, cookie *http.Cookie, path str
 	rec := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rec, req)
 	return rec
+}
+
+// importRequest builds the multipart POST the restore form sends. Written
+// with mime/multipart rather than by hand, like /sounds' own upload helper:
+// a hand-rolled body is too easy to get subtly wrong, where this cannot be.
+func importRequest(t *testing.T, body []byte) *http.Request {
+	t.Helper()
+	var buf bytes.Buffer
+	w := multipart.NewWriter(&buf)
+	part, err := w.CreateFormFile("config", "spoloh-config.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := part.Write(body); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/settings/config/import", &buf)
+	req.Header.Set("Content-Type", w.FormDataContentType())
+	req.Header.Set("Origin", "http://"+req.Host)
+	return req
+}
+
+// importFile marshals a configuration the way an export would, so a test can
+// say what is in the file an operator picked.
+func importFile(t *testing.T, c *config.Config) []byte {
+	t.Helper()
+	data, err := json.Marshal(c)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	return data
+}
+
+// postImport fires one authenticated restore and returns the recorder.
+func postImport(t *testing.T, srv *web.Server, cookie *http.Cookie, body []byte) *httptest.ResponseRecorder {
+	t.Helper()
+	req := importRequest(t, body)
+	req.AddCookie(cookie)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+	return rec
+}
+
+// A backup that cannot be put back is not a backup. The settings in the file
+// have to reach the store, and the page has to say that the device needs
+// restarting — the cascade, the time zone and the audio output are read once
+// at startup, so until it restarts the page says one thing and the device
+// does another.
+func TestConfigImportAppliesTheFileAndAsksForARestart(t *testing.T) {
+	srv, store := newServerWithStore(t)
+	setPassword(t, srv, "correct horse battery staple")
+	cookie := login(t, srv, "correct horse battery staple")
+
+	incoming := config.Default()
+	incoming.Device.Name = "Сполох у майстерні"
+	incoming.Alerts.Region = "Львівська область"
+	incoming.Audio.MasterVolume = 73
+
+	rec := postImport(t, srv, cookie, importFile(t, incoming))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body:\n%s", rec.Code, rec.Body.String())
+	}
+
+	got := store.Get()
+	if got.Device.Name != "Сполох у майстерні" || got.Alerts.Region != "Львівська область" || got.Audio.MasterVolume != 73 {
+		t.Errorf("the restore did not reach the store: name=%q region=%q volume=%d",
+			got.Device.Name, got.Alerts.Region, got.Audio.MasterVolume)
+	}
+	if !strings.Contains(pageContent(t, rec.Body.String()), "перезавантажте пристрій") {
+		t.Errorf("the page never says the device has to be restarted; body:\n%s", rec.Body.String())
+	}
+}
+
+// The one that matters. A restore that took Auth from the file would leave
+// the operator holding a cookie their own device no longer honours, locked
+// out with a password they have never seen — and the file is routinely one
+// they exported from a different device.
+func TestConfigImportLeavesTheOperatorSignedIn(t *testing.T) {
+	srv, store := newServerWithStore(t)
+	setPassword(t, srv, "correct horse battery staple")
+	cookie := login(t, srv, "correct horse battery staple")
+
+	before := store.Get().Auth
+
+	incoming := config.Default()
+	incoming.Auth.PasswordHash = "A-HASH-FROM-A-FILE"
+	incoming.Auth.SessionSecret = "A-SECRET-FROM-A-FILE"
+	incoming.Alerts.Region = "Львівська область"
+
+	rec := postImport(t, srv, cookie, importFile(t, incoming))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body:\n%s", rec.Code, rec.Body.String())
+	}
+	if store.Get().Alerts.Region != "Львівська область" {
+		t.Fatal("the restore did not apply, so this test would pass against anything")
+	}
+
+	after := store.Get().Auth
+	if after.PasswordHash != before.PasswordHash || after.SessionSecret != before.SessionSecret {
+		t.Error("the restore replaced the running credentials with the file's")
+	}
+	// The cookie is verified against the stored Auth on every request, so
+	// this is the operator still being signed in, not a value comparison
+	// standing in for one.
+	if code := getWithSession(t, srv, cookie, "/settings").Code; code != http.StatusOK {
+		t.Errorf("GET /settings with the session held before the restore = %d, want 200: the restore signed the operator out", code)
+	}
+	// And the password they know still works.
+	req := postForm("/login", url.Values{"password": {"correct horse battery staple"}})
+	loginRec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(loginRec, req)
+	if loginRec.Code != http.StatusSeeOther {
+		t.Errorf("logging in again after the restore = %d, want 303: the password the operator knows no longer opens the device", loginRec.Code)
+	}
+}
+
+// A configuration the daemon could not start on must not reach the file the
+// daemon starts from. The device keeps announcing on what it has.
+func TestConfigImportRejectsAConfigurationTheDaemonCouldNotStartOn(t *testing.T) {
+	srv, store := newServerWithStore(t)
+	setPassword(t, srv, "correct horse battery staple")
+	cookie := login(t, srv, "correct horse battery staple")
+
+	before := store.Get()
+
+	broken := config.Default()
+	broken.Device.Timezone = "Mars/Olympus_Mons"
+	broken.Alerts.Region = "Львівська область"
+
+	rec := postImport(t, srv, cookie, importFile(t, broken))
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body:\n%s", rec.Code, rec.Body.String())
+	}
+
+	after := store.Get()
+	if after.Device.Timezone != before.Device.Timezone || after.Alerts.Region != before.Alerts.Region {
+		t.Errorf("a rejected restore changed the stored configuration: timezone=%q region=%q",
+			after.Device.Timezone, after.Alerts.Region)
+	}
+	// The rejection has to be readable, not a bare 400 the operator meets
+	// with no idea what to do instead — and this file's problem is a value
+	// in it, which is a different answer from picking another file.
+	if !strings.Contains(pageContent(t, rec.Body.String()), "пристрій не запуститься") {
+		t.Errorf("the rejection never says the device would not start on this file; body:\n%s", rec.Body.String())
+	}
+}
+
+// Whatever an operator picks off a phone — a photo, a half-downloaded file,
+// the wrong JSON entirely — is a rejection and a sentence, never a panic
+// that takes the dashboard down with it.
+func TestConfigImportRejectsAFileThatIsNotAConfiguration(t *testing.T) {
+	srv, store := newServerWithStore(t)
+	setPassword(t, srv, "correct horse battery staple")
+	cookie := login(t, srv, "correct horse battery staple")
+
+	before := store.Get().Alerts.Region
+
+	for name, body := range map[string][]byte{
+		"not JSON at all":         []byte("\xff\xd8\xff\xe0 this is a photograph"),
+		"JSON of the wrong shape": []byte(`{"schema": "not a number"}`),
+		"an empty file":           {},
+	} {
+		rec := postImport(t, srv, cookie, body)
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("%s: status = %d, want 400; body:\n%s", name, rec.Code, rec.Body.String())
+		}
+		if got := store.Get().Alerts.Region; got != before {
+			t.Fatalf("%s: the stored configuration changed to %q", name, got)
+		}
+		// The other rejection sentence: this file is not a configuration at
+		// all, so the answer is another file, not another setting.
+		if !strings.Contains(pageContent(t, rec.Body.String()), "це не збережені налаштування") {
+			t.Errorf("%s: the rejection never says the file is not a configuration; body:\n%s", name, rec.Body.String())
+		}
+	}
+}
+
+// The form has to be a plain multipart POST: this is the screen someone
+// reaches over the device's own access point, from whatever phone they have.
+func TestSettingsIndexOffersARestoreThatNeedsNoScript(t *testing.T) {
+	srv, _ := newServerWithStore(t)
+	setPassword(t, srv, "correct horse battery staple")
+	cookie := login(t, srv, "correct horse battery staple")
+
+	index := settingsIndex(t, srv, cookie)
+	if !strings.Contains(index, `<form method="post" action="/settings/config/import" enctype="multipart/form-data"`) {
+		t.Errorf("the settings page offers no plain multipart restore form; index:\n%s", index)
+	}
+	if !strings.Contains(index, `name="config"`) {
+		t.Errorf("the restore form has no file field named config; index:\n%s", index)
+	}
 }

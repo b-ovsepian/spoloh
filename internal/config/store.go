@@ -20,21 +20,31 @@ func Load(path string) (*Config, error) {
 	if err := json.Unmarshal(data, &c); err != nil {
 		return nil, fmt.Errorf("parse %s: %w", path, err)
 	}
-	// Runs here, not in Validate: Validate must stay free of side effects, a
-	// mutation hiding inside a validator is a trap for every later caller.
-	// It runs on every path that turns stored bytes into a *Config, rather
-	// than only the one caller happens to use today, because that is
-	// exactly the guarantee a config import (or any future loader) needs
-	// without having to remember to ask for it separately.
-	restoreMissingAlertEvents(&c)
-	restoreMissingRepeat(&c)
-	raisePollIntervalToMinimum(&c)
-	repairWebhookPhases(&c)
-	lowerWebhookDelaysToMaximum(&c)
+	repairStored(&c)
 	if err := c.Validate(); err != nil {
 		return nil, fmt.Errorf("validate %s: %w", path, err)
 	}
 	return &c, nil
+}
+
+// repairStored makes every repair this package performs on bytes that were
+// written by some earlier version of itself, in the order Load has always
+// made them.
+//
+// They run here, not in Validate: Validate must stay free of side effects, a
+// mutation hiding inside a validator is a trap for every later caller. And
+// they are one function rather than five calls at one call site, because
+// every path that turns stored bytes into a *Config needs all of them — Load
+// at startup and Import when an operator restores a backup — and a list
+// somebody has to remember to copy is a list that will be copied short. A
+// restore answered with "not usable" for a file the daemon itself would have
+// started on is a backup that is not a backup.
+func repairStored(c *Config) {
+	restoreMissingAlertEvents(c)
+	restoreMissingRepeat(c)
+	raisePollIntervalToMinimum(c)
+	repairWebhookPhases(c)
+	lowerWebhookDelaysToMaximum(c)
 }
 
 // restoreMissingAlertEvents appends alert_start and/or alert_end from

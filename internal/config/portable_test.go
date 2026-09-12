@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/b-ovsepian/spoloh/internal/config"
 )
@@ -127,6 +128,82 @@ func TestExportIsJSONThatReadsBackAsAConfig(t *testing.T) {
 		if back.Schema != c.Schema {
 			t.Errorf("Export(withSecrets=%v) wrote schema %d, want %d; an import has to know what it is reading",
 				withSecrets, back.Schema, c.Schema)
+		}
+	}
+}
+
+func TestImportKeepsTheRunningAuthAndIgnoresTheFiles(t *testing.T) {
+	current := config.Default()
+	current.Auth.PasswordHash = "THE-HASH-IN-USE"
+	current.Auth.SessionSecret = "THE-SECRET-IN-USE"
+
+	incoming := config.Default()
+	incoming.Auth.PasswordHash = "A-HASH-FROM-A-FILE"
+	incoming.Auth.SessionSecret = "A-SECRET-FROM-A-FILE"
+	incoming.Alerts.Region = "Львівська область"
+	data, err := json.Marshal(incoming)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+
+	got, err := config.Import(current, data)
+	if err != nil {
+		t.Fatalf("Import: %v", err)
+	}
+	if got.Alerts.Region != "Львівська область" {
+		t.Errorf("the imported oblast was not applied: %q", got.Alerts.Region)
+	}
+	// Taking these from the file would lock the operator out of their own
+	// device with a password they have never seen.
+	if got.Auth.PasswordHash != "THE-HASH-IN-USE" || got.Auth.SessionSecret != "THE-SECRET-IN-USE" {
+		t.Error("Import took Auth from the file; the running credentials must survive an import")
+	}
+}
+
+func TestImportRefusesAConfigurationTheDaemonCouldNotStartOn(t *testing.T) {
+	current := config.Default()
+
+	broken := config.Default()
+	broken.Device.Timezone = "Mars/Olympus_Mons"
+	data, err := json.Marshal(broken)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+
+	if _, err := config.Import(current, data); err == nil {
+		t.Fatal("Import accepted a configuration Validate rejects; writing it would stop the daemon starting")
+	}
+}
+
+// A backup is only a backup if a file written by an older build reads back.
+// Load repairs stored bytes rather than refusing them — a poll interval
+// below a minimum that has been raised since, an event saved before Repeat
+// existed — and Validate refuses both of those values outright. An import
+// that skipped those repairs would answer a restore with "not usable" for
+// exactly the file the daemon itself would have started on.
+func TestImportRepairsAnOlderBackupInsteadOfRefusingIt(t *testing.T) {
+	current := config.Default()
+
+	old := config.Default()
+	old.Alerts.PollInterval = config.Duration(5 * time.Second)
+	for i := range old.Events {
+		old.Events[i].Repeat = 0
+	}
+	data, err := json.Marshal(old)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+
+	got, err := config.Import(current, data)
+	if err != nil {
+		t.Fatalf("Import refused a backup the daemon would have loaded: %v", err)
+	}
+	if got.Alerts.PollInterval.Std() != config.MinPollInterval {
+		t.Errorf("poll interval = %v, want it raised to the %v minimum", got.Alerts.PollInterval.Std(), config.MinPollInterval)
+	}
+	for _, e := range got.Events {
+		if e.Repeat != 1 {
+			t.Errorf("event %q kept repeat %d; a repeat of 0 means a sound that never plays", e.ID, e.Repeat)
 		}
 	}
 }
