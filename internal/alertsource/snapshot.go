@@ -159,3 +159,32 @@ func Regions() []string {
 	copy(out, regions)
 	return out
 }
+
+// Location looks up one place by its published UID.
+//
+// Separate from Region because the two answer different questions. Region
+// takes an oblast's upstream key and is what the six Ubilling sources can
+// serve; Location takes a UID from the published table and is what lets a
+// provider that understands hromadas be asked about one.
+//
+// A snapshot from an oblast-only provider holds no UIDs, so this reports
+// false for every hromada — which is not a failure. It is the signal to
+// broaden to the containing oblast, the behaviour OblastOf exists for and
+// which the /alerts screen states per source before it happens. Reporting
+// it as an error instead would take the device silent over a source that is
+// answering perfectly well, one level coarser than asked.
+//
+// Linear rather than indexed: States is keyed by name, holds a few dozen
+// entries for an oblast-level provider and is rebuilt every poll, so an
+// index would cost more to maintain than the scan saves.
+func (s Snapshot) Location(uid int) (RegionState, bool) {
+	if uid == 0 {
+		return RegionState{}, false
+	}
+	for _, st := range s.States {
+		if st.UID == uid {
+			return st, true
+		}
+	}
+	return RegionState{}, false
+}

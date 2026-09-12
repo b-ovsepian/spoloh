@@ -1446,3 +1446,79 @@ func TestACompletedScheduledEventIsStillRecordedAsPlayed(t *testing.T) {
 		t.Fatalf("no scheduled row says the minute of silence played: %+v", entries)
 	}
 }
+
+// stubSource answers with a fixed snapshot, so a test can say exactly what
+// the upstream reported and at which granularity.
+type stubSource struct{ snap alertsource.Snapshot }
+
+func (s *stubSource) Fetch(context.Context) (alertsource.Snapshot, error) { return s.snap, nil }
+
+// A provider that understands hromadas must be read at the hromada. Storing
+// the UID and then announcing for the whole oblast anyway is the defect this
+// pins: the operator picked Шостка precisely to stop hearing Сумська
+// область's other raids.
+func TestPollReadsTheChosenLocationWhenTheSnapshotHasIt(t *testing.T) {
+	cfg := config.Default()
+	cfg.Alerts.Region = "Сумська область"
+	cfg.Alerts.LocationUID = 1198
+
+	src := &stubSource{snap: alertsource.Snapshot{
+		Source: "test",
+		States: map[string]alertsource.RegionState{
+			"Сумська область": {Region: "Сумська область", UID: 20, Alert: true},
+			"м. Шостка та Шосткинська територіальна громада": {
+				Region: "м. Шостка та Шосткинська територіальна громада", UID: 1198, Alert: false,
+			},
+		},
+	}}
+
+	eng := engine.New(engine.Deps{
+		Config:  func() *config.Config { return cfg },
+		Source:  src,
+		Machine: alertstate.New(),
+		Clock:   clock.System{Loc: time.UTC},
+		Sync:    &clock.FakeSync{Value: true},
+		Player:  player.New(newRecorder(), "default"),
+		Library: library.New(t.TempDir(), library.FFmpeg{}),
+	})
+
+	if err := eng.PollOnce(context.Background()); err != nil {
+		t.Fatalf("PollOnce: %v", err)
+	}
+	if got := eng.Status(); got.Alert {
+		t.Error("the device reports an alert: it read the oblast, which is raised, not the hromada, which is calm")
+	}
+}
+
+// An oblast-only provider holds no hromada UIDs. That is not a failure — it
+// is the signal to broaden. Taking the device silent over a source answering
+// perfectly well, one level coarser than asked, is the outcome this refuses.
+func TestPollBroadensToTheOblastWhenTheSnapshotHasNoSuchLocation(t *testing.T) {
+	cfg := config.Default()
+	cfg.Alerts.Region = "Сумська область"
+	cfg.Alerts.LocationUID = 1198
+
+	src := &stubSource{snap: alertsource.Snapshot{
+		Source: "test",
+		States: map[string]alertsource.RegionState{
+			"Сумська область": {Region: "Сумська область", Alert: true},
+		},
+	}}
+
+	eng := engine.New(engine.Deps{
+		Config:  func() *config.Config { return cfg },
+		Source:  src,
+		Machine: alertstate.New(),
+		Clock:   clock.System{Loc: time.UTC},
+		Sync:    &clock.FakeSync{Value: true},
+		Player:  player.New(newRecorder(), "default"),
+		Library: library.New(t.TempDir(), library.FFmpeg{}),
+	})
+
+	if err := eng.PollOnce(context.Background()); err != nil {
+		t.Fatalf("PollOnce broadened into a failure instead of the oblast: %v", err)
+	}
+	if got := eng.Status(); !got.Alert {
+		t.Error("the oblast is raised and the fallback holds no hromada, so the device must announce for the oblast")
+	}
+}

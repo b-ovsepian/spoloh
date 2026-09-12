@@ -280,7 +280,7 @@ func (e *Engine) PollOnce(ctx context.Context) error {
 		return err
 	}
 
-	st, ok := snap.Region(cfg.Alerts.Region)
+	st, watched, ok := resolveWatched(snap, cfg)
 	if !ok {
 		err := fmt.Errorf("region %q is not present in the snapshot", cfg.Alerts.Region)
 		e.pollFailed(err)
@@ -307,14 +307,21 @@ func (e *Engine) PollOnce(ctx context.Context) error {
 	// piece of evidence that lets Apply announce a transition that genuinely
 	// happened while the device was down.
 	rebaselined := false
-	if cfg.Alerts.Region != e.pollRegion {
+	// Keyed on what was actually read, not on the oblast alone: an operator
+	// narrowing from «Сумська область» to «м. Шостка та Шосткинська
+	// територіальна громада» leaves the oblast field untouched, so keying on
+	// it would compare the hromada's first reading against the oblast's last
+	// one and announce the difference — a siren, or an all-clear, for a
+	// transition this device witnessed nowhere. That is the same rule spec
+	// §5.2 forbids breaking, arriving by a second route.
+	if watched != e.pollRegion {
 		if e.pollRegion != "" {
 			e.d.Logger.Info("configured oblast changed; adopting its current state without announcing",
-				"from", e.pollRegion, "to", cfg.Alerts.Region, "alert", st.Alert)
+				"from", e.pollRegion, "to", watched, "alert", st.Alert)
 			e.d.Machine.Rebaseline()
 			rebaselined = true
 		}
-		e.pollRegion = cfg.Alerts.Region
+		e.pollRegion = watched
 	}
 
 	transition := e.d.Machine.Apply(st, now)
@@ -650,4 +657,31 @@ func (e *Engine) record(entry eventlog.Entry) {
 	if err := e.d.Log.Append(entry); err != nil {
 		e.d.Logger.Warn("could not write the event log", "err", err)
 	}
+}
+
+// resolveWatched picks the state this poll is about, and names what it is.
+//
+// A configured LocationUID is tried first: a provider that understands
+// hromadas answers for exactly the place the operator chose. When the
+// snapshot holds no such UID — every Ubilling source, which knows oblasts and
+// nothing else — this broadens to the configured oblast rather than failing.
+//
+// Broadening is the documented contract (see alertsource.OblastOf) and it is
+// the safe direction: a fallback announces for the whole oblast, which is
+// more than was asked for and never less. Failing instead would take the
+// device silent over a source that is answering perfectly well, one level
+// coarser than asked — and silence is the one outcome this project refuses.
+//
+// The second return is what was actually read, which the re-baseline check
+// keys on. It has to be the place, not the oblast: narrowing from an oblast
+// to a hromada inside it changes what the boolean means without changing
+// cfg.Alerts.Region at all.
+func resolveWatched(snap alertsource.Snapshot, cfg *config.Config) (alertsource.RegionState, string, bool) {
+	if uid := cfg.Alerts.LocationUID; uid != 0 {
+		if st, ok := snap.Location(uid); ok {
+			return st, st.Region, true
+		}
+	}
+	st, ok := snap.Region(cfg.Alerts.Region)
+	return st, cfg.Alerts.Region, ok
 }
