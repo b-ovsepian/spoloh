@@ -603,3 +603,38 @@ func TestATimeoutIsNotReportedAsCutShort(t *testing.T) {
 		t.Fatalf("a timeout was reported as cut short (%v); it is a fault, and already has its own error", got)
 	}
 }
+
+// A daemon stopping mid-sound is still a device falling silent, and the far
+// end has to hear about it. The before webhook may have muted a music player
+// feeding these same speakers; an unreported shutdown leaves that mute
+// outliving the process that asked for it, and the building stays quiet
+// until somebody works out why.
+func TestRunReportsFallingSilentWhenTheDaemonStops(t *testing.T) {
+	f := newFake()
+	p := player.New(f, "default")
+
+	idle := make(chan struct{}, 4)
+	p.OnIdle = func() { idle <- struct{}{} }
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { p.Run(ctx); close(done) }()
+
+	p.Play(player.Request{EventID: "alert-start", Path: "/s/siren.wav", Volume: 100, Priority: player.PriorityAlert})
+	waitStart(t, f)
+
+	// Cancelled while the siren is still holding the voice, which is the
+	// case that matters: a clean end already reports on its own.
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run did not return after the context was cancelled")
+	}
+
+	select {
+	case <-idle:
+	default:
+		t.Error("the player stopped mid-sound without reporting that the device fell silent")
+	}
+}

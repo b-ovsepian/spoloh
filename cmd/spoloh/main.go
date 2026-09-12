@@ -427,6 +427,20 @@ func run(configPath, dataDir, listen, socket string) error {
 	stop()
 	players.Wait()
 
+	// After the player, because the player's own shutdown is what reports
+	// the device falling silent — and that report is what fires the webhook
+	// telling the far end the announcement is over.
+	//
+	// Without this the process exits with that request still in flight and
+	// it never lands. The pair is the point: a before webhook that muted a
+	// music player feeding these speakers has an after webhook that unmutes
+	// it, and an unfired after leaves the building silent until somebody
+	// works out why. The dispatcher bounds every request itself, so this
+	// cannot hang shutdown.
+	if hooks != nil {
+		hooks.Wait()
+	}
+
 	if err != nil && !errors.Is(err, context.Canceled) {
 		return err
 	}

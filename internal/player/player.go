@@ -249,6 +249,20 @@ func (p *Player) Current() (Request, bool) {
 
 // Run drives the queue until ctx is cancelled. Call it in its own goroutine.
 func (p *Player) Run(ctx context.Context) {
+	// A daemon stopping mid-sound is still a device falling silent, and the
+	// far end has to be told. The before webhook may have muted a music
+	// player feeding the same speakers; without this the mute outlives the
+	// process that asked for it and the building stays quiet until somebody
+	// works out why. Shutdown is exactly when nobody is watching.
+	//
+	// Deferred rather than written at each return: Run leaves from two
+	// places, and the one that matters is the one somebody adds later.
+	defer func() {
+		if p.fellSilent() && p.OnIdle != nil {
+			p.OnIdle()
+		}
+	}()
+
 	for {
 		if ctx.Err() != nil {
 			return

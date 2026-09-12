@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"regexp"
+	"strings"
 	"testing"
 )
 
@@ -100,5 +101,37 @@ func TestWebDepsLiteralCarriesTheSilentlyOptionalFields(t *testing.T) {
 			t.Errorf("web.Deps literal in main.go does not set %s; "+
 				"its zero value renders as if it were true", field)
 		}
+	}
+}
+
+// The webhook pair is only a pair if the second half lands. A before webhook
+// that muted a music player feeding these speakers has an after webhook that
+// unmutes it, and the after fires from the player's shutdown — so the process
+// must outlive the request it just started, or the mute survives the daemon
+// that asked for it.
+//
+// Read from main.go's own source: the ordering is between two calls in one
+// function and there is nothing to observe from outside it. Same technique as
+// the Makefile -X check above, for the same reason.
+func TestShutdownDrainsWebhooksAfterThePlayerStops(t *testing.T) {
+	src, err := os.ReadFile("main.go")
+	if err != nil {
+		t.Fatalf("read main.go: %v", err)
+	}
+	body := string(src)
+
+	players := strings.Index(body, "players.Wait()")
+	hooks := strings.Index(body, "hooks.Wait()")
+
+	if players < 0 {
+		t.Fatal("main.go no longer waits for the player goroutines")
+	}
+	if hooks < 0 {
+		t.Fatal("main.go does not drain in-flight webhooks on shutdown; " +
+			"an after webhook started by the player falling silent would never land")
+	}
+	if hooks < players {
+		t.Error("webhooks are drained before the player stops, so the after webhook " +
+			"the player's own shutdown fires is not among the ones waited for")
 	}
 }
