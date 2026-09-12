@@ -20,5 +20,21 @@
       {{end}}
     </ul>
   </div>
+
+  {{/*
+  Two links, not one link and a checkbox. The choice has to be visible in
+  what the operator clicks: a box ticked a minute ago, above the fold or
+  below it, is not a decision anybody re-reads before pressing a button that
+  writes a token to their downloads folder.
+  */}}
+  <div class="card p-6">
+    <header class="mb-4"><h2 class="text-lg font-semibold">Резервна копія налаштувань</h2></header>
+    <p class="mb-3 text-sm text-muted-foreground">Пароль до цієї панелі у файл не потрапляє ніколи.</p>
+    <div class="flex flex-wrap gap-2">
+      <a class="btn" data-variant="outline" href="/settings/config/export">Завантажити без ключів</a>
+      <a class="btn" data-variant="outline" href="/settings/config/export?secrets=1">Завантажити з ключами</a>
+    </div>
+    <p class="mt-3 text-sm text-muted-foreground">Файл з ключами містить токен alerts.in.ua, заголовки вебхуків і пароль точки доступу. Не надсилайте його нікому.</p>
+  </div>
 </div>
 {{end}}

@@ -172,6 +172,7 @@ func New(d Deps) (*Server, error) {
 	s.handle("POST /time/manual", http.HandlerFunc(s.handleTimeManual))
 	s.handle("POST /time/server", http.HandlerFunc(s.handleTimeServer))
 	s.handle("GET /settings", http.HandlerFunc(s.handleSettings))
+	s.handle("GET /settings/config/export", http.HandlerFunc(s.handleConfigExport))
 	s.handle("GET /{$}", http.HandlerFunc(s.handleHome))
 
 	return s, nil

@@ -36,6 +36,16 @@ import (
 // unauthenticated — redirected to /login, not actually rendered — rather
 // than genuinely scanned.
 //
+// One route is held to a different rule than the rest, and it is the reason
+// the secret list is split in two below. GET /settings/config/export?secrets=1
+// is the backup an operator takes for the same device, so it carries the keys
+// they typed on purpose — the alerts.in.ua token among them. It is walked with
+// the query string rather than left at its default, because the safe download
+// is the one the bare path returns and covering only that would be covering
+// the route in name alone. What that leg enforces is the absolute half: Auth
+// is never in the file, at any setting, because nobody typed it and import
+// never reads it back.
+//
 // What this still does not reach: path resolution below only understands
 // "{$}", the one exact-match marker in use today, so a future route
 // registered with a wildcard segment (e.g. "{id}") would be requested
@@ -65,10 +75,18 @@ func TestNoPageRendersASecret(t *testing.T) {
 	}
 
 	cfg := store.Get()
+	// Auth is split out from the rest because one route may deliberately
+	// carry the operator's own credentials and none may ever carry these.
+	// See the export leg at the bottom of the walk.
+	authSecrets := map[string]string{
+		"password hash":  cfg.Auth.PasswordHash,
+		"session secret": cfg.Auth.SessionSecret,
+	}
 	secrets := map[string]string{
-		"password hash":      cfg.Auth.PasswordHash,
-		"session secret":     cfg.Auth.SessionSecret,
 		"alerts.in.ua token": cfg.Alerts.AlertsUAToken,
+	}
+	for name, v := range authSecrets {
+		secrets[name] = v
 	}
 	for name, v := range secrets {
 		if v == "" {
@@ -80,7 +98,7 @@ func TestNoPageRendersASecret(t *testing.T) {
 	// so /events (which streams over SSE until its context ends) returns
 	// instead of hanging the walk, and fails the test if the body contains
 	// either secret.
-	checkNoSecrets := func(t *testing.T, cookie *http.Cookie, method, path string) {
+	checkNoSecrets := func(t *testing.T, cookie *http.Cookie, method, path string, forbidden map[string]string) {
 		t.Helper()
 
 		ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
@@ -103,12 +121,18 @@ func TestNoPageRendersASecret(t *testing.T) {
 		srv.Handler().ServeHTTP(rec, req)
 
 		got := rec.Body.String()
-		for name, v := range secrets {
+		for name, v := range forbidden {
 			if strings.Contains(got, v) {
 				t.Errorf("%s %s renders the %s", method, path, name)
 			}
 		}
 	}
+
+	// The download that deliberately carries the operator's credentials. It
+	// is named rather than spotted by shape, and the flag below fails the
+	// test if the route is ever renamed out from under this walk.
+	const exportPath = "/settings/config/export"
+	exportWalked := false
 
 	for _, pattern := range srv.Patterns() {
 		// Patterns are "METHOD /path" (see routes_test.go); strip the method
@@ -123,7 +147,21 @@ func TestNoPageRendersASecret(t *testing.T) {
 		}
 
 		cookie := login(t, srv, password)
-		checkNoSecrets(t, cookie, http.MethodGet, path)
-		checkNoSecrets(t, cookie, http.MethodPost, path)
+		checkNoSecrets(t, cookie, http.MethodGet, path, secrets)
+		checkNoSecrets(t, cookie, http.MethodPost, path, secrets)
+
+		// The one response on this device that is meant to carry a
+		// credential. Without the query string the walk requests the safe
+		// download and learns nothing about the other one, so the route
+		// would be covered in name only. What it is held to here is
+		// narrower and absolute: the operator's own keys are the point of
+		// the file, Auth is never in it at any setting.
+		if path == exportPath {
+			exportWalked = true
+			checkNoSecrets(t, cookie, http.MethodGet, path+"?secrets=1", authSecrets)
+		}
+	}
+	if !exportWalked {
+		t.Errorf("no route registers %s any more; the leg of this walk that checks the download with credentials is checking nothing", exportPath)
 	}
 }
