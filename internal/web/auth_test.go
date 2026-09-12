@@ -2,9 +2,11 @@ package web_test
 
 import (
 	"fmt"
+	"github.com/b-ovsepian/spoloh/internal/configstore"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -582,5 +584,39 @@ func TestSameOriginStillRefusesADifferentHost(t *testing.T) {
 
 	if rec.Code != http.StatusForbidden {
 		t.Errorf("a cross-origin POST returned %d, want 403", rec.Code)
+	}
+}
+
+// The work factor is a seam for the suite's sake and must never become one
+// for production. A Server built the ordinary way — which is every Server
+// outside this package — hashes at bcrypt's own default, and the hash it
+// stores says so.
+func TestAServerBuiltNormallyHashesAtTheRealCost(t *testing.T) {
+	store, err := configstore.Open(filepath.Join(t.TempDir(), "config.json"))
+	if err != nil {
+		t.Fatalf("configstore.Open: %v", err)
+	}
+	srv, err := web.New(web.Deps{Config: store})
+	if err != nil {
+		t.Fatalf("web.New: %v", err)
+	}
+
+	// Deliberately not setPassword, which lowers the cost: this test is
+	// about what happens when nobody lowers it.
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, postForm("/setup", url.Values{
+		"password": {"correct horse battery staple"},
+		"confirm":  {"correct horse battery staple"},
+	}))
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("setup failed: status %d", rec.Code)
+	}
+
+	got, err := bcrypt.Cost([]byte(store.Get().Auth.PasswordHash))
+	if err != nil {
+		t.Fatalf("Cost: %v", err)
+	}
+	if got != bcrypt.DefaultCost {
+		t.Errorf("the stored hash has cost %d, want bcrypt.DefaultCost (%d); a test seam reached production", got, bcrypt.DefaultCost)
 	}
 }

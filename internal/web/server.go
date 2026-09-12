@@ -118,6 +118,17 @@ type Server struct {
 	// time.Now for every real caller. It lives on Server, not Deps, which is
 	// frozen for this task.
 	now func() time.Time
+
+	// bcryptCost is the work factor for the one password this device has.
+	//
+	// A seam only because the suite cannot afford the real one: at
+	// bcrypt.DefaultCost a hash and its compare take about a second under
+	// -race, and internal/web signs an operator in some two hundred times,
+	// which was most of a ten-minute CI timeout. Production never changes
+	// it — nothing outside a test calls the setter, and zero means the
+	// default, so a Server built anywhere else gets the real cost without
+	// having to ask for it.
+	bcryptCost int
 }
 
 func New(d Deps) (*Server, error) {

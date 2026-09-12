@@ -3,6 +3,7 @@ package web_test
 import (
 	"bufio"
 	"context"
+	"golang.org/x/crypto/bcrypt"
 	"io"
 	"net"
 	"net/http"
@@ -165,6 +166,12 @@ func postForm(path string, form url.Values) *http.Request {
 
 func setPassword(t *testing.T, srv *web.Server, password string) {
 	t.Helper()
+	// Here rather than in every harness: this is the one call every test
+	// that signs in makes first, and the real work factor costs about a
+	// second per hash-and-compare under -race. Two hundred of those was
+	// most of a ten-minute CI timeout. Production is untouched — nothing
+	// outside this package calls the setter.
+	srv.SetBcryptCost(bcrypt.MinCost)
 	rec := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rec, postForm("/setup", url.Values{"password": {password}, "confirm": {password}}))
 	if rec.Code != http.StatusSeeOther {
@@ -381,7 +388,16 @@ func TestPublishLoopDeliversTicksAndStopsWithTheContext(t *testing.T) {
 		for {
 			line, err := r.ReadString('\n')
 			if line != "" {
-				lines <- line
+				// Never a bare send. The test stops reading once it has the
+				// frames it came for, and an unbuffered send then parks this
+				// goroutine for the life of the process — it showed up in a
+				// CI panic dump as "chan send, 2 minutes", which is noise on
+				// top of whatever actually failed.
+				select {
+				case lines <- line:
+				case <-reqCtx.Done():
+					return
+				}
 			}
 			if err != nil {
 				readErrs <- err

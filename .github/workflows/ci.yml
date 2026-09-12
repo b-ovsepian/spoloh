@@ -13,7 +13,12 @@ jobs:
           go-version: '1.25'
       - run: go vet ./...
       - run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
-      - run: go test ./... -race
+      # -race makes this suite several times slower than a bare run, and
+      # go test's own default is ten minutes per package. internal/web sat
+      # just under it and then went over, failing a release build on a
+      # timeout rather than on anything being wrong. Twenty is room to grow
+      # into without hiding a genuine hang for long.
+      - run: go test ./... -race -timeout 20m
       # Cross-compiling every board on every push is what catches a change
       # that quietly needs cgo. It costs seconds and the alternative is
       # finding out at tag time.

@@ -355,7 +355,7 @@ func (s *Server) handleSetup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	hash, err := bcrypt.GenerateFromPassword([]byte(password), s.cost())
 	if err != nil {
 		s.deps.Logger.Error("could not hash the password", "err", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
@@ -505,4 +505,13 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 	}
 	http.SetCookie(w, &http.Cookie{Name: sessionCookieName, Value: "", Path: "/", MaxAge: -1})
 	http.Redirect(w, r, "/login", http.StatusSeeOther)
+}
+
+// cost is the bcrypt work factor to hash with. Zero means the library's own
+// default, which is what every Server outside this package's tests gets.
+func (s *Server) cost() int {
+	if s.bcryptCost == 0 {
+		return bcrypt.DefaultCost
+	}
+	return s.bcryptCost
 }

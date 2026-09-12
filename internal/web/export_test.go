@@ -21,3 +21,14 @@ func (s *Server) Patterns() []string {
 // state the ruling for every registered route directly instead of inferring
 // it from a response that two different code paths could have produced.
 func IsPublicPath(path string) bool { return isPublicPath(path) }
+
+// SetBcryptCost lowers the password hashing work factor for a test.
+//
+// It exists because the real cost is a second per hash-and-compare under
+// -race, and this package signs an operator in a few hundred times — which
+// was most of a ten-minute CI timeout, and is slow feedback for everybody
+// even when it passes. Nothing outside a test calls it; a Server built
+// anywhere else hashes at bcrypt.DefaultCost.
+func (s *Server) SetBcryptCost(cost int) {
+	s.bcryptCost = cost
+}
