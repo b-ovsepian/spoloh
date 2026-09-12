@@ -250,6 +250,16 @@ func run(configPath, dataDir, listen, socket string) error {
 	// exactly as it does for the engine.
 	hooks := webhook.New(cfgFn, lg, logger)
 
+	// One reading of the radio, three readers. The supervisor below publishes
+	// what it already reads every tick; the engine stops polling for alerts
+	// while the device is up on its own access point with nothing above it,
+	// and the dashboard shows the setup screen instead of the dashboard for
+	// the same reason. Built here, ahead of all three, because a second
+	// answer to "what network is this device on" is a second answer that can
+	// be wrong — and the supervisor's is the one that decides whether the
+	// access point stays up.
+	netStatus := &netmgr.StatusFeed{}
+
 	eng := engine.New(engine.Deps{
 		Config:    cfgFn,
 		StatePath: statePath,
@@ -288,7 +298,7 @@ func run(configPath, dataDir, listen, socket string) error {
 	// which past the grace period is precisely the state it acts on. See
 	// netmgr.JoinGate.
 	joinGate := &netmgr.JoinGate{}
-	sup := netmgr.NewSupervisor(netManager, cfgFn, clock.System{Loc: loc}, logger, joinGate)
+	sup := netmgr.NewSupervisor(netManager, cfgFn, clock.System{Loc: loc}, logger, joinGate, netStatus)
 
 	// timeManager is the write side of the tool clock.Timedatectl above
 	// reads: the /time page sets the zone, the clock and the NTP switch

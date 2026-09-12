@@ -26,7 +26,7 @@ func supervisor(t *testing.T, f *netmgr.Fake, start time.Time) (*netmgr.Supervis
 	clk := clock.NewFake(start)
 	cfg := config.Default() // APFallbackAfter is 45s
 	cfg.Network.APPassword = testAPPassword
-	return netmgr.NewSupervisor(f, func() *config.Config { return cfg }, clk, nil, nil), clk
+	return netmgr.NewSupervisor(f, func() *config.Config { return cfg }, clk, nil, nil, nil), clk
 }
 
 // supervisorWithGate is supervisor plus the join gate the dashboard holds
@@ -36,7 +36,7 @@ func supervisorWithGate(t *testing.T, f *netmgr.Fake, start time.Time, g *netmgr
 	clk := clock.NewFake(start)
 	cfg := config.Default()
 	cfg.Network.APPassword = testAPPassword
-	return netmgr.NewSupervisor(f, func() *config.Config { return cfg }, clk, nil, g), clk
+	return netmgr.NewSupervisor(f, func() *config.Config { return cfg }, clk, nil, g, nil), clk
 }
 
 // supervisorWithLog is supervisor plus a logger writing into a buffer the
@@ -48,7 +48,7 @@ func supervisorWithLog(t *testing.T, f *netmgr.Fake, start time.Time) (*netmgr.S
 	cfg.Network.APPassword = testAPPassword
 	var buf bytes.Buffer
 	logger := slog.New(slog.NewTextHandler(&buf, nil))
-	return netmgr.NewSupervisor(f, func() *config.Config { return cfg }, clk, logger, nil), clk, &buf
+	return netmgr.NewSupervisor(f, func() *config.Config { return cfg }, clk, logger, nil, nil), clk, &buf
 }
 
 // calls counts, from f's call log, how many times method was invoked.
@@ -371,7 +371,7 @@ func TestTickBoundsEveryCommand(t *testing.T) {
 	cfg := config.Default()
 	cfg.Network.APPassword = testAPPassword
 	logger := slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil))
-	s := netmgr.NewSupervisor(p, func() *config.Config { return cfg }, clk, logger, nil)
+	s := netmgr.NewSupervisor(p, func() *config.Config { return cfg }, clk, logger, nil, nil)
 
 	clk.Advance(46 * time.Second)
 	s.Tick(context.Background())
@@ -575,7 +575,7 @@ func TestAJoinBeginningDuringTheStatusReadStopsTheRaise(t *testing.T) {
 	cfg := config.Default()
 	cfg.Network.APPassword = testAPPassword
 	logger := slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil))
-	s := netmgr.NewSupervisor(m, func() *config.Config { return cfg }, clk, logger, gate)
+	s := netmgr.NewSupervisor(m, func() *config.Config { return cfg }, clk, logger, gate, nil)
 
 	// Constructed first, then advanced: downSince is anchored at construction,
 	// so advancing before it would leave this tick short of the grace period

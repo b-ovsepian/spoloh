@@ -63,6 +63,12 @@ type Supervisor struct {
 	// JoinGate.
 	join *JoinGate
 
+	// feed is where every successfully read status is published, so the poll
+	// loop and the dashboard can act on the same reading this supervisor
+	// acted on instead of asking nmcli again. Nil is valid and means nobody
+	// is listening — see StatusFeed.
+	feed *StatusFeed
+
 	// downSince is when the device was first seen without a connection, or the
 	// zero time while it is connected. It starts at construction time (see
 	// NewSupervisor) rather than zero, so a device presumed down since boot
@@ -84,11 +90,11 @@ type Supervisor struct {
 	lastStatusFailureLog time.Time
 }
 
-func NewSupervisor(m Manager, cfg func() *config.Config, clk clock.Clock, logger *slog.Logger, join *JoinGate) *Supervisor {
+func NewSupervisor(m Manager, cfg func() *config.Config, clk clock.Clock, logger *slog.Logger, join *JoinGate, feed *StatusFeed) *Supervisor {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Supervisor{mgr: m, cfg: cfg, clk: clk, logger: logger, join: join, downSince: clk.Now()}
+	return &Supervisor{mgr: m, cfg: cfg, clk: clk, logger: logger, join: join, feed: feed, downSince: clk.Now()}
 }
 
 func (s *Supervisor) Run(ctx context.Context) {
@@ -139,6 +145,13 @@ func (s *Supervisor) Tick(ctx context.Context) {
 		return
 	}
 	s.lastStatusFailureLog = time.Time{}
+
+	// Published before anything is decided on it, so whatever else reads the
+	// network is reading the same tick this one acted on. Only a status the
+	// manager actually returned gets here: the error path above returns
+	// without publishing, because an unreadable status is not a reading of a
+	// device with nothing attached.
+	s.feed.Publish(st, now)
 
 	if st.Connected {
 		s.downSince = time.Time{}
