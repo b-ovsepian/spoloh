@@ -116,6 +116,12 @@ type Engine struct {
 	// single-goroutine by contract, so the value is copied here at the
 	// moment it changes rather than read across the boundary.
 	allClearSeen int
+
+	// sources is what the last poll's cascade did, one entry per configured
+	// key. Written by fetch on every poll, successful or not — a cascade
+	// that failed everywhere is exactly the poll an operator most needs the
+	// dashboard to describe.
+	sources []SourceHealth
 }
 
 func New(d Deps) *Engine {
@@ -268,7 +274,7 @@ func (e *Engine) PollOnce(ctx context.Context) error {
 	fetchCtx, cancel := context.WithTimeout(ctx, fetchDeadline)
 	defer cancel()
 
-	snap, err := e.d.Source.Fetch(fetchCtx)
+	snap, err := e.fetch(fetchCtx)
 	if err != nil {
 		e.pollFailed(err)
 		return err
@@ -360,6 +366,42 @@ func (e *Engine) PollOnce(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+// fetch asks the source for one snapshot and records what the cascade did on
+// the way to it.
+//
+// The reporting is a type assertion rather than a wider Deps.Source, because
+// which source answered is a thing the dashboard wants and the poll loop does
+// not: every decision below this line — the transition, the announcement, the
+// state file — is made from the snapshot alone and would be identical without
+// a single Attempt. A source that cannot report a cascade still polls
+// normally and simply describes nothing, which is what Status.Sources being
+// nil means.
+//
+// The attempts are mirrored whether or not the fetch succeeded. A cascade
+// where everything failed is the poll the card exists for, and dropping it on
+// the error path would leave the dashboard showing the last cascade that
+// worked while the device hears nothing.
+func (e *Engine) fetch(ctx context.Context) (alertsource.Snapshot, error) {
+	cascade, ok := e.d.Source.(alertsource.Cascade)
+	if !ok {
+		return e.d.Source.Fetch(ctx)
+	}
+	snap, attempts, err := cascade.FetchCascade(ctx)
+
+	health := make([]SourceHealth, len(attempts))
+	for i, a := range attempts {
+		// Reason(), never Err: see SourceHealth. This is the one place the
+		// two are separated, so there is nothing downstream that could
+		// choose wrongly.
+		health[i] = SourceHealth{Key: a.Key, Outcome: a.Outcome, Reason: a.Reason()}
+	}
+	e.mu.Lock()
+	e.sources = health
+	e.mu.Unlock()
+
+	return snap, err
 }
 
 // pollFailed records a poll that produced no usable reading, whether the

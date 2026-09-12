@@ -2,10 +2,19 @@ package engine_test
 
 import (
 	"context"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"reflect"
 	"testing"
 	"time"
 
+	"github.com/b-ovsepian/spoloh/internal/alertsource"
 	"github.com/b-ovsepian/spoloh/internal/alertstate"
+	"github.com/b-ovsepian/spoloh/internal/clock"
+	"github.com/b-ovsepian/spoloh/internal/config"
+	"github.com/b-ovsepian/spoloh/internal/engine"
+	"github.com/b-ovsepian/spoloh/internal/player"
 )
 
 func TestStatusBeforeAnyPoll(t *testing.T) {
@@ -144,5 +153,97 @@ func TestStatusReportsARestoredAlertBeforeAnyPoll(t *testing.T) {
 	}
 	if !got.LastSuccess.IsZero() {
 		t.Error("no poll has succeeded yet, so LastSuccess must still be the zero time")
+	}
+}
+
+// cascadeHarness builds an engine that polls several cascade keys against one
+// fake upstream, with a real alertsource.Client walking them.
+//
+// It does not reuse newHarnessWith, which fixes the cascade at a single key
+// before it has a URL to hand anywhere: everything below the source is what
+// PollOnce needs and nothing more. The client is real on purpose — the whole
+// point of these tests is what an actual cascade reports about itself, and a
+// hand-written stand-in would be free to report a shape the real one never
+// produces.
+func cascadeHarness(t *testing.T, keys []string, handler http.HandlerFunc) *engine.Engine {
+	t.Helper()
+	srv := httptest.NewServer(handler)
+	t.Cleanup(srv.Close)
+
+	cfg := config.Default()
+	cfg.Alerts.Region = "м. Київ"
+	cfg.Alerts.Sources = keys
+
+	return engine.New(engine.Deps{
+		Config:  func() *config.Config { return cfg },
+		Source:  alertsource.New(srv.URL, keys, srv.Client()),
+		Machine: alertstate.New(),
+		// Never Run: Status only asks the player what is playing, which on
+		// a player that was never started is nothing.
+		Player: player.New(nil, "default"),
+		Clock:  clock.System{Loc: time.UTC},
+	})
+}
+
+// calmSnapshot answers every request with the same two-oblast snapshot the
+// rest of this package's fakes serve.
+func calmSnapshot(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	fmt.Fprint(w, snapshotBody(false, false))
+}
+
+// The cascade stops at the first key that answers, so the keys behind it were
+// never asked. Reporting them as healthy would be a claim nothing checked,
+// and it is the claim that sends an operator into a raid believing they have
+// two working fallbacks.
+func TestStatusReportsTheKeysBehindTheAnsweringOneAsNotReached(t *testing.T) {
+	eng := cascadeHarness(t, []string{"default", "skog", "aiu"}, calmSnapshot)
+
+	if err := eng.PollOnce(context.Background()); err != nil {
+		t.Fatalf("PollOnce: %v", err)
+	}
+
+	got := eng.Status().Sources
+	want := []engine.SourceHealth{
+		{Key: "default", Outcome: alertsource.OutcomeAnswered},
+		{Key: "skog", Outcome: alertsource.OutcomeNotReached},
+		{Key: "aiu", Outcome: alertsource.OutcomeNotReached},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("Status().Sources = %+v, want %+v", got, want)
+	}
+}
+
+// A cascade where everything failed is the poll this is most needed for, and
+// it is the one the reporting is easiest to drop on: it travels back out of
+// PollOnce on the error path.
+func TestStatusReportsEveryKeyWhenTheWholeCascadeFails(t *testing.T) {
+	eng := cascadeHarness(t, []string{"default", "skog"}, func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "upstream is down", http.StatusInternalServerError)
+	})
+
+	if err := eng.PollOnce(context.Background()); err == nil {
+		t.Fatal("expected the poll to fail with every source refusing")
+	}
+
+	got := eng.Status().Sources
+	want := []engine.SourceHealth{
+		{Key: "default", Outcome: alertsource.OutcomeFailed, Reason: alertsource.ReasonBadResponse},
+		{Key: "skog", Outcome: alertsource.OutcomeFailed, Reason: alertsource.ReasonBadResponse},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("Status().Sources = %+v, want %+v", got, want)
+	}
+}
+
+// Before the first poll nothing has been asked anything, which is not the
+// same fact as a cascade of keys that were not reached — that one says a poll
+// happened and stopped early. The dashboard tells them apart, so Status has
+// to.
+func TestStatusReportsNoCascadeBeforeTheFirstPoll(t *testing.T) {
+	eng := cascadeHarness(t, []string{"default", "skog"}, calmSnapshot)
+
+	if got := eng.Status().Sources; got != nil {
+		t.Fatalf("Status().Sources = %+v before any poll, want nil", got)
 	}
 }

@@ -3,8 +3,27 @@ package engine
 import (
 	"time"
 
+	"github.com/b-ovsepian/spoloh/internal/alertsource"
 	"github.com/b-ovsepian/spoloh/internal/alertstate"
 )
+
+// SourceHealth is one configured cascade key as the last completed poll
+// found it: the key the operator chose, what happened to it, and — when it
+// failed — which of alertsource's six reasons it failed for.
+//
+// It deliberately drops alertsource.Attempt.Err on the way out of the
+// engine. Err carries text from the far end, and one of the sources
+// authenticates with a Bearer token, so an error string is one wrapped
+// error away from putting a credential on a page that anyone on the LAN can
+// load. A struct that never carries the text cannot render it, whatever a
+// later template does; Reason is a closed vocabulary this repository owns
+// and is safe by construction. The Err itself is still logged where the
+// poll failed.
+type SourceHealth struct {
+	Key     string
+	Outcome alertsource.Outcome
+	Reason  alertsource.Reason
+}
 
 // Status is a point-in-time snapshot of what the dashboard shows. Every field
 // is a copy; nothing in it aliases engine state.
@@ -37,6 +56,15 @@ type Status struct {
 	AllClearSeen   int
 	AllClearNeeded int
 
+	// Sources is the cascade as the last poll walked it: one entry per
+	// configured key, in the order they are tried, whether or not the poll
+	// got that far. Nil before the first poll of the process, and nil for a
+	// source that cannot report a cascade at all — both mean "nobody has
+	// asked yet", which is not the same as a cascade of sources that were
+	// not reached, and the page says so in words rather than rendering an
+	// unchecked list as though it were checked.
+	Sources []SourceHealth
+
 	ClockSynced bool
 
 	NextEventName string
@@ -68,6 +96,12 @@ func (e *Engine) Status() Status {
 
 		AllClearSeen:   e.allClearSeen,
 		AllClearNeeded: alertstate.EndConfirmations,
+	}
+	// Copied, not aliased, like every other field here: the next poll
+	// replaces e.sources wholesale, and a caller still holding the old
+	// slice must keep reading the poll it was handed.
+	if len(e.sources) > 0 {
+		s.Sources = append([]SourceHealth(nil), e.sources...)
 	}
 	e.mu.RUnlock()
 
