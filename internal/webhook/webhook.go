@@ -117,28 +117,63 @@ func New(cfg func() *config.Config, lg *eventlog.Log, logger *slog.Logger) *Disp
 	}
 }
 
-// Dispatch fires every enabled webhook whose trigger matches, and returns at
-// once — before any connection is made.
+// Dispatch fires every enabled webhook in this phase whose trigger matches,
+// and returns at once — before any connection is made.
 //
 // Returning immediately is the point of this function's signature having no
-// error in it. It is called from the engine's announce path, a few
-// statements before the sound is queued, and a device that waited on an HTTP
-// request to a box that may be unplugged would have put the operator's
-// wiring in front of its own siren.
-func (d *Dispatcher) Dispatch(trigger string) {
+// error in it. It is called from the engine's announcing path, and a device
+// that waited on an HTTP request to a box that may be unplugged would have
+// put the operator's wiring in front of its own siren.
+//
+// What it does return is the delay the caller owes the far end before the
+// sound starts: never anything about whether a request succeeded, which is
+// not known yet and which nothing on that path is allowed to wait for. Only
+// config.PhaseBefore produces one — the delay exists so that whatever was
+// just switched has a moment to take effect, and there is nothing to wait for
+// after a sound that is already over.
+//
+// The longest delay among the matching webhooks wins, not their sum and not
+// the first. Two of them are two independent boxes being told to do the same
+// job at the same moment, so the announcement is ready when the slowest of
+// them is; adding the waits together would punish an operator for having a
+// second relay.
+func (d *Dispatcher) Dispatch(phase, trigger string) time.Duration {
 	if d == nil {
-		return
+		return 0
 	}
+	var wait time.Duration
 	cfg := d.cfg()
 	for _, w := range cfg.Webhooks {
-		if !w.Enabled || w.Trigger != trigger {
+		if !w.Enabled || w.Trigger != trigger || config.WebhookPhase(w) != phase {
 			continue
+		}
+		if phase == config.PhaseBefore {
+			wait = max(wait, boundedDelay(w.Delay.Std()))
 		}
 		d.wg.Add(1)
 		go func(w config.Webhook) {
 			defer d.wg.Done()
 			d.fire(w)
 		}(w)
+	}
+	return wait
+}
+
+// boundedDelay brings a delay inside 0..config.MaxWebhookDelay.
+//
+// config.Load already does this to every stored webhook and the /webhooks
+// form refuses to write one outside it, so in a running daemon this changes
+// nothing. It is here because this is the line where a number becomes time a
+// siren spends not sounding, and that is not a place to rely on two other
+// files having done their job.
+func boundedDelay(d time.Duration) time.Duration {
+	switch {
+	case d < 0:
+		return 0
+	case d > config.MaxWebhookDelay:
+		return config.MaxWebhookDelay
+	default:
+		return d
 	}
 }
 

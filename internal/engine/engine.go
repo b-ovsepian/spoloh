@@ -36,14 +36,28 @@ type Deps struct {
 	Sync      clock.SyncChecker
 	Logger    *slog.Logger
 
-	// Webhooks, when non-nil, is called with the trigger of an
-	// announcement this device is making, so an operator's own hardware —
-	// a relay board, a PA controller — acts along with the speaker. It is
-	// filled by internal/webhook.Dispatcher.Dispatch, and it must return
-	// without waiting on a network: it is called a few statements before
-	// the sound is queued, and the siren does not wait for a box that may
-	// be unplugged.
-	Webhooks func(trigger string)
+	// Webhooks, when non-nil, is called with the phase and the trigger of
+	// an announcement this device is making, so an operator's own hardware
+	// — a relay board, a controller for whatever shares the speakers, a
+	// light in a corridor — acts along with the speaker. It is filled by
+	// internal/webhook.Dispatcher.Dispatch, and it must return without
+	// waiting on a network: it is called on the announcing path, and the
+	// siren does not wait for a box that may be unplugged.
+	//
+	// What it returns is how long the sound should wait before it starts,
+	// which only config.PhaseBefore ever asks for. See speak.go for what a
+	// phase brackets and why that is not the same thing as an announcement.
+	Webhooks func(phase, trigger string) time.Duration
+
+	// After produces a channel that fires once d has elapsed. Nil means
+	// time.After.
+	//
+	// It is the seam the before-phase delay is tested through, and it is
+	// the only thing in this package that uses it. No test here may sleep
+	// on a real clock, and clock.Clock answers a different question — what
+	// time is it now, not wake me later — so a second, narrower seam is
+	// cheaper than widening that interface for one caller.
+	After func(d time.Duration) <-chan time.Time
 
 	// Watchdog, when non-nil, is pinged at the end of every completed tick.
 	// Pinging from the loop rather than from a timer is the point: a stalled
@@ -160,6 +174,13 @@ type Engine struct {
 	// that belongs to the loop. A device that has quietly stopped polling
 	// and cannot say so is indistinguishable from one that is wedged.
 	paused bool
+
+	// sess is what this device is currently saying out loud, and the
+	// bracket the webhook phases are fired around. It carries its own lock:
+	// it is written from the poll loop, from the scheduler tick, from the
+	// player's goroutine and from an HTTP goroutine calling StopManual,
+	// none of which is the set of readers mu above serves. See speak.go.
+	sess speakSession
 }
 
 func New(d Deps) *Engine {
@@ -195,6 +216,10 @@ func New(d Deps) *Engine {
 	// after this.
 	if d.Player != nil {
 		d.Player.OnTruncated = e.recordTruncated
+		// The other half of the same wiring, and for the same reason: the
+		// player is the only thing that sees the voice fall silent, and the
+		// engine is what owes the operator's hardware the word that it has.
+		d.Player.OnIdle = e.playerIdle
 	}
 	e.sched = scheduler.NewRunner(d.Sync, d.Config, e.fireScheduled)
 	e.sched.Logger = d.Logger
@@ -605,6 +630,10 @@ func (e *Engine) StopManual() {
 	if e.d.Player != nil {
 		e.d.Player.Stop()
 	}
+	// A sound still waiting out a before-phase delay is abandoned too. The
+	// button means the device is quiet now, not that it is quiet until a
+	// wait somebody started five seconds ago runs out. See speak.go.
+	e.abandonHandoffs()
 	e.record(eventlog.Entry{At: e.d.Clock.Now(), Kind: eventlog.KindManual, EventID: "stop", OK: true})
 }
 
@@ -624,7 +653,14 @@ func (e *Engine) announce(trigger, kind string, at time.Time) {
 	// alertstate.Started and alertstate.Ended, and Ended already waits for
 	// EndConfirmations consecutive calm readings. A webhook therefore never
 	// says the raid is over on the strength of one source blinking.
-	e.fireWebhooks(trigger)
+	//
+	// This is config.PhaseOnTrigger, which is where every webhook written
+	// before phases existed fires, and the paragraph above is why that
+	// phase has to keep existing: it is the only one that fires for an
+	// announcement no sound follows. PhaseBefore and PhaseAfter bracket the
+	// sound instead, and a raid whose siren quiet hours silenced has no
+	// sound to bracket. See speak.go.
+	e.fireWebhooks(config.PhaseOnTrigger, trigger)
 	e.playTrigger(trigger, kind, at)
 }
 
@@ -643,7 +679,7 @@ func (e *Engine) announce(trigger, kind string, at time.Time) {
 // start's kind of news: people who heard the lesser warning need to be told
 // the threat has grown, with the same sound that told them it existed.
 func (e *Engine) announceEscalation(at time.Time) {
-	e.fireWebhooks(config.TriggerAlertEscalated)
+	e.fireWebhooks(config.PhaseOnTrigger, config.TriggerAlertEscalated)
 
 	trigger := config.TriggerAlertEscalated
 	if !configured(e.d.Config(), trigger) {
@@ -694,9 +730,15 @@ func (e *Engine) playTrigger(trigger, kind string, at time.Time) {
 			Err: fmt.Sprintf("тихі години %s–%s", cfg.QuietHours.From, cfg.QuietHours.To),
 		})
 	}
+	// Resolved, turned into requests, and handed over as one speaking
+	// session — every decision this trigger produced in a single hand-over,
+	// so two events sharing a trigger are one stretch of sound with one
+	// before and one after around it rather than two of each.
+	var reqs []player.Request
 	for _, d := range rules.Resolve(cfg, trigger, at) {
-		e.play(d, kind, at)
+		reqs = append(reqs, e.play(d, kind, at)...)
 	}
+	e.speak(trigger, reqs)
 }
 
 func (e *Engine) fireScheduled(ev config.Event, at time.Time) {
@@ -708,20 +750,14 @@ func (e *Engine) fireScheduled(ev config.Event, at time.Time) {
 	// latches nothing, so a webhook for one that quiet hours silenced would
 	// be the device acting at a moment when it deliberately did not. The
 	// two rules differ because what they protect differs, not by oversight.
-	e.fireWebhooks(config.TriggerScheduled)
-	e.play(d, eventlog.KindScheduled, at)
+	e.fireWebhooks(config.PhaseOnTrigger, config.TriggerScheduled)
+	e.speak(config.TriggerScheduled, e.play(d, eventlog.KindScheduled, at))
 }
 
-// fireWebhooks hands a trigger to the operator's own hardware, if any is
-// configured. Nil-tolerant like every other optional dependency here, and
-// non-blocking by contract — see Deps.Webhooks.
-func (e *Engine) fireWebhooks(trigger string) {
-	if e.d.Webhooks != nil {
-		e.d.Webhooks(trigger)
-	}
-}
-
-func (e *Engine) play(d rules.Decision, kind string, at time.Time) {
+// play turns one decision into the requests that will carry it, and writes
+// the row saying this device announced it. It queues nothing: what reaches
+// the player, and when, is speak's to decide — see speak.go.
+func (e *Engine) play(d rules.Decision, kind string, at time.Time) []player.Request {
 	path := e.d.Library.Path(d.Sound)
 	if path == "" || !e.d.Library.Has(d.Sound) {
 		e.d.Logger.Error("sound is missing from the library", "sound", d.Sound, "event", d.EventID)
@@ -729,7 +765,7 @@ func (e *Engine) play(d rules.Decision, kind string, at time.Time) {
 			At: at, Kind: eventlog.KindPlaybackError, EventID: d.EventID,
 			Sound: d.Sound, OK: false, Err: "sound not found in library",
 		})
-		return
+		return nil
 	}
 	// d.Repeat is one Player.Play call repeated, not a single request the
 	// player somehow plays more than once: each repetition is its own
@@ -743,8 +779,9 @@ func (e *Engine) play(d rules.Decision, kind string, at time.Time) {
 	if repeat < 1 {
 		repeat = 1
 	}
+	reqs := make([]player.Request, 0, repeat)
 	for i := 0; i < repeat; i++ {
-		e.d.Player.Play(player.Request{
+		reqs = append(reqs, player.Request{
 			EventID:  d.EventID,
 			Path:     path,
 			Volume:   d.Volume,
@@ -752,7 +789,12 @@ func (e *Engine) play(d rules.Decision, kind string, at time.Time) {
 		})
 	}
 	e.d.Logger.Info("announcing", "kind", kind, "event", d.EventID, "sound", d.Sound, "volume", d.Volume, "repeat", repeat)
+	// Written here, before speak has handed anything over, and deliberately
+	// so. A before-phase delay can put seconds between this device deciding
+	// to announce and the first sound leaving it, and a power cut inside
+	// that window must still leave evidence that the decision was taken.
 	e.record(eventlog.Entry{At: at, Kind: kind, EventID: d.EventID, Sound: d.Sound, OK: true})
+	return reqs
 }
 
 // reportHealth logs only the poll's reachability transitions: the first

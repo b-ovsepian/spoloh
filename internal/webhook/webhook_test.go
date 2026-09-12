@@ -140,14 +140,14 @@ func TestAWebhookFiresOnItsTriggerAndNotOnAnother(t *testing.T) {
 	rec := newRecorder(t, nil)
 	h := newHarness(t, relay(rec.srv.URL+"/Sendkey?key=8"))
 
-	h.d.Dispatch(config.TriggerAlertEnd)
-	h.d.Dispatch(config.TriggerScheduled)
+	h.d.Dispatch(config.PhaseOnTrigger, config.TriggerAlertEnd)
+	h.d.Dispatch(config.PhaseOnTrigger, config.TriggerScheduled)
 	h.d.Wait()
 	if n := rec.count(); n != 0 {
 		t.Fatalf("%d requests were made for triggers this webhook does not carry", n)
 	}
 
-	h.d.Dispatch(config.TriggerAlertStart)
+	h.d.Dispatch(config.PhaseOnTrigger, config.TriggerAlertStart)
 	h.d.Wait()
 	if n := rec.count(); n != 1 {
 		t.Fatalf("the webhook's own trigger produced %d requests, want 1", n)
@@ -166,7 +166,7 @@ func TestADisabledWebhookNeverFires(t *testing.T) {
 	hook.Enabled = false
 	h := newHarness(t, hook)
 
-	h.d.Dispatch(config.TriggerAlertStart)
+	h.d.Dispatch(config.PhaseOnTrigger, config.TriggerAlertStart)
 	h.d.Wait()
 
 	if n := rec.count(); n != 0 {
@@ -190,7 +190,7 @@ func TestTheRequestIsTheOneTheOperatorWrote(t *testing.T) {
 	hook.Headers = append(hook.Headers, config.WebhookHeader{Name: "X-Relay", Value: "8"})
 	h := newHarness(t, hook)
 
-	h.d.Dispatch(config.TriggerAlertStart)
+	h.d.Dispatch(config.PhaseOnTrigger, config.TriggerAlertStart)
 	h.d.Wait()
 
 	req := rec.last(t)
@@ -225,7 +225,7 @@ func TestARedirectIsNotFollowed(t *testing.T) {
 	})
 	h := newHarness(t, relay(redirector.srv.URL+"/Sendkey?key=8"))
 
-	h.d.Dispatch(config.TriggerAlertStart)
+	h.d.Dispatch(config.PhaseOnTrigger, config.TriggerAlertStart)
 	h.d.Wait()
 
 	if n := elsewhere.count(); n != 0 {
@@ -249,7 +249,7 @@ func TestARefusedRequestIsRecordedAsAFailure(t *testing.T) {
 	})
 	h := newHarness(t, relay(rec.srv.URL+"/Sendkey?key=8"))
 
-	h.d.Dispatch(config.TriggerAlertStart)
+	h.d.Dispatch(config.PhaseOnTrigger, config.TriggerAlertStart)
 	h.d.Wait()
 
 	got := h.onlyEntry(t)
@@ -270,7 +270,7 @@ func TestAnUnreachableTargetIsRecordedAndNotFatal(t *testing.T) {
 	rec.srv.Close() // nothing is listening on that port any more
 
 	h := newHarness(t, relay(url))
-	h.d.Dispatch(config.TriggerAlertStart)
+	h.d.Dispatch(config.PhaseOnTrigger, config.TriggerAlertStart)
 	h.d.Wait()
 
 	got := h.onlyEntry(t)
@@ -295,7 +295,7 @@ func TestDispatchReturnsWhileTheRequestIsStillOutstanding(t *testing.T) {
 	})
 	h := newHarness(t, relay(rec.srv.URL+"/Sendkey?key=8"))
 
-	h.d.Dispatch(config.TriggerAlertStart)
+	h.d.Dispatch(config.PhaseOnTrigger, config.TriggerAlertStart)
 	// Dispatch has returned. The endpoint has not answered and cannot have:
 	// nothing has closed release yet. If Dispatch had waited on the request,
 	// this line would never be reached.
@@ -327,7 +327,7 @@ func TestAnAttemptIsBoundedByTheTimeout(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() {
-		h.d.Dispatch(config.TriggerAlertStart)
+		h.d.Dispatch(config.PhaseOnTrigger, config.TriggerAlertStart)
 		h.d.Wait()
 		close(done)
 	}()
@@ -388,7 +388,7 @@ func TestNoHeaderValueReachesALogOrTheEventLog(t *testing.T) {
 	}
 	h := newHarness(t, hooks...)
 
-	h.d.Dispatch(config.TriggerAlertStart)
+	h.d.Dispatch(config.PhaseOnTrigger, config.TriggerAlertStart)
 	h.d.Wait()
 
 	if strings.Contains(h.logs.String(), secret) {
@@ -414,7 +414,7 @@ func TestNoLogLineCarriesTheUrlsPathOrQuery(t *testing.T) {
 	rec := newRecorder(t, nil)
 	h := newHarness(t, relay(rec.srv.URL+"/Sendkey?key=8"))
 
-	h.d.Dispatch(config.TriggerAlertStart)
+	h.d.Dispatch(config.PhaseOnTrigger, config.TriggerAlertStart)
 	h.d.Wait()
 
 	logs := h.logs.String()
@@ -437,7 +437,7 @@ func TestAStoredWebhookThisBuildCannotMakeIsRefusedLoudly(t *testing.T) {
 	hook := relay("gopher://192.168.1.50/_x")
 	h := newHarness(t, hook)
 
-	h.d.Dispatch(config.TriggerAlertStart)
+	h.d.Dispatch(config.PhaseOnTrigger, config.TriggerAlertStart)
 	h.d.Wait()
 
 	got := h.onlyEntry(t)
@@ -461,7 +461,7 @@ func TestANilEventLogDoesNotStopAWebhook(t *testing.T) {
 	cfg.Webhooks = []config.Webhook{relay(rec.srv.URL + "/Sendkey?key=8")}
 
 	d := webhook.New(func() *config.Config { return cfg }, nil, slog.New(slog.NewTextHandler(new(bytes.Buffer), nil)))
-	d.Dispatch(config.TriggerAlertStart)
+	d.Dispatch(config.PhaseOnTrigger, config.TriggerAlertStart)
 	d.Wait()
 
 	if n := rec.count(); n != 1 {

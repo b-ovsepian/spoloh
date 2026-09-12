@@ -274,7 +274,9 @@ func run(configPath, dataDir, listen, socket string) error {
 		Watchdog:  wd,
 		// Dispatch returns before a connection is made — see
 		// internal/webhook. Nothing on the announcement path waits for a
-		// box that may be unplugged.
+		// box that may be unplugged. What it does return is the delay a
+		// before-phase webhook asked for, which the engine waits out off
+		// that path; see internal/engine/speak.go.
 		Webhooks: hooks.Dispatch,
 		Network:  netStatus,
 	})
