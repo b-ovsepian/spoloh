@@ -880,3 +880,56 @@ func TestTheUnitPublishesTheControlSocketWithTheGroupThatAuthorisesIt(t *testing
 		t.Errorf("SupplementaryGroups=%q does not include audio; the daemon would lose aplay and amixer and the device would be silent", got)
 	}
 }
+
+// The access point is its own polkit action, and granting the other three
+// does not grant it. Found on a real board: the supervisor waited out its
+// grace period, asked at exactly the right moment, and NetworkManager
+// answered "Not authorized to share connections via wifi." A device carried
+// somewhere new would have been unreachable, with the only screen that could
+// fix it behind the access point that could not rise.
+//
+// Nothing on a development machine exercises polkit, so this reads the rule
+// as text — the same shape TestTheTimedatePolkitRuleGrantsOnlyItsFourActions
+// uses, and the only check available short of an install.
+func TestTheNetworkPolkitRuleGrantsExactlyWhatTheDaemonUses(t *testing.T) {
+	rule, err := os.ReadFile("50-spoloh-networkmanager.rules")
+	if err != nil {
+		t.Fatalf("read the rule: %v", err)
+	}
+
+	// Comments name actions in prose — including one this must never grant —
+	// so only the code may be read for what is actually allowed.
+	var code strings.Builder
+	for _, line := range strings.Split(string(rule), "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), "//") {
+			continue
+		}
+		code.WriteString(line)
+		code.WriteString("\n")
+	}
+	body := code.String()
+
+	var ids []string
+	for _, m := range regexp.MustCompile(`action\.id === "([^"]+)"`).FindAllStringSubmatch(body, -1) {
+		ids = append(ids, m[1])
+	}
+	sort.Strings(ids)
+
+	want := []string{
+		"org.freedesktop.NetworkManager.network-control",
+		"org.freedesktop.NetworkManager.settings.modify.system",
+		"org.freedesktop.NetworkManager.wifi.scan",
+		"org.freedesktop.NetworkManager.wifi.share.protected",
+	}
+	if !slices.Equal(ids, want) {
+		t.Errorf("the rule grants %v, want exactly %v", ids, want)
+	}
+
+	// wifi.share.open would permit an access point with no password at all.
+	// NMCLI.StartHotspot refuses an empty PSK outright, so it is an action
+	// this daemon can never need — and a grant it cannot use is one that can
+	// only ever be misused.
+	if strings.Contains(body, "wifi.share.open") {
+		t.Error("the rule grants wifi.share.open, which would allow an access point with no password")
+	}
+}

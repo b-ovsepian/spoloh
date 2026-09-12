@@ -41,13 +41,32 @@
 // /etc/polkit-1/localauthority/50-local.d/ instead. The installer is
 // responsible for choosing; see Plan 3b.
 
+//
+// wifi.share.protected is the access point, and it is its own action: joining
+// a network and sharing one are different permissions, and granting the first
+// three does not grant it. Found on a real board, which is the only way it
+// could have been — nothing on a development machine exercises polkit. The
+// device sat with its Wi-Fi down and answered:
+//
+//   Failed to setup a Wi-Fi hotspot: Not authorized to share connections via wifi.
+//
+// The supervisor had done everything right, waited out its grace period and
+// asked at the correct moment; it simply was not allowed. An operator who had
+// carried the device somewhere new would have found it unreachable, with the
+// one screen that could fix it behind the access point that could not rise.
+//
+// Deliberately not wifi.share.open, which would permit an access point with no
+// password at all. NMCLI.StartHotspot refuses an empty PSK outright, so that
+// action is one this daemon can never need — and a grant it cannot use is a
+// grant that can only ever be misused.
 polkit.addRule(function (action, subject) {
     if (subject.user !== "spoloh") {
         return polkit.Result.NOT_HANDLED;
     }
     if (action.id === "org.freedesktop.NetworkManager.network-control" ||
         action.id === "org.freedesktop.NetworkManager.settings.modify.system" ||
-        action.id === "org.freedesktop.NetworkManager.wifi.scan") {
+        action.id === "org.freedesktop.NetworkManager.wifi.scan" ||
+        action.id === "org.freedesktop.NetworkManager.wifi.share.protected") {
         return polkit.Result.YES;
     }
     return polkit.Result.NOT_HANDLED;
