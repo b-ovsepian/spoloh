@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -1053,5 +1054,66 @@ func TestAlertsSaveRefusesATokenThatCouldNotBeAHeader(t *testing.T) {
 		if got := store.Get().Alerts.AlertsUAToken; got != "" {
 			t.Fatalf("token %q was stored as %q", bad, got)
 		}
+	}
+}
+
+// Reproduced on the operator's own board before it was fixed: submitting the
+// token and alerts.in.ua together stored the token, silently dropped the
+// source, and answered «Налаштування сповіщень збережено.» The cascade they
+// ordered was not the cascade they got, and the page said otherwise.
+func TestAlertsSaveAcceptsASourceUnlockedByTheSameSubmission(t *testing.T) {
+	srv, store := newServerWithStore(t)
+	setPassword(t, srv, "correct horse battery staple")
+	cookie := login(t, srv, "correct horse battery staple")
+
+	req := postForm("/alerts", url.Values{
+		"region":          {"Сумська область"},
+		"location":        {"1198"},
+		"source":          {alertsource.AlertsUAKey, "default"},
+		"poll_interval":   {"15"},
+		"alerts_ua_token": {"abc123TOKEN"},
+	})
+	req.AddCookie(cookie)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body:\n%s", rec.Code, rec.Body.String())
+	}
+	got := store.Get().Alerts
+	if len(got.Sources) == 0 || got.Sources[0] != alertsource.AlertsUAKey {
+		t.Errorf("stored cascade = %v, want alerts.in.ua first: the token arrived in the same submission", got.Sources)
+	}
+	if got.AlertsUAToken == "" {
+		t.Error("the token was not stored")
+	}
+}
+
+// A source that cannot survive validation must produce a sentence, never a
+// success message over a cascade the operator did not order.
+func TestAlertsSaveRefusesToSilentlyDropAnUnusableSource(t *testing.T) {
+	srv, store := newServerWithStore(t)
+	setPassword(t, srv, "correct horse battery staple")
+	cookie := login(t, srv, "correct horse battery staple")
+
+	before := store.Get().Alerts.Sources
+
+	req := postForm("/alerts", url.Values{
+		"region":        {"Сумська область"},
+		"source":        {alertsource.AlertsUAKey, "default"},
+		"poll_interval": {"15"},
+	})
+	req.AddCookie(cookie)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400: alerts.in.ua has no token and must not be quietly discarded", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "недоступне без збереженого токена") {
+		t.Errorf("the page does not say why the source was refused; body:\n%s", rec.Body.String())
+	}
+	if got := store.Get().Alerts.Sources; !slices.Equal(got, before) {
+		t.Errorf("a refused submission changed the stored cascade: %v -> %v", before, got)
 	}
 }

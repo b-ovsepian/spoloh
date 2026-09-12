@@ -253,7 +253,7 @@ func run(configPath, dataDir, listen, socket string) error {
 	eng := engine.New(engine.Deps{
 		Config:    cfgFn,
 		StatePath: statePath,
-		Source:    buildAlertSource(cfg),
+		Source:    buildAlertSource(cfg, logger),
 		Machine:   machine,
 		Player:    pl,
 		Library:   lib,
@@ -586,7 +586,7 @@ func (ch sourceChain) FetchCascade(ctx context.Context) (alertsource.Snapshot, [
 // The return type is Cascade, not Source, so every path out of here is
 // checked by the compiler rather than by whatever the engine happens to
 // type-assert at runtime.
-func buildAlertSource(cfg *config.Config) alertsource.Cascade {
+func buildAlertSource(cfg *config.Config, logger *slog.Logger) alertsource.Cascade {
 	var (
 		chain   sourceChain
 		pending []string
@@ -608,6 +608,15 @@ func buildAlertSource(cfg *config.Config) alertsource.Cascade {
 			continue
 		}
 		if cfg.Alerts.AlertsUAToken == "" {
+			// Loudly, not quietly. The config names this source — often
+			// first — and leaving it out changes what the device watches:
+			// alerts.in.ua is the only provider that reports a level and a
+			// place finer than an oblast, so without it a hromada broadens
+			// back to its oblast. An operator looking at a dashboard that
+			// does not mention their chosen source needs this line to exist
+			// somewhere, and the journal is where they will look.
+			logger.Error("alerts.in.ua is in the source list but no token is stored; skipping it",
+				"position", len(chain)+1)
 			continue
 		}
 		flush()

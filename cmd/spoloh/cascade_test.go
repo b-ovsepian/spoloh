@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"strings"
 	"testing"
 
@@ -34,7 +35,7 @@ func TestBuildAlertSourceKeepsTheOperatorsOrderAcrossProviders(t *testing.T) {
 	cfg.Alerts.Sources = []string{"default", alertsource.AlertsUAKey, "skog", "aiu"}
 	cfg.Alerts.AlertsUAToken = "a-token-this-device-holds"
 
-	src := buildAlertSource(cfg)
+	src := buildAlertSource(cfg, slog.New(slog.DiscardHandler))
 
 	want := strings.Join(cfg.Alerts.Sources, ",")
 	if got := strings.Join(chainKeys(t, src), ","); got != want {
@@ -71,7 +72,7 @@ func TestBuildAlertSourceLeavesOutASourceWithNoToken(t *testing.T) {
 	cfg.Alerts.Sources = []string{alertsource.AlertsUAKey, "default", "skog"}
 	cfg.Alerts.AlertsUAToken = ""
 
-	src := buildAlertSource(cfg)
+	src := buildAlertSource(cfg, slog.New(slog.DiscardHandler))
 
 	// One provider left, so no chain wrapper at all — the shape every
 	// unregistered device in the field runs.
@@ -88,12 +89,12 @@ func TestBuildAlertSourceNeverLeavesTheDeviceWithNoSource(t *testing.T) {
 	cfg.Alerts.Sources = []string{alertsource.AlertsUAKey}
 	cfg.Alerts.AlertsUAToken = ""
 
-	if src := buildAlertSource(cfg); src == nil {
+	if src := buildAlertSource(cfg, slog.New(slog.DiscardHandler)); src == nil {
 		t.Fatal("a cascade whose only source has no credential built no source at all")
 	}
 
 	cfg.Alerts.Sources = nil
-	if src := buildAlertSource(cfg); src == nil {
+	if src := buildAlertSource(cfg, slog.New(slog.DiscardHandler)); src == nil {
 		t.Fatal("an empty cascade built no source at all")
 	}
 }

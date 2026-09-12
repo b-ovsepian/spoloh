@@ -1,6 +1,7 @@
 package web
 
 import (
+	"fmt"
 	"net/http"
 	"slices"
 	"strconv"
@@ -477,16 +478,49 @@ func (s *Server) handleAlertsSave(w http.ResponseWriter, r *http.Request) {
 	cfg := s.deps.Config.Get()
 	region := r.FormValue("region")
 	locationUID, locationErr := parseLocationUID(r.FormValue("location"), region)
-	// Validated against the list the page offered, which is the list the
-	// stored credential allows. A token arriving in this same submission
-	// cannot widen it: with no token stored the <select> has no alerts.in.ua
-	// option to pick, so the operator saves the token, the page comes back
-	// offering the source, and they choose it. Two steps, and the second one
-	// is a choice rather than something that happened to them.
-	sources := parseSources(r.Form["source"], selectableSources(cfg))
 	interval, intervalErr := parsePollInterval(r.FormValue("poll_interval"))
 	token, tokenErr := parseAlertsUAToken(r.FormValue("alerts_ua_token"))
 	removeToken := r.FormValue("remove_token") != ""
+
+	// Validated against what the credential will be after this write, not
+	// what it was before it.
+	//
+	// This used to read the stored config, on the reasoning that a token
+	// arriving in the same submission should not widen the choice — the
+	// operator would save the token, the page would come back offering the
+	// source, and picking it would be a second, deliberate step.
+	//
+	// On a real device that produced the opposite of care. Submitting a
+	// token and the source together silently dropped the source and
+	// answered "Налаштування сповіщень збережено." The operator had chosen
+	// it, the device had discarded it, and the page said yes — which is the
+	// "looks configured, isn't" failure this whole screen exists to prevent.
+	// Reproduced before changing anything.
+	//
+	// Ticking a source is already a deliberate act; it does not become more
+	// deliberate for having been done twice.
+	tokenAfter := cfg.Alerts.AlertsUAToken
+	switch {
+	case removeToken:
+		tokenAfter = ""
+	case token != "":
+		tokenAfter = token
+	}
+	allowed := alertsource.SelectableSources(tokenAfter != "")
+	sources := parseSources(r.Form["source"], allowed)
+
+	// Nothing this screen accepts may be quietly thrown away. A key that
+	// survives the form but not the filter is either a source that needs a
+	// credential the operator has not supplied, or a stale page — and both
+	// deserve a sentence rather than a success message over a cascade that
+	// is not the one they ordered.
+	if dropped := droppedSources(r.Form["source"], sources); dropped != "" {
+		reject := func(message string) {
+			s.renderAlertsPage(w, http.StatusBadRequest, func(v *alertsView) { v.Error = message })
+		}
+		reject(fmt.Sprintf("Джерело «%s» недоступне без збереженого токена alerts.in.ua.", dropped))
+		return
+	}
 
 	reject := func(status int, message string) {
 		// A rejected region cannot be re-selected in the <select>, which
@@ -587,4 +621,26 @@ func (s *Server) handleAlertsSave(w http.ResponseWriter, r *http.Request) {
 	s.renderAlertsPage(w, http.StatusOK, func(v *alertsView) {
 		v.Message = "Налаштування сповіщень збережено."
 	})
+}
+
+// droppedSources names the first submitted key that did not survive
+// validation, or "" when every one of them did. Duplicates and blanks do not
+// count: parseSources removes those on purpose, and neither is a choice the
+// operator would notice losing.
+func droppedSources(submitted, kept []string) string {
+	keptSet := make(map[string]bool, len(kept))
+	for _, k := range kept {
+		keptSet[k] = true
+	}
+	seen := make(map[string]bool, len(submitted))
+	for _, v := range submitted {
+		if v == "" || seen[v] {
+			continue
+		}
+		seen[v] = true
+		if !keptSet[v] {
+			return v
+		}
+	}
+	return ""
 }
