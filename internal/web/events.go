@@ -58,6 +58,8 @@ func triggerLabel(trigger string) string {
 		return "Початок тривоги"
 	case config.TriggerAlertEnd:
 		return "Кінець тривоги"
+	case config.TriggerAlertEscalated:
+		return "Посилення тривоги"
 	case config.TriggerScheduled:
 		return "За розкладом"
 	default:
@@ -65,11 +67,24 @@ func triggerLabel(trigger string) string {
 	}
 }
 
-// eventRowView is what one row of events.html reads. Scheduled gates both
-// the name/time/weekday inputs and the delete button: alert-start and
-// alert-end are the only triggers that are not TriggerScheduled, and they are
-// exactly the ones spec §5.5 (and handleEventsDelete) says can never be
-// removed, only disabled.
+// eventProtected reports whether an event of this trigger may never be
+// removed, only disabled — the rule handleEventsDelete enforces and the rule
+// the delete button is drawn from, read from one place so the page cannot
+// offer a button the handler will refuse.
+//
+// alert-start and alert-end, and nothing else. An alert_escalated event is
+// deliberately removable: it is a refinement an operator adds, and taking it
+// away puts the device back on the start sound (see Engine.announceEscalation)
+// rather than on silence, which is the whole test protection here exists for.
+func eventProtected(trigger string) bool {
+	return trigger == config.TriggerAlertStart || trigger == config.TriggerAlertEnd
+}
+
+// eventRowView is what one row of events.html reads. Scheduled gates the
+// name/time/weekday inputs, which only a clock-driven event has; Removable
+// gates the delete button on its own, because the two stopped being the same
+// question when the escalation joined the list — it has no schedule and can
+// still be taken away.
 type eventRowView struct {
 	ID           string
 	Trigger      string
@@ -82,6 +97,10 @@ type eventRowView struct {
 	Repeat       int
 	Enabled      bool
 	Scheduled    bool
+	Removable    bool
+	// Escalated marks the one row whose absence is not a fault, so it can
+	// carry the sentence saying what happens without it.
+	Escalated bool
 }
 
 // eventsView is what events.html reads.
@@ -97,6 +116,23 @@ type eventsView struct {
 
 	QuietHours     config.QuietHours
 	WeekdayOptions []weekdayOption
+
+	// HasEscalation says an alert_escalated event is already stored, which
+	// is what hides the form that adds one: there is nothing to choose
+	// between two of them, and a second would answer one rise in severity
+	// with two sounds.
+	//
+	// It is false on every device in the field, because no configuration
+	// written before this build can carry the trigger and nothing restores
+	// it on load — restoreMissingAlertEvents deliberately repairs only the
+	// two events whose absence means silence. An escalation with nothing
+	// configured is announced with the alert-start sound instead (see
+	// Engine.announceEscalation), so the form below is an offer, never a
+	// fault to be fixed.
+	HasEscalation bool
+	// EscalationTrigger is config.TriggerAlertEscalated, carried so the add
+	// form's hidden field and the handler quote the same string.
+	EscalationTrigger string
 
 	// QuietScheduled and QuietAlerts are QuietHours.AppliesTo unpacked into
 	// the two checkboxes the form draws. They are precomputed rather than
@@ -161,13 +197,23 @@ func indexOfEvent(events []config.Event, id string) int {
 	return -1
 }
 
-// newEventID names a freshly added scheduled event. It never collides with
-// an existing id: config.Validate rejects a duplicate id outright, and a
-// silently-dropped "add" because two events happened to get the same
-// generated name would be a worse bug than this loop guards against.
-func newEventID(existing []config.Event) string {
+// hasTrigger reports whether any event carries this trigger, enabled or
+// not. It answers "is there a row for this on the page" — a disabled
+// escalation is still an escalation the operator configured, and offering to
+// add a second one would read as though the first had gone missing.
+func hasTrigger(events []config.Event, trigger string) bool {
+	return slices.ContainsFunc(events, func(e config.Event) bool { return e.Trigger == trigger })
+}
+
+// newEventID names a freshly added event, prefixed with the trigger it is
+// for so that config.json stays readable to whoever opens it. It never
+// collides with an existing id: config.Validate rejects a duplicate id
+// outright, and a silently-dropped "add" because two events happened to get
+// the same generated name would be a worse bug than this loop guards
+// against.
+func newEventID(existing []config.Event, trigger string) string {
 	for i := 0; ; i++ {
-		id := fmt.Sprintf("scheduled-%d", time.Now().UnixNano()+int64(i))
+		id := fmt.Sprintf("%s-%d", trigger, time.Now().UnixNano()+int64(i))
 		if indexOfEvent(existing, id) < 0 {
 			return id
 		}
@@ -273,6 +319,8 @@ func (s *Server) eventsBaseView(cfg *config.Config) eventsView {
 		QuietAlerts:       cfg.QuietHours.Covers(config.CategoryAlerts),
 		AlertsSilenced:    cfg.QuietHours.SilencesAlerts(),
 		AlertConfirmation: quietHoursAlertConfirmation,
+		EscalationTrigger: config.TriggerAlertEscalated,
+		HasEscalation:     hasTrigger(cfg.Events, config.TriggerAlertEscalated),
 	}
 	for _, ev := range cfg.Events {
 		view.Rows = append(view.Rows, eventRowView{
@@ -287,6 +335,8 @@ func (s *Server) eventsBaseView(cfg *config.Config) eventsView {
 			Repeat:       ev.Repeat,
 			Enabled:      ev.Enabled,
 			Scheduled:    ev.Trigger == config.TriggerScheduled,
+			Removable:    !eventProtected(ev.Trigger),
+			Escalated:    ev.Trigger == config.TriggerAlertEscalated,
 		})
 	}
 
@@ -395,20 +445,44 @@ func (s *Server) handleEventsSave(w http.ResponseWriter, r *http.Request) {
 	s.renderEventsPage(w, http.StatusOK, func(v *eventsView) { v.Message = "Подію збережено." })
 }
 
-// handleEventsAdd creates a new TriggerScheduled event. alert-start and
+// handleEventsAdd creates an event an operator can also delete: a new
+// TriggerScheduled announcement, or the single TriggerAlertEscalated event
+// that gives a raid declared red a sound of its own. alert-start and
 // alert-end are not created here — config.Default() is the only place either
-// is ever created — so every event this handler produces is one an operator
-// can also delete.
+// is ever created.
+//
+// The trigger is read from the form as an allow-list of those two, the shape
+// parseCategories uses: anything else is a scheduled event, so a hand-made
+// POST can never store a trigger this build would not know how to fire. One
+// handler rather than two because everything either form does after the
+// trigger is decided — the volume, the library check, the append — is the
+// same work, and the escalation simply has no name, time or weekdays to read.
 func (s *Server) handleEventsAdd(w http.ResponseWriter, r *http.Request) {
 	if !sameOrigin(r) {
 		http.Error(w, "cross-origin request rejected", http.StatusForbidden)
 		return
 	}
 
-	name := strings.TrimSpace(r.FormValue("name"))
-	timeStr := r.FormValue("time")
+	trigger := config.TriggerScheduled
+	if r.FormValue("trigger") == config.TriggerAlertEscalated {
+		trigger = config.TriggerAlertEscalated
+	}
 	sound := r.FormValue("sound")
-	weekdays := parseWeekdays(r.Form["weekdays"])
+	// An escalation has no schedule of its own — a raid plays it, not the
+	// clock — so the schedule half of the form is not read for one at all.
+	// Reading it anyway would let a hand-made POST store weekdays on an
+	// event nothing consults them for, and leave the rejection below
+	// re-populating an "add" form the operator never filled in.
+	var (
+		name     string
+		timeStr  string
+		weekdays []int
+	)
+	if trigger == config.TriggerScheduled {
+		name = strings.TrimSpace(r.FormValue("name"))
+		timeStr = r.FormValue("time")
+		weekdays = parseWeekdays(r.Form["weekdays"])
+	}
 
 	reject := func(message string) {
 		s.renderEventsPage(w, http.StatusBadRequest, func(v *eventsView) {
@@ -425,7 +499,7 @@ func (s *Server) handleEventsAdd(w http.ResponseWriter, r *http.Request) {
 		reject(volumeErr)
 		return
 	}
-	if name == "" {
+	if trigger == config.TriggerScheduled && name == "" {
 		reject("Вкажіть назву події.")
 		return
 	}
@@ -433,11 +507,20 @@ func (s *Server) handleEventsAdd(w http.ResponseWriter, r *http.Request) {
 		reject(fmt.Sprintf("Звук «%s» відсутній у бібліотеці.", sound))
 		return
 	}
+	// Checked before the store is touched, the way handleWebhooksAdd checks
+	// its own limit. A second escalation event would not silence anything —
+	// it would answer one rise in severity with two sounds — so this is a
+	// tidiness guard, and losing the race to another writer costs the
+	// operator a row they can delete, never an announcement.
+	if trigger == config.TriggerAlertEscalated && hasTrigger(s.deps.Config.Get().Events, trigger) {
+		reject("Подія для посилення тривоги вже є — змініть її нижче.")
+		return
+	}
 
 	err := s.deps.Config.Update(func(c *config.Config) error {
 		c.Events = append(c.Events, config.Event{
-			ID:       newEventID(c.Events),
-			Trigger:  config.TriggerScheduled,
+			ID:       newEventID(c.Events, trigger),
+			Trigger:  trigger,
 			Name:     name,
 			Time:     timeStr,
 			Weekdays: weekdays,
@@ -478,7 +561,7 @@ func (s *Server) handleEventsDelete(w http.ResponseWriter, r *http.Request) {
 		if idx < 0 {
 			return fmt.Errorf("%w: %q", errEventNotFound, id)
 		}
-		if t := c.Events[idx].Trigger; t == config.TriggerAlertStart || t == config.TriggerAlertEnd {
+		if eventProtected(c.Events[idx].Trigger) {
 			return errEventProtected
 		}
 		c.Events = append(c.Events[:idx], c.Events[idx+1:]...)

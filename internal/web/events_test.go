@@ -714,3 +714,119 @@ func eventsEqual(a, b []config.Event) bool {
 	}
 	return true
 }
+
+// eventWithTrigger returns the one stored event carrying this trigger, or
+// fails. Several tests below ask the store what an escalation form actually
+// wrote, and none of them may assume where in the list it landed.
+func eventWithTrigger(t *testing.T, store *configstore.Store, trigger string) config.Event {
+	t.Helper()
+	for _, ev := range store.Get().Events {
+		if ev.Trigger == trigger {
+			return ev
+		}
+	}
+	t.Fatalf("no stored event carries the trigger %q", trigger)
+	return config.Event{}
+}
+
+// A raid announced as yellow and then declared red is a transition of its
+// own, and the operator has to be able to give it a sound of its own: the
+// people who heard the lesser warning are the ones who need telling that the
+// threat has grown. It is an ordinary event once it exists — its own sound,
+// its own volume, its own repeat count — and, unlike alert-start and
+// alert-end, it can be taken away again, because taking it away puts the
+// device back on the start sound rather than on silence.
+func TestAnEscalationEventCanBeAddedEditedAndRemoved(t *testing.T) {
+	srv, store := newServerWithLibrary(t, "siren.wav", "escalation.wav")
+	setPassword(t, srv, "correct horse battery staple")
+	cookie := login(t, srv, "correct horse battery staple")
+
+	rec := eventsPostForm(t, srv, cookie, "/events/add", url.Values{
+		"trigger": {config.TriggerAlertEscalated},
+		"sound":   {"escalation.wav"},
+		"volume":  {"100"},
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("adding the escalation event: status = %d, want 200; body:\n%s", rec.Code, rec.Body.String())
+	}
+	added := eventWithTrigger(t, store, config.TriggerAlertEscalated)
+	if added.Sound != "escalation.wav" || added.Volume != 100 || added.Repeat != 1 || !added.Enabled {
+		t.Fatalf("the escalation event was stored as %+v, want the submitted sound and volume, playing once, enabled", added)
+	}
+
+	rec = eventsPostForm(t, srv, cookie, "/events/save", url.Values{
+		"id":      {added.ID},
+		"sound":   {"siren.wav"},
+		"volume":  {"70"},
+		"repeat":  {"3"},
+		"enabled": {"on"},
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("editing the escalation event: status = %d, want 200; body:\n%s", rec.Code, rec.Body.String())
+	}
+	if got := eventWithTrigger(t, store, config.TriggerAlertEscalated); got.Sound != "siren.wav" || got.Volume != 70 || got.Repeat != 3 {
+		t.Errorf("the edited escalation event is %+v, want the sound, volume and repeat just submitted", got)
+	}
+
+	rec = eventsPostForm(t, srv, cookie, "/events/delete", url.Values{"id": {added.ID}})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("removing the escalation event: status = %d, want 200; body:\n%s", rec.Code, rec.Body.String())
+	}
+	for _, ev := range store.Get().Events {
+		if ev.Trigger == config.TriggerAlertEscalated {
+			t.Errorf("the escalation event survived a delete: %+v", ev)
+		}
+	}
+}
+
+// Every device in the field has no escalation event: the trigger is newer
+// than every stored config.json and nothing restores it on load, because its
+// absence is not silence — the engine announces the escalation with the
+// alert-start sound instead. So the page has to treat "not configured" as a
+// normal state and say what happens anyway, rather than rendering an error
+// or an empty row for something missing.
+func TestEventsPageOffersAnEscalationSoundWhenNoneIsConfigured(t *testing.T) {
+	srv, store := newServerWithLibrary(t, "siren.wav", "all-clear.wav", "metronome.wav")
+	setPassword(t, srv, "correct horse battery staple")
+	cookie := login(t, srv, "correct horse battery staple")
+
+	for _, ev := range store.Get().Events {
+		if ev.Trigger == config.TriggerAlertEscalated {
+			t.Fatalf("the default configuration already carries an escalation event (%+v): this test is not testing what it claims", ev)
+		}
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/events", nil)
+	req.AddCookie(cookie)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 on a configuration with no escalation event", rec.Code)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, `data-add="escalation"`) {
+		t.Error("the page does not offer to give the escalation a sound of its own")
+	}
+	if !strings.Contains(body, "звуком початку тривоги") {
+		t.Error("the page does not say that an unconfigured escalation is announced with the alert-start sound")
+	}
+
+	// And once one exists, the offer is gone: there is nothing to choose
+	// between two escalation events, and a second would answer one rise in
+	// severity with two sounds.
+	if rec := eventsPostForm(t, srv, cookie, "/events/add", url.Values{
+		"trigger": {config.TriggerAlertEscalated},
+		"sound":   {"siren.wav"},
+		"volume":  {"100"},
+	}); rec.Code != http.StatusOK {
+		t.Fatalf("adding the escalation event: status = %d, want 200", rec.Code)
+	}
+	req = httptest.NewRequest(http.MethodGet, "/events", nil)
+	req.AddCookie(cookie)
+	rec = httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+	if strings.Contains(rec.Body.String(), `data-add="escalation"`) {
+		t.Error("the page still offers to add an escalation event when one is already stored")
+	}
+}

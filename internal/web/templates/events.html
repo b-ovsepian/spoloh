@@ -12,10 +12,12 @@
 
   {{/*
   One card per row, alerts and scheduled events alike — spec §5.5's "one
-  list, one editor". Scheduled gates the name/time/weekday inputs and the
-  delete button: alert-start and alert-end have no schedule of their own (a
-  raised alert plays them, not the clock) and may never be removed, only
-  disabled — see events.go's handleEventsDelete for why.
+  list, one editor". Scheduled gates the name/time/weekday inputs: alert
+  events have no schedule of their own, a raised alert plays them rather than
+  the clock. Removable gates the delete button separately, because the two
+  questions came apart when the escalation joined the list — it has no
+  schedule and may still be removed, while alert-start and alert-end may
+  never be, only disabled. See events.go's eventProtected.
   */}}
   {{range .Rows}}
   {{$id := .ID}}
@@ -27,13 +29,28 @@
         <h2 class="font-semibold">{{if .Name}}{{.Name}}{{else}}{{.TriggerLabel}}{{end}}</h2>
         <p class="text-sm text-muted-foreground">{{.TriggerLabel}}{{if .Scheduled}} · {{.Time}}{{end}}</p>
       </div>
-      {{if .Scheduled}}
+      {{if .Removable}}
       <form method="post" action="/events/delete">
         <input type="hidden" name="id" value="{{$id}}">
         <button class="btn" data-variant="outline" data-size="sm" type="submit">Видалити</button>
       </form>
       {{end}}
     </header>
+
+    {{/*
+    Said on the row itself, because it is the row an operator reaches for
+    when they want the escalation to stop making a noise: deleting it, or
+    unticking «Увімкнено», does not silence the escalation — the device falls
+    back to the alert-start sound. A screen that let someone believe
+    otherwise would be teaching them that this device can be made quiet
+    during a raid by a control that cannot do it.
+    */}}
+    {{if .Escalated}}
+    <p class="text-sm text-muted-foreground">
+      Лунає, коли жовту тривогу оголосили червоною. Якщо цю подію вимкнути або видалити,
+      посилення однаково озвучується — звуком початку тривоги.
+    </p>
+    {{end}}
 
     <form method="post" action="/events/save" class="grid gap-3">
       <input type="hidden" name="id" value="{{$id}}">
@@ -93,8 +110,49 @@
   {{end}}
 
   {{/*
-  A new event is always TriggerScheduled — alert-start and alert-end are
-  created exactly once, by config.Default(), never by this form.
+  The offer to give an escalation its own sound, shown only while there is
+  no such event — there is nothing to choose between two of them, and the
+  row above is where an existing one is edited.
+
+  No device in the field has one: the trigger is newer than every stored
+  config.json, and nothing restores it on load the way a missing alert-start
+  is restored, because its absence is not silence. The card therefore says
+  what happens without it before it asks for anything, so that not filling
+  it in is a decision an operator can make from the page rather than a gap
+  they are left to worry about.
+  */}}
+  {{if not .HasEscalation}}
+  <section class="card p-4 grid gap-3" data-add="escalation">
+    <header><h2 class="font-semibold">Окремий звук для посилення тривоги</h2></header>
+    <p class="text-sm text-muted-foreground">
+      Коли жовту тривогу оголошують червоною, пристрій оголошує це звуком початку тривоги.
+      Тут можна дати посиленню власний звук — люди, які вже почули жовту, почують, що загроза зросла.
+    </p>
+    <form method="post" action="/events/add" class="grid gap-3">
+      <input type="hidden" name="trigger" value="{{.EscalationTrigger}}">
+      {{if .Sounds}}
+      <div class="field">
+        <label for="esc-sound">Звук</label>
+        <select class="select" id="esc-sound" name="sound" required>
+          {{range .Sounds}}<option value="{{.Name}}"{{if eq .Name $.AddSound}} selected{{end}}>{{.Name}}</option>{{end}}
+        </select>
+      </div>
+      {{else}}
+      <p class="text-muted-foreground">{{.LibraryNotice}}</p>
+      {{end}}
+      <div class="field">
+        <label for="esc-volume">Гучність</label>
+        <input class="input" type="number" min="1" max="100" id="esc-volume" name="volume" value="100" required>
+      </div>
+      <button class="btn w-fit" type="submit">Додати</button>
+    </form>
+  </section>
+  {{end}}
+
+  {{/*
+  A new event is otherwise always TriggerScheduled — alert-start and
+  alert-end are created exactly once, by config.Default(), never by this
+  form.
   */}}
   <section class="card p-4 grid gap-3">
     <header><h2 class="font-semibold">Додати подію за розкладом</h2></header>
