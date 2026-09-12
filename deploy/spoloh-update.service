@@ -1,0 +1,11 @@
+[Unit]
+Description=Update Spoloh to the latest release
+Documentation=https://github.com/b-ovsepian/spoloh
+
+[Service]
+Type=oneshot
+# The updater verifies the download's checksum, runs the new binary with
+# -version before putting it in place, and rolls back if the service does not
+# come up. None of that can run as spoloh, which is the whole reason this
+# unit exists.
+ExecStart=/usr/local/bin/spoloh update

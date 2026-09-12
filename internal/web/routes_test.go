@@ -58,6 +58,7 @@ func TestEveryRouteIsPublicOrPrivateAsIntended(t *testing.T) {
 		"/settings":               false,
 		"/settings/config/export": false,
 		"/settings/config/import": false,
+		"/settings/update":        false,
 	}
 
 	seen := map[string]bool{}

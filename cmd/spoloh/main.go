@@ -32,6 +32,7 @@ import (
 	"github.com/b-ovsepian/spoloh/internal/netmgr"
 	"github.com/b-ovsepian/spoloh/internal/player"
 	"github.com/b-ovsepian/spoloh/internal/timedate"
+	"github.com/b-ovsepian/spoloh/internal/updater"
 	"github.com/b-ovsepian/spoloh/internal/watchdog"
 	"github.com/b-ovsepian/spoloh/internal/web"
 	"github.com/b-ovsepian/spoloh/internal/webhook"
@@ -317,6 +318,20 @@ func run(configPath, dataDir, listen, socket string) error {
 		ServerFile: filepath.Join(filepath.Dir(configPath), "ntp-server"),
 	}
 
+	// The read half of the updater, and only the read half. Latest is an
+	// HTTPS GET that needs no privilege, so the daemon answers "installed X,
+	// available Y" itself; BinPath and Unit are left empty because this
+	// value is never asked to install anything — that is root's work, done
+	// by deploy/spoloh-update.service, which the dashboard can start and
+	// nothing more. HTTP is left nil: the page bounds its own check with a
+	// context deadline, which is the shorter of the two anyway.
+	releases := updater.Updater{
+		BaseURL: defaultReleases,
+		Arch:    arch,
+		Version: version,
+		Logger:  logger,
+	}
+
 	websrv, err := web.New(web.Deps{
 		Config:    store,
 		Engine:    eng,
@@ -334,6 +349,7 @@ func run(configPath, dataDir, listen, socket string) error {
 		// untruth, and the one place an operator looks to answer "what is
 		// this box actually running" before reporting a fault.
 		Version: version,
+		Updater: releases,
 	})
 	if err != nil {
 		return err

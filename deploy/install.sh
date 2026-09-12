@@ -60,7 +60,7 @@ main() {
   trap 'exit 143' TERM
   cd "$TMP"
 
-  FILES="spoloh-$ARCH spoloh.service spoloh.sysusers spoloh.tmpfiles 50-spoloh-networkmanager.rules spoloh-timesync.service 50-spoloh-timedate.rules"
+  FILES="spoloh-$ARCH spoloh.service spoloh.sysusers spoloh.tmpfiles 50-spoloh-networkmanager.rules spoloh-timesync.service 50-spoloh-timedate.rules spoloh-update.service 50-spoloh-update.rules"
 
   for f in $FILES SHA256SUMS; do
     say "downloading $f"
@@ -110,6 +110,12 @@ main() {
   # daemon starts the unit itself when the operator saves a time server.
   install -D -m 0644 spoloh-timesync.service       "$PREFIX/etc/systemd/system/spoloh-timesync.service"
   install -D -m 0644 50-spoloh-timedate.rules      "$PREFIX/etc/polkit-1/rules.d/50-spoloh-timedate.rules"
+  # The same pair again, for the update button: a root oneshot that replaces
+  # the binary this daemon is running, and the polkit rule that lets the
+  # daemon start that one unit by name and no other. Not enabled either -
+  # nothing updates a device on its own, someone presses the button.
+  install -D -m 0644 spoloh-update.service         "$PREFIX/etc/systemd/system/spoloh-update.service"
+  install -D -m 0644 50-spoloh-update.rules        "$PREFIX/etc/polkit-1/rules.d/50-spoloh-update.rules"
 
   # 6. The user and the directories. Without systemd-tmpfiles --create the
   #    unit's ReadWritePaths=-/etc/spoloh silently skips its write exception and

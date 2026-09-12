@@ -77,7 +77,20 @@ type Deps struct {
 	// Empty is tolerated like every other optional dependency, and says so
 	// in words rather than rendering a blank: see versionText.
 	Version string
-	Logger  *slog.Logger
+	// Updater answers which release is newest, for the update screen. That
+	// question is a plain HTTPS read and needs no privilege, so the daemon
+	// asks it itself; installing what it finds is root's work and goes
+	// through deploy/spoloh-update.service. nil is tolerated like every
+	// other optional dependency here — the screen then says the device
+	// cannot be updated from the dashboard instead of erroring — and the
+	// same nil is what keeps a daemon with no updater wired up from ever
+	// starting the privileged unit.
+	Updater ReleaseChecker
+	// Run replaces the exec of systemctl for the update button. Nil means
+	// the real thing, the rule every seam in this repository keeps; it is
+	// consulted only when Updater is set, so wire the two together.
+	Run    RunFunc
+	Logger *slog.Logger
 }
 
 type Server struct {
@@ -174,6 +187,8 @@ func New(d Deps) (*Server, error) {
 	s.handle("GET /settings", http.HandlerFunc(s.handleSettings))
 	s.handle("GET /settings/config/export", http.HandlerFunc(s.handleConfigExport))
 	s.handle("POST /settings/config/import", http.HandlerFunc(s.handleConfigImport))
+	s.handle("GET /settings/update", http.HandlerFunc(s.handleUpdatePage))
+	s.handle("POST /settings/update", http.HandlerFunc(s.handleUpdateStart))
 	s.handle("GET /{$}", http.HandlerFunc(s.handleHome))
 
 	return s, nil

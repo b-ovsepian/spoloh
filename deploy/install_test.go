@@ -144,6 +144,8 @@ func downloadDir(t *testing.T, corrupt string) string {
 		"50-spoloh-networkmanager.rules": "polkit.addRule(function(){});\n",
 		"spoloh-timesync.service":        "[Unit]\n",
 		"50-spoloh-timedate.rules":       "polkit.addRule(function(){});\n",
+		"spoloh-update.service":          "[Unit]\n",
+		"50-spoloh-update.rules":         "polkit.addRule(function(){});\n",
 	}
 	var sums strings.Builder
 	for name, body := range files {
@@ -179,6 +181,12 @@ func TestInstallerPlacesEveryFileAndStartsTheUnit(t *testing.T) {
 		// into root-owned /etc/systemd/timesyncd.conf.d/.
 		"etc/systemd/system/spoloh-timesync.service",
 		"etc/polkit-1/rules.d/50-spoloh-timedate.rules",
+		// The update button is the same pair over again: without the unit
+		// there is nothing privileged to start, and without the rule polkit
+		// denies the start — and a device that cannot be updated from its
+		// own dashboard is one somebody has to find an SSH session for.
+		"etc/systemd/system/spoloh-update.service",
+		"etc/polkit-1/rules.d/50-spoloh-update.rules",
 	} {
 		if !strings.Contains(report, want) {
 			t.Errorf("%s was not installed\n%s", want, report)
@@ -931,5 +939,88 @@ func TestTheNetworkPolkitRuleGrantsExactlyWhatTheDaemonUses(t *testing.T) {
 	// only ever be misused.
 	if strings.Contains(body, "wifi.share.open") {
 		t.Error("the rule grants wifi.share.open, which would allow an access point with no password")
+	}
+}
+
+// The update button's polkit rule, held to the same shape as the timesync
+// one above and for the same reason: org.freedesktop.systemd1.manage-units
+// granted plainly would let anything reaching the dashboard over HTTP start,
+// stop or restart any unit on the board. An edit that widens this passes
+// gofmt, go vet and every other test here, and would be caught only by
+// somebody reading the file.
+func TestTheUpdatePolkitRuleGrantsOneUnitAndOneVerb(t *testing.T) {
+	rule, err := os.ReadFile("50-spoloh-update.rules")
+	if err != nil {
+		t.Fatalf("read the rule: %v", err)
+	}
+	// Comments name the qualifiers in prose; only the code may be read for
+	// what is actually granted.
+	var code strings.Builder
+	for _, line := range strings.Split(string(rule), "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), "//") {
+			continue
+		}
+		code.WriteString(line)
+		code.WriteString("\n")
+	}
+	body := code.String()
+
+	if !strings.Contains(body, `action.lookup("unit") === "spoloh-update.service"`) {
+		t.Error("the rule does not pin the unit name; it would grant manage-units for every unit on the board")
+	}
+	if !strings.Contains(body, `action.lookup("verb") === "start"`) {
+		t.Error("the rule does not pin the verb; it would permit stop and restart too")
+	}
+	if !strings.Contains(body, `subject.user !== "spoloh"`) {
+		t.Error("the rule does not check the subject is the spoloh service account")
+	}
+	if !strings.Contains(body, "polkit.Result.NOT_HANDLED") {
+		t.Error("the rule has no NOT_HANDLED default; an action it does not name must not be decided here")
+	}
+	// manage-units is the only action this rule may name at all: the check
+	// is a plain HTTPS read the daemon does itself, and installing what it
+	// finds is the one unit below.
+	var ids []string
+	for _, m := range regexp.MustCompile(`action\.id === "([^"]+)"`).FindAllStringSubmatch(body, -1) {
+		ids = append(ids, m[1])
+	}
+	if !slices.Equal(ids, []string{"org.freedesktop.systemd1.manage-units"}) {
+		t.Errorf("the rule names %v, want exactly [org.freedesktop.systemd1.manage-units]", ids)
+	}
+}
+
+// The unit name is written down in three places in two languages — the
+// polkit rule that pins the grant to it, the constant the dashboard starts,
+// and the unit file itself. Two agreeing and the third not is an update
+// button denied by polkit, with nothing in the Go build or this shell script
+// to say why. The NetworkManager rule beside these shipped missing an action
+// the daemon needed and the access point could not rise; this is the same
+// class of failure, made checkable.
+func TestTheUpdatePolkitRuleAndTheDashboardAgreeOnTheUnitName(t *testing.T) {
+	const unit = "spoloh-update.service"
+
+	if _, err := os.Stat(unit); err != nil {
+		t.Fatalf("the unit file itself is missing: %v", err)
+	}
+	rule, err := os.ReadFile("50-spoloh-update.rules")
+	if err != nil {
+		t.Fatalf("read the rule: %v", err)
+	}
+	if !bytes.Contains(rule, []byte(`action.lookup("unit") === "`+unit+`"`)) {
+		t.Errorf("the polkit rule does not pin its manage-units grant to %s", unit)
+	}
+	source, err := os.ReadFile("../internal/web/settings.go")
+	if err != nil {
+		t.Fatalf("read the dashboard's side: %v", err)
+	}
+	if !bytes.Contains(source, []byte(`updateUnit = "`+unit+`"`)) {
+		t.Errorf("the dashboard no longer starts %s; polkit grants that name and no other", unit)
+	}
+	script, err := os.ReadFile("install.sh")
+	if err != nil {
+		t.Fatalf("read install.sh: %v", err)
+	}
+	if !bytes.Contains(script, []byte("/etc/systemd/system/"+unit)) {
+		t.Errorf("install.sh does not place %s where systemd will find it", unit)
 	}
 }

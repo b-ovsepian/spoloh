@@ -2,15 +2,21 @@ package web_test
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/b-ovsepian/spoloh/internal/config"
+	"github.com/b-ovsepian/spoloh/internal/configstore"
+	"github.com/b-ovsepian/spoloh/internal/updater"
 	"github.com/b-ovsepian/spoloh/internal/web"
 )
 
@@ -459,4 +465,201 @@ func TestSettingsIndexOffersARestoreThatNeedsNoScript(t *testing.T) {
 	if !strings.Contains(index, `name="config"`) {
 		t.Errorf("the restore form has no file field named config; index:\n%s", index)
 	}
+}
+
+// fakeReleaseChecker stands in for internal/updater's read half. A test may
+// not open a socket to the internet, and the thing under test here is what
+// the page does with an answer — or with the absence of one.
+type fakeReleaseChecker struct {
+	rel   updater.Release
+	err   error
+	calls int
+}
+
+func (f *fakeReleaseChecker) Latest(context.Context) (updater.Release, error) {
+	f.calls++
+	return f.rel, f.err
+}
+
+// runRecorder is the systemctl seam. It records the argv it was handed and
+// runs nothing: what this screen may execute is the one thing standing
+// between a button on a LAN page and a route that starts an arbitrary unit.
+type runRecorder struct {
+	calls [][]string
+	err   error
+}
+
+func (r *runRecorder) Run(_ context.Context, name string, args ...string) ([]byte, error) {
+	r.calls = append(r.calls, append([]string{name}, args...))
+	if r.err != nil {
+		return []byte("Failed to start spoloh-update.service: Access denied"), r.err
+	}
+	return nil, nil
+}
+
+// newServerWithUpdater wires both halves of the update screen and signs an
+// operator in.
+func newServerWithUpdater(t *testing.T, version string, checker *fakeReleaseChecker) (*web.Server, *runRecorder, *http.Cookie) {
+	t.Helper()
+	store, err := configstore.Open(filepath.Join(t.TempDir(), "config.json"))
+	if err != nil {
+		t.Fatalf("configstore.Open: %v", err)
+	}
+	runner := &runRecorder{}
+	deps := web.Deps{Config: store, Version: version, Run: runner.Run}
+	// A nil interface has to stay nil: Deps.Updater carrying a typed nil is
+	// what would let the POST reach the seam on a daemon with no updater.
+	if checker != nil {
+		deps.Updater = checker
+	}
+	srv, err := web.New(deps)
+	if err != nil {
+		t.Fatalf("web.New: %v", err)
+	}
+	setPassword(t, srv, "correct horse battery staple")
+	return srv, runner, login(t, srv, "correct horse battery staple")
+}
+
+// The question this screen exists to answer, and the one nobody standing in
+// front of a wall-mounted box can answer otherwise: what is on it, and is
+// there anything newer.
+func TestUpdatePageShowsTheInstalledAndTheAvailableVersion(t *testing.T) {
+	checker := &fakeReleaseChecker{rel: updater.Release{Version: "v0.4.0"}}
+	srv, _, cookie := newServerWithUpdater(t, "v0.3.1", checker)
+
+	page := pageContent(t, getWithSession(t, srv, cookie, "/settings/update").Body.String())
+	for _, want := range []string{"v0.3.1", "v0.4.0"} {
+		if !strings.Contains(page, want) {
+			t.Errorf("the update page never names %s; page:\n%s", want, page)
+		}
+	}
+	if !strings.Contains(page, `action="/settings/update"`) {
+		t.Errorf("the update page offers no way to start the update; page:\n%s", page)
+	}
+	// The device restarts itself and this page cannot report the outcome.
+	// An operator who is not told that concludes the button did nothing.
+	if !strings.Contains(page, "перезапуститься сам") {
+		t.Errorf("the update page never says the device restarts itself; page:\n%s", page)
+	}
+}
+
+// A device with no route to github.com is an ordinary device — a site whose
+// uplink is down, a board on an isolated LAN. The page still has to render,
+// still has to say which build is on the wall, and still has to leave a
+// button for the operator who has just fixed the network.
+func TestUpdatePageStillRendersWhenTheVersionCheckFails(t *testing.T) {
+	checker := &fakeReleaseChecker{err: errors.New("ask for the latest release: dial tcp: no route to host")}
+	srv, _, cookie := newServerWithUpdater(t, "v0.3.1", checker)
+
+	rec := getWithSession(t, srv, cookie, "/settings/update")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body:\n%s", rec.Code, rec.Body.String())
+	}
+	page := pageContent(t, rec.Body.String())
+	if !strings.Contains(page, "Не вдалося перевірити") {
+		t.Errorf("the page does not say the check failed; page:\n%s", page)
+	}
+	if !strings.Contains(page, "v0.3.1") {
+		t.Errorf("the page dropped the installed version when the check failed; page:\n%s", page)
+	}
+	if !strings.Contains(page, `action="/settings/update"`) {
+		t.Errorf("a failed check took the button away; page:\n%s", page)
+	}
+}
+
+// The assertion that matters. The daemon's whole privilege here is starting
+// one unit by name, and deploy/50-spoloh-update.rules pins polkit's grant to
+// that name and the start verb. Anything else this handler could be made to
+// run is a route from an HTTP request to an arbitrary unit on the board.
+func TestUpdateStartsExactlyTheUpdateUnitAndNothingElse(t *testing.T) {
+	checker := &fakeReleaseChecker{rel: updater.Release{Version: "v0.4.0"}}
+	srv, runner, cookie := newServerWithUpdater(t, "v0.3.1", checker)
+
+	rec := postUpdate(t, srv, cookie, "http://example.com")
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("status = %d, want 303; body:\n%s", rec.Code, rec.Body.String())
+	}
+	if got, want := rec.Header().Get("Location"), "/settings/update?updating=1"; got != want {
+		t.Errorf("Location = %q, want %q", got, want)
+	}
+
+	want := [][]string{{"systemctl", "start", "--no-block", "spoloh-update.service"}}
+	if !reflect.DeepEqual(runner.calls, want) {
+		t.Fatalf("the update button ran %v, want exactly %v", runner.calls, want)
+	}
+
+	// The flash the redirect carries has to say what an operator cannot see:
+	// that nothing will report back here, because the update replaces the
+	// binary that would have done the reporting.
+	page := pageContent(t, getWithSession(t, srv, cookie, "/settings/update?updating=1").Body.String())
+	if !strings.Contains(page, "Оновлення запущено") || !strings.Contains(page, "результату не покаже") {
+		t.Errorf("the page after the button does not say what is happening; page:\n%s", page)
+	}
+}
+
+// A daemon with no updater wired up must not be one request away from
+// starting a privileged unit. It says so and runs nothing.
+func TestUpdateRefusesToStartAnythingWithNoUpdaterWiredUp(t *testing.T) {
+	srv, runner, cookie := newServerWithUpdater(t, "v0.3.1", nil)
+
+	rec := postUpdate(t, srv, cookie, "http://example.com")
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("status = %d, want 303; body:\n%s", rec.Code, rec.Body.String())
+	}
+	if len(runner.calls) != 0 {
+		t.Fatalf("a daemon with no updater ran %v", runner.calls)
+	}
+	page := pageContent(t, getWithSession(t, srv, cookie, "/settings/update").Body.String())
+	if strings.Contains(page, `action="/settings/update"`) {
+		t.Errorf("the page offers a button it cannot honour; page:\n%s", page)
+	}
+	if !strings.Contains(page, "недоступне") {
+		t.Errorf("the page does not say updating is unavailable here; page:\n%s", page)
+	}
+}
+
+// The cookie is SameSite=Lax and that is the real defence, but this route
+// replaces the running binary: a form on somebody else's page must not be
+// able to reach it even once.
+func TestUpdateRefusesACrossOriginPost(t *testing.T) {
+	checker := &fakeReleaseChecker{rel: updater.Release{Version: "v0.4.0"}}
+	srv, runner, cookie := newServerWithUpdater(t, "v0.3.1", checker)
+
+	rec := postUpdate(t, srv, cookie, "http://evil.example")
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("a cross-origin POST = %d, want 403; body:\n%s", rec.Code, rec.Body.String())
+	}
+	if len(runner.calls) != 0 {
+		t.Errorf("a cross-origin POST ran %v", runner.calls)
+	}
+}
+
+// The index is six links somebody opens to reach the screen that fixes the
+// network. It must link the update screen — a screen nothing links to is a
+// screen nobody finds — and it must not itself wait on github.com to render.
+func TestSettingsIndexLinksTheUpdateScreenWithoutCheckingForOne(t *testing.T) {
+	checker := &fakeReleaseChecker{rel: updater.Release{Version: "v0.4.0"}}
+	srv, _, cookie := newServerWithUpdater(t, "v0.3.1", checker)
+
+	index := settingsIndex(t, srv, cookie)
+	if !strings.Contains(index, `href="/settings/update"`) {
+		t.Errorf("the settings index does not link the update screen; index:\n%s", index)
+	}
+	if checker.calls != 0 {
+		t.Errorf("rendering the settings index asked github.com for a release %d time(s)", checker.calls)
+	}
+	if got := getWithSession(t, srv, cookie, "/settings/update"); got.Code != http.StatusOK || checker.calls != 1 {
+		t.Errorf("GET /settings/update = %d after %d check(s), want 200 after exactly 1", got.Code, checker.calls)
+	}
+}
+
+// postUpdate fires one authenticated press of the update button, from origin.
+func postUpdate(t *testing.T, srv *web.Server, cookie *http.Cookie, origin string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, "/settings/update", nil)
+	req.Header.Set("Origin", origin)
+	req.AddCookie(cookie)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+	return rec
 }

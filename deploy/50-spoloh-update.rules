@@ -1,0 +1,43 @@
+// Lets the spoloh service account start one unit: the updater.
+//
+// Install to /etc/polkit-1/rules.d/50-spoloh-update.rules.
+//
+// org.freedesktop.systemd1.manage-units granted plainly would let anything
+// reaching the dashboard over HTTP start, stop or restart any unit on the
+// board — sshd, the firewall, this daemon's own watchdog. So it is pinned to
+// one unit name and one verb, through the details systemd puts on the action:
+//
+//   action.lookup("unit") === "spoloh-update.service"
+//   action.lookup("verb") === "start"
+//
+// Both checks, not either. A rule matching the unit alone would also permit
+// stop and restart of it; a rule matching neither is the hole above. The verb
+// is the job type, not the way it was asked for, so the dashboard's
+// `systemctl start --no-block` is still "start" here — see internal/web's
+// handleUpdateStart for why it does not wait.
+//
+// Nothing else is granted, and nothing else is needed: asking which release
+// is newest is a plain HTTPS read the daemon performs itself, and everything
+// privileged about an update happens inside the unit above.
+//
+// UNVERIFIED ON HARDWARE at the time of writing. The NetworkManager rule
+// beside this one was also believed correct and was missing an action the
+// daemon needed — the access point could not rise. If the update button
+// reports a permission error, check `journalctl -u polkit` for a denial
+// naming the action above.
+//
+// polkit >= 0.106 reads this JavaScript format. Distributions still shipping
+// polkit 0.105 (Debian bullseye and older) ignore rules.d entirely and need
+// the equivalent as a .pkla file instead. The target board is Debian 13 with
+// polkit 126, so this format is the right one for it.
+polkit.addRule(function (action, subject) {
+    if (subject.user !== "spoloh") {
+        return polkit.Result.NOT_HANDLED;
+    }
+    if (action.id === "org.freedesktop.systemd1.manage-units" &&
+        action.lookup("unit") === "spoloh-update.service" &&
+        action.lookup("verb") === "start") {
+        return polkit.Result.YES;
+    }
+    return polkit.Result.NOT_HANDLED;
+});

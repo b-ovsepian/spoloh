@@ -33,8 +33,8 @@ dist:
 	# that does not carry it leaves the README fetching the script from main
 	# while the script installs a tagged release, so the two can drift for
 	# the whole window between a merge and the next tag.
-	cp deploy/install.sh deploy/spoloh.service deploy/spoloh.sysusers deploy/spoloh.tmpfiles deploy/50-spoloh-networkmanager.rules deploy/spoloh-timesync.service deploy/50-spoloh-timedate.rules dist/
-	cd dist && sha256sum spoloh-linux-* install.sh spoloh.service spoloh.sysusers spoloh.tmpfiles 50-spoloh-networkmanager.rules spoloh-timesync.service 50-spoloh-timedate.rules > SHA256SUMS
+	cp deploy/install.sh deploy/spoloh.service deploy/spoloh.sysusers deploy/spoloh.tmpfiles deploy/50-spoloh-networkmanager.rules deploy/spoloh-timesync.service deploy/50-spoloh-timedate.rules deploy/spoloh-update.service deploy/50-spoloh-update.rules dist/
+	cd dist && sha256sum spoloh-linux-* install.sh spoloh.service spoloh.sysusers spoloh.tmpfiles 50-spoloh-networkmanager.rules spoloh-timesync.service 50-spoloh-timedate.rules spoloh-update.service 50-spoloh-update.rules > SHA256SUMS
 
 # `make release` is `make dist` plus the one thing a build cannot discover for
 # itself: whether this commit is the tag being released. VERSION comes from

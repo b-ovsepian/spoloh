@@ -74,5 +74,48 @@
       <p class="text-sm text-muted-foreground">Пароль до панелі не зміниться — він не зберігається у файлі.</p>
     </form>
   </div>
+
+  {{/*
+  The update card is on this page twice over: a link when the page is the
+  index, the versions and the button when it is /settings/update. The check
+  costs a request to github.com, and the index — six links somebody opens to
+  reach the screen that fixes the network — must not wait on it.
+
+  h2, like the backup card above it: the page's one h1 is «Налаштування».
+  */}}
+  <div class="card p-6">
+    <header class="mb-4"><h2 class="text-lg font-semibold">Оновлення</h2></header>
+    {{with .Update}}
+    <p class="text-sm">Встановлена версія: <span class="font-medium">{{.Installed}}</span></p>
+    {{if .Available}}
+    <p class="text-sm">Доступна версія: <span class="font-medium">{{.Available}}</span></p>
+    {{if .UpToDate}}
+    <p class="mt-3 text-sm text-muted-foreground">Пристрій має найновішу версію.</p>
+    {{end}}
+    {{end}}
+    {{if .Notice}}
+    <p class="mt-3 text-sm text-muted-foreground">{{.Notice}}</p>
+    {{end}}
+    {{if .CanUpdate}}
+    {{/*
+    A plain POST with one button and no fields: the whole request is "start
+    the unit", and nothing an operator types reaches the command line.
+    */}}
+    <form method="post" action="/settings/update" class="mt-4">
+      <button class="btn" type="submit">Оновити пристрій</button>
+    </form>
+    {{/*
+    Said before the button as well as after it. The update replaces the
+    binary serving this page, so the answer never comes back to the browser
+    that asked — and an operator who does not know that concludes the button
+    did nothing and presses it again.
+    */}}
+    <p class="mt-3 text-sm text-muted-foreground">Оновлення триває кілька хвилин: пристрій завантажить нову версію, перевірить її і перезапуститься сам. Панель на цей час стане недоступною, а результат видно після перезапуску — за версією на цій сторінці. Поки триває оновлення, пристрій не озвучує тривог.</p>
+    {{end}}
+    {{else}}
+    <p class="mb-4 text-sm text-muted-foreground">Перевірка версії звертається до github.com, тому виконується лише на цій сторінці.</p>
+    <a class="btn" data-variant="outline" href="/settings/update">Перевірити оновлення</a>
+    {{end}}
+  </div>
 </div>
 {{end}}
