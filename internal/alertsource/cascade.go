@@ -64,6 +64,13 @@ const (
 	// expired, revoked, or mistyped. The operator has one; it needs
 	// replacing.
 	ReasonTokenRejected Reason = "token_rejected"
+	// ReasonNoRegionMapping is a source that cannot name the place this
+	// device watches. It has a credential and the far end is fine; this
+	// build simply carries no id of that provider's for the chosen oblast,
+	// so there is nothing to ask about. Its own value because the operator's
+	// next step is unlike every other one here — a table to regenerate, not
+	// a key to replace or a network to fix.
+	ReasonNoRegionMapping Reason = "no_region_mapping"
 	// ReasonRateLimited is an upstream 429. The limit is per public IP, so
 	// this can be another device on the same connection rather than
 	// anything wrong here.
@@ -108,6 +115,8 @@ func (a Attempt) Reason() Reason {
 		return ReasonNoToken
 	case errors.Is(a.Err, ErrTokenRejected):
 		return ReasonTokenRejected
+	case errors.Is(a.Err, ErrNoRegionMapping):
+		return ReasonNoRegionMapping
 	}
 	var rl *RateLimitError
 	if errors.As(a.Err, &rl) {

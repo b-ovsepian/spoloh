@@ -1,0 +1,37 @@
+[
+  {
+    "regionId": "1400",
+    "regionType": "State",
+    "regionName": "Сумська область",
+    "regionEngName": "Sumska oblast",
+    "lastUpdate": "2026-09-12T06:45:00.000Z",
+    "activeAlerts": [
+      {
+        "regionId": "1415",
+        "regionType": "District",
+        "type": "AIR",
+        "lastUpdate": "2026-09-12T06:12:04.000Z",
+        "activeAlertLevels": [
+          {
+            "alertLevel": "Red",
+            "reason": "",
+            "createdAt": "2026-09-12T06:10:51.000Z"
+          }
+        ]
+      },
+      {
+        "regionId": "1414",
+        "regionType": "District",
+        "type": "ARTILLERY",
+        "lastUpdate": "2026-09-12T05:00:00.000Z",
+        "activeAlertLevels": [
+          {
+            "alertLevel": "Yellow",
+            "reason": "",
+            "createdAt": "2026-09-12T04:55:00.000Z"
+          }
+        ]
+      }
+    ]
+  }
+]

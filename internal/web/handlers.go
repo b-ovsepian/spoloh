@@ -293,6 +293,8 @@ func sourceReasonText(r alertsource.Reason) string {
 		return "немає токена — його потрібно отримати й зберегти на сторінці «Джерела»"
 	case alertsource.ReasonTokenRejected:
 		return "токен відхилено — можливо, він застарів або введений з помилкою"
+	case alertsource.ReasonNoRegionMapping:
+		return "ця збірка не знає, як це джерело називає обрану область — таблицю відповідності потрібно оновити"
 	case alertsource.ReasonRateLimited:
 		return "перевищено ліміт запитів — обмеження рахується на всю вашу мережу"
 	case alertsource.ReasonUnreachable:
