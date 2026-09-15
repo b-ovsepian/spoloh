@@ -196,6 +196,20 @@ type Alerts struct {
 	// line carries it (internal/alertsource keeps it out of every wrapped
 	// error; see AlertsUA.Fetch and alertsource.Reason).
 	AlertsUAToken string `json:"alerts_ua_token,omitempty"`
+
+	// UkraineAlarmToken is the operator's own ukrainealarm.com API key,
+	// mailed to them when they registered for it, and without which that
+	// source cannot be used at all.
+	//
+	// A second credential rather than a shared one, because these are two
+	// unrelated companies: a device may hold either, both or neither, and
+	// alertsource.SelectableSources gates each source on its own key.
+	//
+	// Everything AlertsUAToken's comment says about secrecy holds here
+	// word for word — Redacted() strips it, no page renders it, no error
+	// or log line carries it — and the same three places fail loudly when
+	// somebody forgets.
+	UkraineAlarmToken string `json:"ukrainealarm_token,omitempty"`
 }
 
 type Audio struct {

@@ -14,7 +14,7 @@ package config
 // rather than leaving as an inconsistency. Auth is nothing but secrets, so
 // zeroing it costs nothing; Alerts is the oblast, the location, the cascade
 // and the poll interval, which are exactly what a redacted configuration
-// exists to show. So the token is named here, one field, by hand — and what
+// exists to show. So each provider key is named here, by hand — and what
 // replaces the block trick is not care but a test:
 // TestRedactedRemovesEveryFieldThatLooksLikeACredential walks Config by
 // reflection and fails, naming the field, on any secret-shaped value this
@@ -41,6 +41,7 @@ func (c *Config) Redacted() *Config {
 	out := c.Clone()
 	out.Auth = Auth{}
 	out.Alerts.AlertsUAToken = ""
+	out.Alerts.UkraineAlarmToken = ""
 	for i := range out.Webhooks {
 		for j := range out.Webhooks[i].Headers {
 			out.Webhooks[i].Headers[j] = WebhookHeader{}

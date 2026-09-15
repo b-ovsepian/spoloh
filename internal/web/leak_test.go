@@ -58,6 +58,10 @@ func TestNoPageRendersASecret(t *testing.T) {
 	// A token distinctive enough that finding it in a body means it was
 	// rendered, not that two ordinary words happened to line up.
 	const alertsUAToken = "alerts-ua-token-0123456789abcdef"
+	// The second provider key, distinctive in its own right: one walk that
+	// proves nothing about the credential added last week is a walk that
+	// will keep passing while the next one leaks.
+	const ukraineAlarmToken = "ukrainealarm-key-fedcba9876543210"
 
 	srv, store := newServerWithStore(t)
 	setPassword(t, srv, password)
@@ -69,9 +73,10 @@ func TestNoPageRendersASecret(t *testing.T) {
 	// and this token must not become the first exception.
 	if err := store.Update(func(c *config.Config) error {
 		c.Alerts.AlertsUAToken = alertsUAToken
+		c.Alerts.UkraineAlarmToken = ukraineAlarmToken
 		return nil
 	}); err != nil {
-		t.Fatalf("store the alerts.in.ua token: %v", err)
+		t.Fatalf("store the provider keys: %v", err)
 	}
 
 	cfg := store.Get()
@@ -83,7 +88,8 @@ func TestNoPageRendersASecret(t *testing.T) {
 		"session secret": cfg.Auth.SessionSecret,
 	}
 	secrets := map[string]string{
-		"alerts.in.ua token": cfg.Alerts.AlertsUAToken,
+		"alerts.in.ua token":   cfg.Alerts.AlertsUAToken,
+		"ukrainealarm.com key": cfg.Alerts.UkraineAlarmToken,
 	}
 	for name, v := range authSecrets {
 		secrets[name] = v
