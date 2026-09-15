@@ -19,14 +19,47 @@ func ISOWeekday(t time.Time) int {
 	return d
 }
 
+// occurrences reduces an event's schedule to the three numbers every caller
+// here needs: the minute of the day it first fires at, the last minute it may
+// fire at, and the gap between occurrences. It reports false only when Time
+// is not a time, which is the one case nothing can be computed from.
+//
+// An event with no interval is the degenerate window rather than a separate
+// branch: last is first and step is 1, so the arithmetic below produces the
+// single firing at Time without either caller asking whether this event
+// repeats. That is the shape of every stored event today and of most events
+// there will ever be, so it is worth having exactly one code path.
+//
+// A window this build cannot use — an interval with an unparseable end time,
+// or one that ends before it starts — collapses to that same single firing.
+// config.Load repairs such a value out of a stored config before the daemon
+// sees it (see config.repairRepeatWindows), and this is deliberately the
+// same answer given a second time: NextFire is also called on configurations
+// assembled in memory, by the dashboard and by other packages' tests, which
+// never went through Load at all. Degrading to one announcement is what this
+// device does everywhere else; degrading to none is what it refuses.
+func occurrences(ev config.Event) (first, last, step int, ok bool) {
+	first, err := config.ParseHM(ev.Time)
+	if err != nil {
+		return 0, 0, 0, false
+	}
+	last, step = first, 1
+	if ev.EveryMinutes > 0 {
+		if until, err := config.ParseHM(ev.Until); err == nil && until >= first {
+			last, step = until, ev.EveryMinutes
+		}
+	}
+	return first, last, step, true
+}
+
 // NextFire returns the next time ev is due strictly after `after`, in after's
 // own location. It reports false for events that can never fire.
 func NextFire(ev config.Event, after time.Time) (time.Time, bool) {
 	if ev.Trigger != config.TriggerScheduled || len(ev.Weekdays) == 0 {
 		return time.Time{}, false
 	}
-	minutes, err := config.ParseHM(ev.Time)
-	if err != nil {
+	first, last, step, ok := occurrences(ev)
+	if !ok {
 		return time.Time{}, false
 	}
 
@@ -40,12 +73,20 @@ func NextFire(ev config.Event, after time.Time) (time.Time, bool) {
 	// Eight days covers any weekday set, including one that only allows the
 	// same weekday we are already past.
 	for i := 0; i < 8; i++ {
-		candidate := time.Date(day.Year(), day.Month(), day.Day()+i, minutes/60, minutes%60, 0, 0, loc)
-		if !candidate.After(after) {
-			continue
-		}
-		if allowed[ISOWeekday(candidate)] {
-			return candidate, true
+		for m := first; m <= last; m += step {
+			candidate := time.Date(day.Year(), day.Month(), day.Day()+i, m/60, m%60, 0, 0, loc)
+			if !candidate.After(after) {
+				continue
+			}
+			if allowed[ISOWeekday(candidate)] {
+				return candidate, true
+			}
+			// Every occurrence of one day shares that day's weekday — no
+			// local time inside a day normalises onto another date — so a
+			// weekday this event does not run on rules out the whole day,
+			// and walking its other 1,439 minutes would only slow down the
+			// once-a-second call this feeds on the dashboard.
+			break
 		}
 	}
 	return time.Time{}, false
@@ -126,8 +167,14 @@ func (r *Runner) Tick(now time.Time) {
 		if ev.Trigger != config.TriggerScheduled || !ev.Enabled {
 			continue
 		}
-		due, err := config.ParseHM(ev.Time)
-		if err != nil || due != cur {
+		first, last, step, ok := occurrences(ev)
+		if !ok {
+			continue
+		}
+		// Inside the window and on the interval. An event with no interval
+		// reduces to "cur is exactly its one minute", which is what this
+		// loop tested before repeating events existed — see occurrences.
+		if cur < first || cur > last || (cur-first)%step != 0 {
 			continue
 		}
 		if !slices.Contains(ev.Weekdays, ISOWeekday(now)) {
@@ -143,6 +190,13 @@ func (r *Runner) Tick(now time.Time) {
 }
 
 // NextUp reports the soonest upcoming scheduled event, for the dashboard.
+//
+// It reports the next occurrence, not the next start: an event repeating
+// every ten minutes until 10:00, asked at 09:32, answers 09:40. Nothing
+// fails when this is wrong — the «Найближча подія» card simply says
+// tomorrow, plausibly, while the device is about to sound in eight minutes —
+// which is why NextFire and Tick read the same occurrences() rather than
+// each working the window out for themselves.
 func (r *Runner) NextUp(now time.Time) (config.Event, time.Time, bool) {
 	var (
 		bestEv config.Event

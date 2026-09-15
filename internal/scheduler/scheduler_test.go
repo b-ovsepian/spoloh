@@ -3,6 +3,7 @@ package scheduler_test
 import (
 	"bytes"
 	"log/slog"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -366,4 +367,227 @@ func TestRunnerNilLoggerIsSafe(t *testing.T) {
 	r := scheduler.NewRunner(&clock.FakeSync{Value: false}, cfgWith(weekdayEvent()), func(config.Event, time.Time) {})
 	r.Logger = nil
 	r.Tick(time.Date(2026, 9, 7, 8, 30, 0, 0, loc))
+}
+
+// repeatingEvent is weekdayEvent with the operator's own shape on it: one
+// sound, every ten minutes, from 09:00 to 10:00, on weekdays.
+func repeatingEvent() config.Event {
+	ev := weekdayEvent()
+	ev.Time, ev.EveryMinutes, ev.Until = "09:00", 10, "10:00"
+	return ev
+}
+
+// The window is inclusive of Until: 09:00, 09:10 … 10:00 is seven
+// occurrences, not six. An operator who writes "from nine to ten" means the
+// sound at ten to be one of them.
+func TestRunnerFiresEveryIntervalThroughTheWindow(t *testing.T) {
+	loc := kyiv(t)
+	var fired []string
+	r := scheduler.NewRunner(
+		&clock.FakeSync{Value: true},
+		cfgWith(repeatingEvent()),
+		func(_ config.Event, at time.Time) { fired = append(fired, at.Format("15:04")) },
+	)
+
+	// Monday, a minute at a time from 08:50 to 10:10 inclusive.
+	base := time.Date(2026, 9, 7, 8, 50, 0, 0, loc)
+	for i := 0; i <= 80; i++ {
+		r.Tick(base.Add(time.Duration(i) * time.Minute))
+	}
+
+	want := []string{"09:00", "09:10", "09:20", "09:30", "09:40", "09:50", "10:00"}
+	if !slices.Equal(fired, want) {
+		t.Fatalf("fired at %v, want %v", fired, want)
+	}
+}
+
+// The minute after the window is outside it, and so is the minute before the
+// window starts — the interval is counted from Time, not from midnight.
+func TestRunnerDoesNotFireOutsideTheWindow(t *testing.T) {
+	loc := kyiv(t)
+	fired := 0
+	r := scheduler.NewRunner(
+		&clock.FakeSync{Value: true},
+		cfgWith(repeatingEvent()),
+		func(config.Event, time.Time) { fired++ },
+	)
+
+	r.Tick(time.Date(2026, 9, 7, 8, 50, 0, 0, loc)) // on the interval, before Time
+	r.Tick(time.Date(2026, 9, 7, 10, 1, 0, 0, loc)) // one minute past Until
+	r.Tick(time.Date(2026, 9, 7, 10, 10, 0, 0, loc))
+	if fired != 0 {
+		t.Fatalf("fired %d times outside the window, want 0", fired)
+	}
+}
+
+// A minute inside the window that is not a multiple of the interval away
+// from Time fires nothing.
+func TestRunnerDoesNotFireBetweenIntervals(t *testing.T) {
+	loc := kyiv(t)
+	fired := 0
+	r := scheduler.NewRunner(
+		&clock.FakeSync{Value: true},
+		cfgWith(repeatingEvent()),
+		func(config.Event, time.Time) { fired++ },
+	)
+
+	for _, minute := range []int{1, 5, 9, 11, 59} {
+		r.Tick(time.Date(2026, 9, 7, 9, minute, 0, 0, loc))
+	}
+	if fired != 0 {
+		t.Fatalf("fired %d times between intervals, want 0", fired)
+	}
+}
+
+// Tick runs once a second, so an occurrence's own minute arrives sixty times
+// over. A repeating event has many such minutes rather than one, which is
+// sixty times as many chances to announce twice.
+func TestRunnerFiresARepeatingOccurrenceOncePerMinute(t *testing.T) {
+	loc := kyiv(t)
+	fired := 0
+	r := scheduler.NewRunner(
+		&clock.FakeSync{Value: true},
+		cfgWith(repeatingEvent()),
+		func(config.Event, time.Time) { fired++ },
+	)
+
+	base := time.Date(2026, 9, 7, 9, 20, 0, 0, loc)
+	for i := 0; i < 60; i++ {
+		r.Tick(base.Add(time.Duration(i) * time.Second))
+	}
+	if fired != 1 {
+		t.Fatalf("fired %d times in one occurrence's minute, want 1", fired)
+	}
+}
+
+// The weekday list governs the whole window, not just its first minute: a
+// day the event does not run on is silent from end to end.
+func TestRunnerDoesNotFireARepeatingEventOnAnExcludedWeekday(t *testing.T) {
+	loc := kyiv(t)
+	fired := 0
+	r := scheduler.NewRunner(
+		&clock.FakeSync{Value: true},
+		cfgWith(repeatingEvent()),
+		func(config.Event, time.Time) { fired++ },
+	)
+
+	// 2026-09-05 is a Saturday; the event runs Monday to Friday.
+	base := time.Date(2026, 9, 5, 9, 0, 0, 0, loc)
+	for i := 0; i <= 60; i++ {
+		r.Tick(base.Add(time.Duration(i) * time.Minute))
+	}
+	if fired != 0 {
+		t.Fatalf("fired %d times on an excluded weekday, want 0", fired)
+	}
+}
+
+// An interval of zero is what every stored event carries and what most will
+// keep. It must behave exactly as it did before repeating events existed:
+// once, at Time, and nothing at the minutes around it.
+func TestRunnerTreatsNoIntervalAsASingleFiring(t *testing.T) {
+	loc := kyiv(t)
+	var fired []string
+	r := scheduler.NewRunner(
+		&clock.FakeSync{Value: true},
+		cfgWith(weekdayEvent()), // 08:30, no interval, no end time
+		func(_ config.Event, at time.Time) { fired = append(fired, at.Format("15:04")) },
+	)
+
+	base := time.Date(2026, 9, 7, 8, 0, 0, 0, loc)
+	for i := 0; i <= 120; i++ {
+		r.Tick(base.Add(time.Duration(i) * time.Minute))
+	}
+	if want := []string{"08:30"}; !slices.Equal(fired, want) {
+		t.Fatalf("fired at %v, want %v", fired, want)
+	}
+}
+
+// An interval longer than its own window needs no special case: the
+// arithmetic already says it fires once, at Time. The next reader will
+// wonder, so the suite answers.
+func TestRunnerFiresOnceWhenTheIntervalOutlastsTheWindow(t *testing.T) {
+	loc := kyiv(t)
+	ev := repeatingEvent()
+	ev.EveryMinutes = 90 // longer than the 09:00..10:00 window
+
+	var fired []string
+	r := scheduler.NewRunner(
+		&clock.FakeSync{Value: true},
+		cfgWith(ev),
+		func(_ config.Event, at time.Time) { fired = append(fired, at.Format("15:04")) },
+	)
+
+	base := time.Date(2026, 9, 7, 9, 0, 0, 0, loc)
+	for i := 0; i <= 120; i++ {
+		r.Tick(base.Add(time.Duration(i) * time.Minute))
+	}
+	if want := []string{"09:00"}; !slices.Equal(fired, want) {
+		t.Fatalf("fired at %v, want %v", fired, want)
+	}
+}
+
+// The «Найближча подія» card is the part most likely to be quietly wrong,
+// because nothing fails when it is: an operator standing in front of the
+// device reads "tomorrow at nine" while it is about to sound in eight
+// minutes. Inside an open window, the next occurrence is the answer.
+func TestNextUpReportsTheNextOccurrenceInsideAnOpenWindow(t *testing.T) {
+	loc := kyiv(t)
+	r := scheduler.NewRunner(&clock.FakeSync{Value: true}, cfgWith(repeatingEvent()), func(config.Event, time.Time) {})
+
+	_, at, ok := r.NextUp(time.Date(2026, 9, 7, 9, 32, 0, 0, loc)) // Monday, mid-window
+	if !ok {
+		t.Fatal("expected an upcoming occurrence")
+	}
+	want := time.Date(2026, 9, 7, 9, 40, 0, 0, loc)
+	if !at.Equal(want) {
+		t.Fatalf("at = %v, want %v", at, want)
+	}
+}
+
+// Standing exactly on an occurrence, the answer is the one after it —
+// NextFire is strictly after `after`, and the card must not sit on a time
+// that has already happened.
+func TestNextFireStepsPastTheOccurrenceItIsStandingOn(t *testing.T) {
+	loc := kyiv(t)
+	got, ok := scheduler.NextFire(repeatingEvent(), time.Date(2026, 9, 7, 9, 30, 0, 0, loc))
+	if !ok {
+		t.Fatal("expected a next fire")
+	}
+	want := time.Date(2026, 9, 7, 9, 40, 0, 0, loc)
+	if !got.Equal(want) {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+}
+
+// Past the end of today's window, the next occurrence is the next allowed
+// day's first one — the window closing is not the event ending.
+func TestNextFireRollsToTheNextDaysFirstOccurrence(t *testing.T) {
+	loc := kyiv(t)
+	got, ok := scheduler.NextFire(repeatingEvent(), time.Date(2026, 9, 7, 10, 1, 0, 0, loc))
+	if !ok {
+		t.Fatal("expected a next fire")
+	}
+	want := time.Date(2026, 9, 8, 9, 0, 0, 0, loc) // Tuesday 09:00
+	if !got.Equal(want) {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+}
+
+// A window this build cannot use is answered the way config.Load answers it:
+// the single firing at Time, not silence. NextFire is reached with
+// configurations that never went through Load — the dashboard builds one per
+// SSE frame — so the degradation has to hold here too.
+func TestNextFireIgnoresAnUnusableWindow(t *testing.T) {
+	loc := kyiv(t)
+	ev := repeatingEvent()
+	ev.Until = "08:00" // before Time; the window never opens
+
+	got, ok := scheduler.NextFire(ev, time.Date(2026, 9, 7, 7, 0, 0, 0, loc))
+	if !ok {
+		t.Fatal("an unusable window must leave the event firing once, not never")
+	}
+	want := time.Date(2026, 9, 7, 9, 0, 0, 0, loc)
+	if !got.Equal(want) {
+		t.Fatalf("got %v, want %v", got, want)
+	}
 }
