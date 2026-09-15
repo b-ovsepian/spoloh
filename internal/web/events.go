@@ -174,15 +174,22 @@ type eventsView struct {
 	Error   string
 	Message string
 
-	// AddName, AddTime, AddSound and AddWeekdays re-populate the "add an
-	// event" form after a rejected submission, the way network.go's
-	// SelectedSSID re-selects a rejected network: an operator who mistyped
-	// the volume should not have to retype the name and pick the weekdays
-	// again too.
+	// AddName, AddTime, AddSound, AddWeekdays, AddEvery and AddUntil
+	// re-populate the "add an event" form after a rejected submission, the
+	// way network.go's SelectedSSID re-selects a rejected network: an
+	// operator who mistyped the volume should not have to retype the name
+	// and pick the weekdays again too.
+	//
+	// AddEvery and AddUntil are carried back as typed rather than as
+	// parsed. The submission that most needs them is the one parsing
+	// refused, and a field that blanked itself on rejection would take the
+	// wrong value away before the operator could see what was wrong with it.
 	AddName     string
 	AddTime     string
 	AddSound    string
 	AddWeekdays []int
+	AddEvery    string
+	AddUntil    string
 }
 
 // hasWeekday reports whether day is present in days. It backs the
@@ -586,11 +593,15 @@ func (s *Server) handleEventsAdd(w http.ResponseWriter, r *http.Request) {
 		name     string
 		timeStr  string
 		weekdays []int
+		every    string
+		until    string
 	)
 	if trigger == config.TriggerScheduled {
 		name = strings.TrimSpace(r.FormValue("name"))
 		timeStr = r.FormValue("time")
 		weekdays = parseWeekdays(r.Form["weekdays"])
+		every = r.FormValue("every_minutes")
+		until = r.FormValue("until")
 	}
 
 	reject := func(message string) {
@@ -600,6 +611,8 @@ func (s *Server) handleEventsAdd(w http.ResponseWriter, r *http.Request) {
 			v.AddTime = timeStr
 			v.AddSound = sound
 			v.AddWeekdays = weekdays
+			v.AddEvery = every
+			v.AddUntil = until
 		})
 	}
 
@@ -610,6 +623,17 @@ func (s *Server) handleEventsAdd(w http.ResponseWriter, r *http.Request) {
 	}
 	if trigger == config.TriggerScheduled && name == "" {
 		reject("Вкажіть назву події.")
+		return
+	}
+	// Both fields are optional and both are empty for an escalation, which
+	// is the no-window case — so this runs for either trigger and asks the
+	// operator nothing extra to add the single-shot announcement that is
+	// almost every announcement. What it buys is the other kind: an event
+	// that sounds every so many minutes between two times is created here,
+	// in one step, rather than added and then edited.
+	everyMinutes, untilValue, windowErr := parseRepeatWindow(every, until, timeStr)
+	if windowErr != "" {
+		reject(windowErr)
 		return
 	}
 	if s.soundMissing(sound) {
@@ -635,18 +659,16 @@ func (s *Server) handleEventsAdd(w http.ResponseWriter, r *http.Request) {
 			Weekdays: weekdays,
 			Sound:    sound,
 			Volume:   volume,
-			// EveryMinutes and Until are left at "no window", for the same
-			// reason Repeat below is left at the shipped default: a form
-			// that asked for them here would make an operator answer two
-			// more questions to add the single-shot announcement that is
-			// almost every announcement. The row this produces is where a
-			// window is given to the few events that want one.
-			//
+
+			EveryMinutes: everyMinutes,
+			Until:        untilValue,
+
 			// A freshly added event starts at the same repeat count every
 			// device ships with, editable afterward from the row this
 			// produces — the same treatment Enabled below already gets;
 			// neither is a choice this form makes the operator commit to
-			// before the event exists.
+			// before the event exists. Repeat is not the interval above:
+			// it is how many times one occurrence plays.
 			Repeat:  1,
 			Enabled: true,
 		})

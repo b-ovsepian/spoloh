@@ -217,6 +217,27 @@
           {{end}}
         </div>
       </fieldset>
+      {{/*
+      Both optional, and blank is the ordinary case: a one-off announcement
+      is added by leaving them alone. Filling them in creates a repeating
+      event in one step instead of adding it and then editing the row.
+      */}}
+      <div class="field">
+        <label for="add-every">Повторювати кожні, хв</label>
+        <input class="input" type="number" min="0" max="1440" id="add-every" name="every_minutes"
+               value="{{.AddEvery}}" aria-describedby="add-every-help">
+        <p id="add-every-help" class="text-sm text-muted-foreground">
+          Порожньо — подія лунає один раз, у вказаний час. Інакше — від «Час» до «Повторювати до» включно.
+        </p>
+      </div>
+      <div class="field">
+        <label for="add-until">Повторювати до</label>
+        <input class="input" type="time" id="add-until" name="until" value="{{.AddUntil}}"
+               aria-describedby="add-until-help">
+        <p id="add-until-help" class="text-sm text-muted-foreground">
+          Має бути не раніше за «Час» — повторення не переходить через північ.
+        </p>
+      </div>
       {{if .Sounds}}
       <div class="field">
         <label for="add-sound">Звук</label>

@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -1096,5 +1097,125 @@ func TestEventsPageNamesTheTwoRepetitionsDifferently(t *testing.T) {
 	}
 	if strings.Contains(body, ">Повторів<") {
 		t.Error("the old ambiguous label is still on the page")
+	}
+}
+
+// The shape the operator asked for, created in one step: one sound, every ten
+// minutes, between two times, on chosen days. Before the add form carried the
+// two fields this cost an add and then a save of the row it produced.
+func TestEventsAddCreatesARepeatingEvent(t *testing.T) {
+	srv, store := newServerWithLibrary(t, "siren.wav", "all-clear.wav", "metronome.wav", "bell.wav")
+	setPassword(t, srv, "correct horse battery staple")
+	cookie := login(t, srv, "correct horse battery staple")
+
+	rec := eventsPostForm(t, srv, cookie, "/events/add", url.Values{
+		"name": {"Нагадування"}, "time": {"09:00"}, "weekdays": {"1", "3", "5"},
+		"every_minutes": {"10"}, "until": {"10:00"},
+		"sound": {"bell.wav"}, "volume": {"70"},
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+
+	var added *config.Event
+	for i, ev := range store.Get().Events {
+		if ev.Name == "Нагадування" {
+			added = &store.Get().Events[i]
+		}
+	}
+	if added == nil {
+		t.Fatal("the event was not added")
+	}
+	if added.EveryMinutes != 10 {
+		t.Errorf("every_minutes = %d, want 10", added.EveryMinutes)
+	}
+	if added.Until != "10:00" {
+		t.Errorf("until = %q, want \"10:00\"", added.Until)
+	}
+	// Repeat is the other axis and the form did not ask about it: this event
+	// plays its sound once per occurrence, ten minutes apart.
+	if added.Repeat != 1 {
+		t.Errorf("repeat = %d, want 1 — the interval is not the repeat count", added.Repeat)
+	}
+}
+
+// Leaving both fields blank is the ordinary case and must still add the
+// one-off announcement it always did.
+func TestEventsAddWithoutAWindowStillCreatesASingleFiring(t *testing.T) {
+	srv, store := newServerWithLibrary(t, "siren.wav", "all-clear.wav", "metronome.wav", "bell.wav")
+	setPassword(t, srv, "correct horse battery staple")
+	cookie := login(t, srv, "correct horse battery staple")
+
+	rec := eventsPostForm(t, srv, cookie, "/events/add", url.Values{
+		"name": {"Одноразова"}, "time": {"08:30"}, "weekdays": {"2"},
+		"every_minutes": {""}, "until": {""},
+		"sound": {"bell.wav"}, "volume": {"70"},
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	for _, ev := range store.Get().Events {
+		if ev.Name != "Одноразова" {
+			continue
+		}
+		if ev.EveryMinutes != 0 || ev.Until != "" {
+			t.Errorf("every_minutes = %d, until = %q, want no window at all", ev.EveryMinutes, ev.Until)
+		}
+		return
+	}
+	t.Fatal("the event was not added")
+}
+
+// A window that ends before it starts is refused here as it is on the row,
+// and nothing is stored.
+//
+// The assertion deliberately avoids the words «через північ»: the add form's
+// own help text prints them on every render, so a test looking for those
+// would pass against a build that had no check at all.
+func TestEventsAddRejectsAnUntilBeforeTime(t *testing.T) {
+	srv, store := newServerWithLibrary(t, "siren.wav", "all-clear.wav", "metronome.wav", "bell.wav")
+	setPassword(t, srv, "correct horse battery staple")
+	cookie := login(t, srv, "correct horse battery staple")
+
+	before := len(store.Get().Events)
+	rec := eventsPostForm(t, srv, cookie, "/events/add", url.Values{
+		"name": {"Нагадування"}, "time": {"22:00"}, "weekdays": {"1"},
+		"every_minutes": {"10"}, "until": {"02:00"},
+		"sound": {"bell.wav"}, "volume": {"70"},
+	})
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", rec.Code)
+	}
+	if got := len(store.Get().Events); got != before {
+		t.Errorf("event count %d -> %d, want unchanged", before, got)
+	}
+	if body := pageContent(t, rec.Body.String()); !strings.Contains(body, "не раніший за час початку") {
+		t.Error("the page does not say why the window was refused")
+	}
+}
+
+// A rejected submission comes back with the window as typed. The value that
+// most needs to be visible is the one that was wrong with it.
+func TestEventsAddKeepsTheTypedWindowAfterARejection(t *testing.T) {
+	srv, _ := newServerWithLibrary(t, "siren.wav", "all-clear.wav", "metronome.wav", "bell.wav")
+	setPassword(t, srv, "correct horse battery staple")
+	cookie := login(t, srv, "correct horse battery staple")
+
+	rec := eventsPostForm(t, srv, cookie, "/events/add", url.Values{
+		"name": {"Нагадування"}, "time": {"09:00"}, "weekdays": {"1"},
+		"every_minutes": {"7"}, "until": {"09:45"},
+		"sound": {"bell.wav"}, "volume": {"0"},
+	})
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", rec.Code)
+	}
+	// Anchored to each input by its own id. A bare search for the value
+	// would find it on some other row's control and pass against a build
+	// that carried nothing back at all.
+	body := pageContent(t, rec.Body.String())
+	for _, want := range []string{`id="add-every"[^>]*value="7"`, `id="add-until"[^>]*value="09:45"`} {
+		if !regexp.MustCompile(`(?s)` + want).MatchString(body) {
+			t.Errorf("the add form does not carry back %s", want)
+		}
 	}
 }
