@@ -738,3 +738,135 @@ func TestTheEscalationTriggerIsAcceptedWhereverATriggerIs(t *testing.T) {
 		t.Fatalf("Category() = %q, want %q", got, config.CategoryAlerts)
 	}
 }
+
+// scheduledEvent returns the index of c's one scheduled event. The repeat
+// window is meaningful nowhere else, and a test that hard-coded the position
+// would start passing for the wrong reason the day Default() grows another
+// alert event ahead of it.
+func scheduledEvent(t *testing.T, c *config.Config) int {
+	t.Helper()
+	for i, ev := range c.Events {
+		if ev.Trigger == config.TriggerScheduled {
+			return i
+		}
+	}
+	t.Fatal("no scheduled event in the config")
+	return -1
+}
+
+// The shape the operator asked for: one sound, every ten minutes, from one
+// time to another, on chosen days.
+func TestValidateAcceptsARepeatWindow(t *testing.T) {
+	c := config.Default()
+	ev := &c.Events[scheduledEvent(t, c)]
+	ev.Time, ev.EveryMinutes, ev.Until = "09:00", 10, "10:00"
+
+	if err := c.Validate(); err != nil {
+		t.Fatalf("Validate rejected a ten-minute window from 09:00 to 10:00: %v", err)
+	}
+}
+
+// A window that ends before it starts is the one a person can type by
+// accident, and the one this build has no answer for: it does not wrap past
+// midnight (see Event.Until). Typed into a form it is refused, which is what
+// this checks; found in a stored file it is repaired instead — see
+// TestLoadDropsARepeatWindowThatEndsBeforeItStarts.
+func TestValidateRejectsAnUntilBeforeTime(t *testing.T) {
+	c := config.Default()
+	ev := &c.Events[scheduledEvent(t, c)]
+	ev.Time, ev.EveryMinutes, ev.Until = "22:00", 10, "02:00"
+
+	err := c.Validate()
+	if err == nil {
+		t.Fatal("Validate accepted a window from 22:00 to 02:00, which never fires")
+	}
+	if !strings.Contains(err.Error(), "02:00") || !strings.Contains(err.Error(), "22:00") {
+		t.Errorf("the refusal names neither end of the window an operator has to fix: %v", err)
+	}
+}
+
+// An interval with nowhere to stop describes no series at all. ParseHM
+// refuses the empty string, so the message names the field rather than
+// reporting a mysteriously invalid event.
+func TestValidateRejectsAnIntervalWithNoEndTime(t *testing.T) {
+	c := config.Default()
+	ev := &c.Events[scheduledEvent(t, c)]
+	ev.EveryMinutes, ev.Until = 10, ""
+
+	err := c.Validate()
+	if err == nil {
+		t.Fatal("Validate accepted an interval with no end time")
+	}
+	if !strings.Contains(err.Error(), "until") {
+		t.Errorf("the refusal does not name the missing field: %v", err)
+	}
+}
+
+// Only a hand-edited file can hold one, and the arithmetic has no meaning
+// for it: every step would count backwards out of the window.
+func TestValidateRejectsANegativeInterval(t *testing.T) {
+	c := config.Default()
+	ev := &c.Events[scheduledEvent(t, c)]
+	ev.EveryMinutes, ev.Until = -10, "10:00"
+
+	if err := c.Validate(); err == nil {
+		t.Fatal("Validate accepted a negative interval")
+	}
+}
+
+// An interval longer than its own window is legal and needs no special case:
+// it fires once, at Time, which is what an event without an interval does
+// anyway. Refusing it would stop the daemon starting over a number that
+// cannot silence anything.
+func TestValidateAcceptsAnIntervalLongerThanItsWindow(t *testing.T) {
+	c := config.Default()
+	ev := &c.Events[scheduledEvent(t, c)]
+	ev.Time, ev.EveryMinutes, ev.Until = "09:00", 90, "10:00"
+
+	if err := c.Validate(); err != nil {
+		t.Fatalf("Validate rejected a 90-minute interval in a 60-minute window: %v", err)
+	}
+}
+
+// Every stored config.json predates both fields, so the shape they unmarshal
+// to has to stay the shape that validates: no interval, no end time, one
+// firing at Time.
+func TestValidateAcceptsAScheduledEventWithNoRepeatWindow(t *testing.T) {
+	c := config.Default()
+	ev := &c.Events[scheduledEvent(t, c)]
+	if ev.EveryMinutes != 0 || ev.Until != "" {
+		t.Fatalf("Default() ships a repeat window: every_minutes=%d until=%q", ev.EveryMinutes, ev.Until)
+	}
+	if err := c.Validate(); err != nil {
+		t.Fatalf("Validate rejected an event with no repeat window: %v", err)
+	}
+}
+
+// Both fields are omitempty, so an event without a window must not start
+// writing two new keys into every operator's config.json.
+func TestAnEventWithoutARepeatWindowMarshalsWithoutTheKeys(t *testing.T) {
+	c := config.Default()
+	raw, err := json.Marshal(c.Events[scheduledEvent(t, c)])
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	for _, key := range []string{"every_minutes", "until"} {
+		if strings.Contains(string(raw), key) {
+			t.Errorf("an event with no repeat window wrote %q: %s", key, raw)
+		}
+	}
+}
+
+// Clone hands the engine's goroutine and an HTTP handler the same
+// configuration at the same time. A window dropped there is a repeating
+// event that stops repeating the moment anything reads it.
+func TestCloneCarriesTheRepeatWindow(t *testing.T) {
+	c := config.Default()
+	i := scheduledEvent(t, c)
+	c.Events[i].Time, c.Events[i].EveryMinutes, c.Events[i].Until = "09:00", 10, "10:00"
+
+	got := c.Clone().Events[i]
+	if got.EveryMinutes != 10 || got.Until != "10:00" {
+		t.Fatalf("clone = every_minutes %d until %q, want 10 and 10:00", got.EveryMinutes, got.Until)
+	}
+}

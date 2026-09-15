@@ -265,16 +265,47 @@ func (q QuietHours) SilencesAlerts() bool {
 	return q.Enabled && q.Covers(CategoryAlerts)
 }
 
-// Event covers both alert announcements and scheduled announcements. Time and
-// Weekdays are meaningful only when Trigger is TriggerScheduled.
+// Event covers both alert announcements and scheduled announcements. Time,
+// Weekdays, EveryMinutes and Until are meaningful only when Trigger is
+// TriggerScheduled.
 type Event struct {
 	ID       string `json:"id"`
 	Trigger  string `json:"trigger"`
 	Name     string `json:"name,omitempty"`
 	Time     string `json:"time,omitempty"`
 	Weekdays []int  `json:"weekdays,omitempty"`
-	Sound    string `json:"sound"`
-	Volume   int    `json:"volume"`
+
+	// EveryMinutes turns Time from "the moment this fires" into "the first
+	// moment this fires": an occurrence is due at Time and again every
+	// EveryMinutes minutes for as long as the clock is at or before Until.
+	//
+	// Zero means what every event has always meant and what every stored
+	// config.json already says — one occurrence, at Time. Unlike Repeat
+	// below there is nothing to repair about a missing value here: a config
+	// written before this field existed unmarshals to 0, and 0 is exactly
+	// the behaviour it was written to describe.
+	//
+	// It is not Repeat, and the two compose. Repeat is how many times the
+	// sound plays for one occurrence; this is how far apart the occurrences
+	// are. An event may carry both — a siren sounded twice over, every ten
+	// minutes, from one time to another — and the screens name them
+	// differently for that reason.
+	EveryMinutes int `json:"every_minutes,omitempty"`
+
+	// Until is the last minute an occurrence may fire, an "HH:MM" like
+	// Time, and is read only while EveryMinutes is above zero.
+	//
+	// The window never wraps past midnight: validate refuses an Until
+	// before Time. Quiet hours do wrap, and the inconsistency is
+	// deliberate rather than an oversight — the difference is Weekdays. A
+	// window from 22:00 to 02:00 on "Monday" has to answer whether 01:00 on
+	// Tuesday belongs to Monday's window, and every answer to that
+	// surprises somebody who configured it. A window that cannot wrap never
+	// raises the question.
+	Until string `json:"until,omitempty"`
+
+	Sound  string `json:"sound"`
+	Volume int    `json:"volume"`
 	// Repeat is how many times the sound plays, back to back, for this one
 	// trigger — an operator's answer to a siren that does not carry across a
 	// corridor on a single pass. It defaults to 1 and is capped at 10 by
@@ -833,7 +864,8 @@ func (e Event) validate() error {
 	switch e.Trigger {
 	case TriggerAlertStart, TriggerAlertEnd, TriggerAlertEscalated:
 	case TriggerScheduled:
-		if _, err := ParseHM(e.Time); err != nil {
+		start, err := ParseHM(e.Time)
+		if err != nil {
 			return fmt.Errorf("event %q: %w", e.ID, err)
 		}
 		if len(e.Weekdays) == 0 {
@@ -842,6 +874,33 @@ func (e Event) validate() error {
 		for _, d := range e.Weekdays {
 			if d < 1 || d > 7 {
 				return fmt.Errorf("event %q: weekday %d is outside 1..7", e.ID, d)
+			}
+		}
+		// A negative interval is the one value the occurrence arithmetic
+		// cannot be asked: it would count backwards out of the window on
+		// every step. Only a hand-edited file can hold one, and Load
+		// repairs it to a single firing before Validate ever sees it —
+		// see repairRepeatWindows for why that is a repair and not a
+		// refusal.
+		if e.EveryMinutes < 0 {
+			return fmt.Errorf("event %q: every_minutes %d is negative", e.ID, e.EveryMinutes)
+		}
+		// No upper bound, deliberately. An interval longer than its own
+		// window is not a mistake this build can prove — it fires once, at
+		// Time, which is what an event without an interval does anyway —
+		// and a number that cannot silence anything is not worth refusing
+		// to start the daemon over. The form on /events caps what an
+		// operator can type, which is where a typo can still be answered.
+		if e.EveryMinutes > 0 {
+			until, err := ParseHM(e.Until)
+			if err != nil {
+				return fmt.Errorf("event %q: until: %w", e.ID, err)
+			}
+			if until < start {
+				return fmt.Errorf(
+					"event %q: until %s is before time %s, and a repeat window does not wrap past midnight",
+					e.ID, e.Until, e.Time,
+				)
 			}
 		}
 	default:

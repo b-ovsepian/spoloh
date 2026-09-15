@@ -402,3 +402,159 @@ func TestLoadPreservesAPollIntervalAboveTheMinimum(t *testing.T) {
 		t.Fatalf("poll interval = %v, want the saved 45s to survive Load unchanged", got)
 	}
 }
+
+// storeConfigWithRepeatWindow writes a config.json whose one scheduled event
+// carries exactly the given repeat window. It edits the JSON rather than
+// going through config.Save because Save validates, and every case below is
+// a stored window Validate refuses — which is the only shape a hand-edited
+// file, or a config restored from a build that allowed more than this one
+// does, can have.
+func storeConfigWithRepeatWindow(t *testing.T, path string, every any, until string) {
+	t.Helper()
+	if err := config.Save(path, config.Default()); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	var generic map[string]any
+	if err := json.Unmarshal(raw, &generic); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	events, ok := generic["events"].([]any)
+	if !ok {
+		t.Fatalf("events is not a list: %v", generic["events"])
+	}
+	edited := false
+	for _, e := range events {
+		ev, ok := e.(map[string]any)
+		if !ok {
+			t.Fatalf("event is not an object: %T", e)
+		}
+		if ev["trigger"] != "scheduled" {
+			continue
+		}
+		ev["every_minutes"] = every
+		ev["until"] = until
+		edited = true
+	}
+	if !edited {
+		t.Fatal("no scheduled event in the default config to give a window to")
+	}
+	out, err := json.Marshal(generic)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if err := os.WriteFile(path, out, 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+}
+
+// loadWithRepairLog loads path with slog captured, so a test can assert both
+// on what was repaired and on the device having said so.
+func loadWithRepairLog(t *testing.T, path string) (*config.Config, string) {
+	t.Helper()
+	var logs bytes.Buffer
+	restore := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+	defer slog.SetDefault(restore)
+
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load refused a repairable config instead of repairing it: %v", err)
+	}
+	return cfg, logs.String()
+}
+
+// scheduledOf returns the config's one scheduled event.
+func scheduledOf(t *testing.T, c *config.Config) config.Event {
+	t.Helper()
+	for _, ev := range c.Events {
+		if ev.Trigger == config.TriggerScheduled {
+			return ev
+		}
+	}
+	t.Fatal("the loaded config has no scheduled event")
+	return config.Event{}
+}
+
+// A window that ends before it starts describes a series with no occurrences
+// in it. Validate refuses it, so loading it unrepaired would stop the daemon
+// starting — and that costs the operator not this event but every event on
+// the device, alert_start included. Load drops the window and leaves the
+// single firing at Time, which is the part of the event nobody can doubt was
+// wanted.
+func TestLoadDropsARepeatWindowThatEndsBeforeItStarts(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	storeConfigWithRepeatWindow(t, path, 10, "02:00") // Default()'s scheduled event is at 09:00
+
+	loaded, logs := loadWithRepairLog(t, path)
+
+	ev := scheduledOf(t, loaded)
+	if ev.EveryMinutes != 0 || ev.Until != "" {
+		t.Fatalf("window = every %d min until %q, want it dropped", ev.EveryMinutes, ev.Until)
+	}
+	if ev.Time != "09:00" || !ev.Enabled {
+		t.Errorf("the repair took the event itself away: %+v", ev)
+	}
+	if !strings.Contains(logs, "level=ERROR") {
+		t.Errorf("the repair was not logged at Error; log = %q", logs)
+	}
+	if !strings.Contains(logs, "02:00") {
+		t.Errorf("the log line does not name the window that was dropped; log = %q", logs)
+	}
+}
+
+// An interval with no end time is what a config written by a build that
+// stored one field and not the other would leave behind. It is the same
+// unusable series and gets the same answer.
+func TestLoadDropsAnIntervalWithNoEndTime(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	storeConfigWithRepeatWindow(t, path, 10, "")
+
+	loaded, _ := loadWithRepairLog(t, path)
+
+	if ev := scheduledOf(t, loaded); ev.EveryMinutes != 0 {
+		t.Fatalf("every_minutes = %d, want the unusable interval dropped", ev.EveryMinutes)
+	}
+}
+
+// Validate refuses a negative interval outright, so only the repair stands
+// between a hand-edited minus sign and a device that will not boot.
+func TestLoadDropsANegativeInterval(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	storeConfigWithRepeatWindow(t, path, -10, "10:00")
+
+	loaded, _ := loadWithRepairLog(t, path)
+
+	if ev := scheduledOf(t, loaded); ev.EveryMinutes != 0 || ev.Until != "" {
+		t.Fatalf("window = every %d min until %q, want it dropped", ev.EveryMinutes, ev.Until)
+	}
+}
+
+// The repair only ever clears a window it cannot use. One an operator
+// actually configured must come back exactly as saved — including an
+// interval longer than its own window, which is legal and fires once.
+func TestLoadPreservesAUsableRepeatWindow(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	cfg := config.Default()
+	for i := range cfg.Events {
+		if cfg.Events[i].Trigger == config.TriggerScheduled {
+			cfg.Events[i].EveryMinutes, cfg.Events[i].Until = 90, "10:00"
+		}
+	}
+	if err := config.Save(path, cfg); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	loaded, logs := loadWithRepairLog(t, path)
+
+	ev := scheduledOf(t, loaded)
+	if ev.EveryMinutes != 90 || ev.Until != "10:00" {
+		t.Fatalf("window = every %d min until %q, want the saved 90 and 10:00 untouched", ev.EveryMinutes, ev.Until)
+	}
+	if strings.Contains(logs, "repeat window") {
+		t.Errorf("Load reported repairing a window it should not have touched; log = %q", logs)
+	}
+}

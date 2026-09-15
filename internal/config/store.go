@@ -42,6 +42,7 @@ func Load(path string) (*Config, error) {
 func repairStored(c *Config) {
 	restoreMissingAlertEvents(c)
 	restoreMissingRepeat(c)
+	repairRepeatWindows(c)
 	raisePollIntervalToMinimum(c)
 	repairWebhookPhases(c)
 	lowerWebhookDelaysToMaximum(c)
@@ -97,6 +98,58 @@ func restoreMissingRepeat(c *Config) {
 		if c.Events[i].Repeat == 0 {
 			c.Events[i].Repeat = 1
 		}
+	}
+}
+
+// repairRepeatWindows drops a stored repeat window this build cannot use back
+// to the single firing at Time, and logs at Error that it did. It is the same
+// repair its neighbours make, run at the same point in Load and for the same
+// reason.
+//
+// Three shapes are unusable, and a hand-edited file or a future build's
+// config restored onto this one can hold any of them: a negative interval
+// (Validate refuses it outright), an interval with no end time or an
+// unparseable one, and an end time before the start time. Each of them
+// describes a series with no occurrences in it, so leaving them alone would
+// mean an event that never fires; refusing them would mean a daemon that
+// never starts, which costs the operator every other event on the device as
+// well.
+//
+// What it degrades to is the one behaviour the event is certain to have been
+// configured for: it still sounds, at the time written next to it on the
+// screen, on the days chosen for it. The repetition is what was asked for
+// last and the part this build cannot carry out, so the repetition is what is
+// given up.
+//
+// Only ever clears an unusable window. A window whose end time is at or after
+// its start is left exactly as loaded, including one whose interval is longer
+// than the window itself — that fires once, at Time, which is a legal thing
+// to ask for and not a value to repair.
+func repairRepeatWindows(c *Config) {
+	for i := range c.Events {
+		ev := &c.Events[i]
+		if ev.Trigger != TriggerScheduled || ev.EveryMinutes == 0 {
+			continue
+		}
+		start, err := ParseHM(ev.Time)
+		if err != nil {
+			// Nothing here can be judged without a start time, and an
+			// unparseable one is Validate's to refuse — it always has
+			// been, and a scheduled event whose own time is not a time is
+			// not a config any repair can rescue into announcing anything.
+			continue
+		}
+		if ev.EveryMinutes > 0 {
+			if until, err := ParseHM(ev.Until); err == nil && until >= start {
+				continue
+			}
+		}
+		slog.Default().Error(
+			"an event's repeat window is unusable; it will sound once at its start time instead",
+			"id", ev.ID, "time", ev.Time, "every_minutes", ev.EveryMinutes, "until", ev.Until,
+		)
+		ev.EveryMinutes = 0
+		ev.Until = ""
 	}
 }
 
