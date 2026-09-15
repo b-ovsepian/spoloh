@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	neturl "net/url"
 	"strings"
 	"sync"
 	"time"
@@ -37,9 +36,19 @@ const UkraineAlarmBaseURL = "https://api.ukrainealarm.com/api/v3/"
 // Asking for the oblast rather than for the hromada is deliberate and is the
 // safety half of the choice. An alert is declared at whatever level the
 // authorities announce it — usually the raion — and an answer for one hromada
-// cannot carry its raion's alert. The oblast's answer carries everything
-// declared inside it, each alert naming its own region, and the table's own
-// containment (propagateDownward) takes it the rest of the way down.
+// cannot carry its raion's alert.
+//
+// So this asks for the country, not for a region. The spec's own summaries
+// settle it: /alerts is «Області, регіони та громади з тривогами» — every
+// level that currently has one — while /alerts/{regionId} is «Статус
+// області/регіону/громади», that region's own status and nothing about what
+// is declared inside it. Asking an oblast and hoping its answer nests its
+// raions is an assumption the spec does not make, and the cost of being
+// wrong is a hromada watcher silent through a raion alert.
+//
+// The country is also what alerts.in.ua's client already reads, for the same
+// reason, and propagateDownward then takes containment the rest of the way
+// down using this build's own table rather than the provider's nesting.
 const UkraineAlarmAlertsPath = "alerts"
 
 // UkraineAlarmStatusPath is the change index — a single integer that moves
@@ -292,13 +301,15 @@ func (c *UkraineAlarm) status(ctx context.Context) (int64, error) {
 	return *got.LastActionIndex, nil
 }
 
-// state reads the watched oblast's alert state.
+// state reads every alert in the country.
+//
+// Not the watched region's own endpoint: see UkraineAlarmAlertsPath. What
+// comes back is every oblast, raion and hromada that currently has an alert,
+// each naming its own region, which is what lets a raion's declaration reach
+// the hromadas inside it through this build's table rather than through a
+// nesting the provider never promised.
 func (c *UkraineAlarm) state(ctx context.Context) ([]byte, error) {
-	// The region id comes from a generated table, never from an operator, so
-	// it needs no escaping to be safe — but it is escaped anyway, because the
-	// day somebody wires a hand-entered id into this constructor is not the
-	// day to discover that it was building the path by concatenation.
-	return c.get(ctx, UkraineAlarmAlertsPath+"/"+neturl.PathEscape(c.regionID))
+	return c.get(ctx, UkraineAlarmAlertsPath)
 }
 
 // ukraineAlarmLevelWithReason is one entry of activeAlertLevels.

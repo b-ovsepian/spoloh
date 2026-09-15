@@ -121,11 +121,16 @@ func TestUkraineAlarmFetchSendsTheKeyWithNoPrefix(t *testing.T) {
 	if got := req.Header.Get("Authorization"); got != testKey {
 		t.Errorf("Authorization = %q, want the bare key %q", got, testKey)
 	}
-	// The region asked for is the oblast containing the chosen hromada, not
-	// the hromada: an answer for one hromada cannot carry the alert its raion
-	// is under, and that is the alert this device would otherwise miss.
-	if want := "/" + alertsource.UkraineAlarmAlertsPath + "/" + sumyOblastRegionID; req.URL.Path != want {
+	// The country, not a region. /alerts/{regionId} is that region's own
+	// status by the spec's own summary — it promises nothing about what is
+	// declared inside it — so asking an oblast and hoping its raions come
+	// with it is an assumption this device cannot afford. See
+	// UkraineAlarmAlertsPath.
+	if want := "/" + alertsource.UkraineAlarmAlertsPath; req.URL.Path != want {
 		t.Errorf("fetched %q, want %q", req.URL.Path, want)
+	}
+	if strings.Contains(req.URL.Path, sumyOblastRegionID) {
+		t.Errorf("the path names a region (%q); a per-region answer cannot carry the raion alert above it", req.URL.Path)
 	}
 }
 
@@ -553,5 +558,53 @@ func TestUkraineAlarmClassifiesItsFailures(t *testing.T) {
 		if attempts[0].Key != alertsource.UkraineAlarmKey {
 			t.Errorf("the attempt names %q, want the cascade key %q", attempts[0].Key, alertsource.UkraineAlarmKey)
 		}
+	}
+}
+
+// The whole reason this device reads the country rather than a region: an
+// alert is declared at whatever level the authorities announce it, and on the
+// operator's own board that was «Шосткинський район» — red, air raid, with
+// nothing on the oblast above it and nothing on the hromada below. A device
+// watching the hromada has to hear it.
+func TestUkraineAlarmARaionAlertRaisesTheHromadaInsideIt(t *testing.T) {
+	alertsource.SetUkraineAlarmRegions(t, testRegions())
+
+	body := `[{
+		"regionId": "` + shostkaRaionRegion + `",
+		"regionType": "District",
+		"regionName": "Шосткинський район",
+		"lastUpdate": "2026-09-15T08:00:00Z",
+		"activeAlerts": [{
+			"regionId": "` + shostkaRaionRegion + `",
+			"regionType": "District",
+			"type": "AIR",
+			"lastUpdate": "2026-09-15T08:00:00Z",
+			"activeAlertLevels": [{"alertLevel": "Red", "reason": "", "createdAt": "2026-09-15T08:00:00Z"}]
+		}]
+	}]`
+
+	srv, _ := serveUkraineAlarm(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if strings.HasSuffix(r.URL.Path, "/status") {
+			w.Write([]byte(`{"lastActionIndex": 1}`))
+			return
+		}
+		w.Write([]byte(body))
+	})
+	c := alertsource.NewUkraineAlarm(srv.URL, testKey, shostkaUID, "Сумська область", srv.Client())
+
+	snap, err := c.Fetch(context.Background())
+	if err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+	st, ok := snap.Location(shostkaUID)
+	if !ok {
+		t.Fatal("the watched hromada is not in the snapshot at all")
+	}
+	if !st.Alert {
+		t.Error("the raion containing Шостка is under a red alert and the hromada reports calm")
+	}
+	if st.Level != alertsource.LevelRed {
+		t.Errorf("hromada level = %v, want the raion's red", st.Level)
 	}
 }
