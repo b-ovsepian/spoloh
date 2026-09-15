@@ -45,7 +45,17 @@ func occurrences(ev config.Event) (first, last, step int, ok bool) {
 	}
 	last, step = first, 1
 	if ev.EveryMinutes > 0 {
-		if until, err := config.ParseHM(ev.Until); err == nil && until >= first {
+		// An interval at least as long as its own window has one occurrence
+		// in it, at Time, so it is collapsed here rather than left for the
+		// loops below to discover. They would discover it: walking past the
+		// end of the window is what ends them. But `m += step` on an
+		// interval near the integer limit wraps around to a negative minute
+		// instead, and the loop then only ends because the wrapped value
+		// climbs back out — termination resting on the shape of two's
+		// complement, for a config nobody can produce from a form. Config
+		// and comment both promise a single firing here; this is what makes
+		// that promise true by construction.
+		if until, err := config.ParseHM(ev.Until); err == nil && until >= first && ev.EveryMinutes <= until-first {
 			last, step = until, ev.EveryMinutes
 		}
 	}
