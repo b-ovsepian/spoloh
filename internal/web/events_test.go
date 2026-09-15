@@ -830,3 +830,271 @@ func TestEventsPageOffersAnEscalationSoundWhenNoneIsConfigured(t *testing.T) {
 		t.Error("the page still offers to add an escalation event when one is already stored")
 	}
 }
+
+// scheduledRowForm is the whole of a scheduled row's editor, as the browser
+// submits it. Every repeat-window test below starts from this and changes
+// one thing, so that what is being tested is the window and not a field
+// somebody forgot to send.
+func scheduledRowForm() url.Values {
+	return url.Values{
+		"id": {"silence"}, "name": {"Хвилина мовчання"}, "time": {"09:00"},
+		"weekdays": {"1", "2", "3", "4", "5", "6", "7"},
+		"sound":    {"metronome.wav"}, "volume": {"85"}, "repeat": {"1"}, "enabled": {"on"},
+	}
+}
+
+// The operator's own shape, typed into the row: one sound, every ten
+// minutes, from 09:00 to 10:00.
+func TestEventsSaveWritesTheRepeatWindow(t *testing.T) {
+	srv, store := newServerWithLibrary(t, "siren.wav", "all-clear.wav", "metronome.wav")
+	setPassword(t, srv, "correct horse battery staple")
+	cookie := login(t, srv, "correct horse battery staple")
+
+	form := scheduledRowForm()
+	form.Set("every_minutes", "10")
+	form.Set("until", "10:00")
+	rec := eventsPostForm(t, srv, cookie, "/events/save", form)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+
+	ev := eventWithTrigger(t, store, config.TriggerScheduled)
+	if ev.EveryMinutes != 10 || ev.Until != "10:00" {
+		t.Fatalf("stored window = every %d min until %q, want 10 and 10:00", ev.EveryMinutes, ev.Until)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, `name="every_minutes"`) || !strings.Contains(body, `value="10"`) {
+		t.Error("the re-rendered row does not show the interval that was just saved")
+	}
+	if !strings.Contains(body, `name="until" value="10:00"`) {
+		t.Error("the re-rendered row does not show the end time that was just saved")
+	}
+}
+
+// Most events are single-shot and always will be. A row whose form carries
+// neither control — which is every alert row, and any page rendered by a
+// build before these fields existed — must save exactly as it always did.
+func TestEventsSaveWorksWithNoRepeatWindowFieldsAtAll(t *testing.T) {
+	srv, store := newServerWithLibrary(t, "siren.wav", "all-clear.wav", "metronome.wav")
+	setPassword(t, srv, "correct horse battery staple")
+	cookie := login(t, srv, "correct horse battery staple")
+
+	form := scheduledRowForm()
+	form.Set("volume", "60")
+	rec := eventsPostForm(t, srv, cookie, "/events/save", form)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+
+	ev := eventWithTrigger(t, store, config.TriggerScheduled)
+	if ev.Volume != 60 {
+		t.Errorf("volume = %d, want the 60 that was submitted", ev.Volume)
+	}
+	if ev.EveryMinutes != 0 || ev.Until != "" {
+		t.Fatalf("a form with no window fields invented one: every %d min until %q", ev.EveryMinutes, ev.Until)
+	}
+}
+
+// Clearing the interval is how an operator stops an event repeating, and it
+// must be accepted rather than answered with "fill this in": the two boxes
+// are an offer, not a new obligation on every row.
+func TestEventsSaveClearsTheRepeatWindow(t *testing.T) {
+	srv, store := newServerWithLibrary(t, "siren.wav", "all-clear.wav", "metronome.wav")
+	setPassword(t, srv, "correct horse battery staple")
+	cookie := login(t, srv, "correct horse battery staple")
+
+	if err := store.Update(func(c *config.Config) error {
+		for i := range c.Events {
+			if c.Events[i].Trigger == config.TriggerScheduled {
+				c.Events[i].EveryMinutes, c.Events[i].Until = 10, "10:00"
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("seeding a window: %v", err)
+	}
+
+	form := scheduledRowForm()
+	form.Set("every_minutes", "")
+	form.Set("until", "")
+	rec := eventsPostForm(t, srv, cookie, "/events/save", form)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+
+	if ev := eventWithTrigger(t, store, config.TriggerScheduled); ev.EveryMinutes != 0 || ev.Until != "" {
+		t.Fatalf("window = every %d min until %q, want it cleared", ev.EveryMinutes, ev.Until)
+	}
+}
+
+// A zero typed in by hand means the same thing as an empty box. An operator
+// answering "how often" with "not at all" is describing the event they
+// already have, and a rejection there would teach them that the field is
+// dangerous rather than optional.
+func TestEventsSaveAcceptsAZeroIntervalAsNoRepetition(t *testing.T) {
+	srv, store := newServerWithLibrary(t, "siren.wav", "all-clear.wav", "metronome.wav")
+	setPassword(t, srv, "correct horse battery staple")
+	cookie := login(t, srv, "correct horse battery staple")
+
+	form := scheduledRowForm()
+	form.Set("every_minutes", "0")
+	rec := eventsPostForm(t, srv, cookie, "/events/save", form)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+	if ev := eventWithTrigger(t, store, config.TriggerScheduled); ev.EveryMinutes != 0 {
+		t.Fatalf("every_minutes = %d, want 0", ev.EveryMinutes)
+	}
+}
+
+// The window does not wrap past midnight (see config.Event.Until). Typed
+// into the form it is refused, with the reason said rather than implied —
+// a stored one is repaired instead, and the operator never sees that.
+func TestEventsSaveRejectsAnEndTimeBeforeTheStartTime(t *testing.T) {
+	srv, store := newServerWithLibrary(t, "siren.wav", "all-clear.wav", "metronome.wav")
+	setPassword(t, srv, "correct horse battery staple")
+	cookie := login(t, srv, "correct horse battery staple")
+
+	before := store.Get().Events
+	form := scheduledRowForm()
+	form.Set("time", "22:00")
+	form.Set("every_minutes", "10")
+	form.Set("until", "02:00")
+	rec := eventsPostForm(t, srv, cookie, "/events/save", form)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", rec.Code)
+	}
+	// The words of the rejection itself, not of the hint that stands under
+	// the field on every render: config.Validate would refuse this window
+	// anyway, and the whole value of the check in the form is that it names
+	// what is wrong instead of "перевірте введені дані".
+	if !strings.Contains(rec.Body.String(), "не раніший за час початку") {
+		t.Error("the rejection does not say why the window is impossible")
+	}
+	if got := store.Get().Events; !eventsEqual(got, before) {
+		t.Errorf("events changed despite the rejection: %+v -> %+v", before, got)
+	}
+}
+
+// Half a window is not a window, in either direction, and neither half is
+// quietly dropped: an operator who typed one of them meant something by it.
+func TestEventsSaveRejectsHalfARepeatWindow(t *testing.T) {
+	cases := []struct {
+		name     string
+		interval string
+		until    string
+	}{
+		{"an interval with no end time", "10", ""},
+		{"an end time with no interval", "", "10:00"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			srv, store := newServerWithLibrary(t, "siren.wav", "all-clear.wav", "metronome.wav")
+			setPassword(t, srv, "correct horse battery staple")
+			cookie := login(t, srv, "correct horse battery staple")
+
+			before := store.Get().Events
+			form := scheduledRowForm()
+			form.Set("every_minutes", tc.interval)
+			form.Set("until", tc.until)
+			rec := eventsPostForm(t, srv, cookie, "/events/save", form)
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want 400", rec.Code)
+			}
+			if got := store.Get().Events; !eventsEqual(got, before) {
+				t.Errorf("events changed despite the rejection: %+v -> %+v", before, got)
+			}
+		})
+	}
+}
+
+// config.Validate deliberately has no upper bound on the interval — a number
+// larger than its own window fires once and cannot silence anything, and a
+// device must not refuse to start over one. The form is where the typo still
+// gets answered, so this is the only place that bound exists.
+func TestEventsSaveRejectsAnIntervalLongerThanADay(t *testing.T) {
+	srv, store := newServerWithLibrary(t, "siren.wav", "all-clear.wav", "metronome.wav")
+	setPassword(t, srv, "correct horse battery staple")
+	cookie := login(t, srv, "correct horse battery staple")
+
+	before := store.Get().Events
+	form := scheduledRowForm()
+	form.Set("every_minutes", "1441")
+	form.Set("until", "10:00")
+	rec := eventsPostForm(t, srv, cookie, "/events/save", form)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", rec.Code)
+	}
+	if got := store.Get().Events; !eventsEqual(got, before) {
+		t.Errorf("events changed despite the rejection: %+v -> %+v", before, got)
+	}
+}
+
+// Each scheduled row's window inputs must carry that row's own stored
+// values, wired to that row by id — the mistake the repeat field's own test
+// guards against, made once more would show every event the first one's
+// schedule.
+func TestEventsPageShowsAScheduledRowsRepeatWindow(t *testing.T) {
+	srv, store := newServerWithLibrary(t, "siren.wav", "all-clear.wav", "metronome.wav")
+	setPassword(t, srv, "correct horse battery staple")
+	cookie := login(t, srv, "correct horse battery staple")
+
+	if err := store.Update(func(c *config.Config) error {
+		for i := range c.Events {
+			if c.Events[i].Trigger == config.TriggerScheduled {
+				c.Events[i].EveryMinutes, c.Events[i].Until = 10, "10:00"
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("seeding a window: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/events", nil)
+	req.AddCookie(cookie)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+
+	body := rec.Body.String()
+	for _, want := range []string{
+		`id="every-silence" name="every_minutes"`,
+		`id="until-silence" name="until" value="10:00"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("the page does not render %s", want)
+		}
+	}
+	// An alert row has no schedule and must grow neither control.
+	if strings.Contains(body, `id="every-alert-start"`) || strings.Contains(body, `id="until-alert-start"`) {
+		t.Error("an alert row grew a repeat window it can never use")
+	}
+}
+
+// The two repetitions on this screen are different axes and compose — a
+// sound played twice over, every ten minutes — so they must not read as the
+// same control. In Ukrainian both want the word «повтор», which is exactly
+// how they would come to.
+func TestEventsPageNamesTheTwoRepetitionsDifferently(t *testing.T) {
+	srv, _ := newServerWithLibrary(t, "siren.wav", "all-clear.wav", "metronome.wav")
+	setPassword(t, srv, "correct horse battery staple")
+	cookie := login(t, srv, "correct horse battery staple")
+
+	req := httptest.NewRequest(http.MethodGet, "/events", nil)
+	req.AddCookie(cookie)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+
+	body := rec.Body.String()
+	if !strings.Contains(body, "Програвань поспіль") {
+		t.Error("the sound-repeat field is not named for what it does")
+	}
+	if !strings.Contains(body, "Повторювати кожні") {
+		t.Error("the interval field is not named for what it does")
+	}
+	if strings.Contains(body, ">Повторів<") {
+		t.Error("the old ambiguous label is still on the page")
+	}
+}

@@ -89,10 +89,10 @@ func eventProtected(trigger string) bool {
 }
 
 // eventRowView is what one row of events.html reads. Scheduled gates the
-// name/time/weekday inputs, which only a clock-driven event has; Removable
-// gates the delete button on its own, because the two stopped being the same
-// question when the escalation joined the list — it has no schedule and can
-// still be taken away.
+// name/time/weekday inputs and the repeat window, which only a clock-driven
+// event has; Removable gates the delete button on its own, because the two
+// stopped being the same question when the escalation joined the list — it
+// has no schedule and can still be taken away.
 type eventRowView struct {
 	ID           string
 	Trigger      string
@@ -100,6 +100,11 @@ type eventRowView struct {
 	Name         string
 	Time         string
 	Weekdays     []int
+	// EveryMinutes and Until are the repeat window. Zero and empty is what
+	// almost every row shows and what the form must keep being able to save
+	// without anybody filling anything in — see parseRepeatWindow.
+	EveryMinutes int
+	Until        string
 	Sound        string
 	Volume       int
 	Repeat       int
@@ -301,6 +306,85 @@ func parseRepeat(s string) (int, string) {
 	return v, ""
 }
 
+// maxEveryMinutes is the longest interval the form accepts, and it is a day.
+// config.Validate deliberately has no upper bound at all — an interval
+// longer than its own window fires once, which cannot silence anything and
+// is not worth refusing to start a device over — so this bound exists only
+// where a person can still be told about their typo. A day is the point past
+// which no interval can produce a second occurrence: the window it would
+// have to span cannot cross midnight.
+const maxEveryMinutes = 24 * 60
+
+// The four ways a repeat window is refused. They say different things
+// because they are different mistakes, the way parseVolume's three already
+// are: a number that is not a number, a number outside the range, and the
+// two halves of the window given without each other.
+const (
+	everyMinutesInvalidMessage      = "Вкажіть інтервал повторення числом від 1 до 1440 хвилин або залиште поле порожнім."
+	everyMinutesOutOfRangeMessage   = "Інтервал повторення має бути від 1 до 1440 хвилин."
+	untilWithoutEveryMinutesMessage = "Час завершення діє лише разом з інтервалом. Вкажіть інтервал повторення " +
+		"або очистіть час завершення."
+	everyMinutesWithoutUntilMessage = "Вкажіть час завершення — до якої години повторювати."
+	untilBeforeTimeMessage          = "Час завершення має бути не раніший за час початку: повторення не переходить через північ."
+)
+
+// parseRepeatWindow reads the two controls a scheduled row grows — an
+// interval in minutes and an end time — and returns the pair to store, or
+// the message refusing it. An empty return message means the window is
+// valid, and a zero interval with an empty end time is the valid window
+// almost every row has: the event fires once, at start.
+//
+// Blank and 0 both mean "no repetition", and both are accepted. An operator
+// clearing the field is asking for the event they already had, and answering
+// that with a rejection would make the two new boxes something everybody has
+// to fill in to keep what they never changed.
+//
+// The two halves are refused when given without each other, rather than one
+// being quietly dropped. An end time with no interval describes nothing this
+// build can do, and storing the end time anyway would leave a value in
+// config.json that no screen explains; storing neither would silently
+// discard something the operator typed on purpose.
+//
+// start is the row's own «Час» field. When it is not a time — which only a
+// hand-made POST can manage, the control being <input type="time"> — the
+// window is passed through for config.Validate to refuse along with the
+// start time itself, so that one mistake produces one message.
+func parseRepeatWindow(interval, until, start string) (int, string, string) {
+	until = strings.TrimSpace(until)
+
+	every := 0
+	if s := strings.TrimSpace(interval); s != "" {
+		n, err := strconv.Atoi(s)
+		if err != nil {
+			return 0, "", everyMinutesInvalidMessage
+		}
+		if n != 0 && (n < 1 || n > maxEveryMinutes) {
+			return 0, "", everyMinutesOutOfRangeMessage
+		}
+		every = n
+	}
+
+	if every == 0 {
+		if until != "" {
+			return 0, "", untilWithoutEveryMinutesMessage
+		}
+		return 0, "", ""
+	}
+
+	untilMinutes, err := config.ParseHM(until)
+	if err != nil {
+		return 0, "", everyMinutesWithoutUntilMessage
+	}
+	startMinutes, err := config.ParseHM(start)
+	if err != nil {
+		return every, until, ""
+	}
+	if untilMinutes < startMinutes {
+		return 0, "", untilBeforeTimeMessage
+	}
+	return every, until, ""
+}
+
 // parseWeekdays reads the (possibly empty, possibly repeated) "weekdays"
 // form values into ISO weekday numbers. A value that fails to parse is
 // dropped rather than rejected outright: config.Validate already refuses an
@@ -338,6 +422,8 @@ func (s *Server) eventsBaseView(cfg *config.Config) eventsView {
 			Name:         ev.Name,
 			Time:         ev.Time,
 			Weekdays:     ev.Weekdays,
+			EveryMinutes: ev.EveryMinutes,
+			Until:        ev.Until,
 			Sound:        ev.Sound,
 			Volume:       ev.Volume,
 			Repeat:       ev.Repeat,
@@ -386,7 +472,8 @@ func (s *Server) handleEventsPage(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleEventsSave edits an existing event's sound, volume and enabled state
-// — and, for a TriggerScheduled row, its name, time and weekdays too.
+// — and, for a TriggerScheduled row, its name, time, weekdays and repeat
+// window too.
 // alert-start and alert-end have no time or weekdays to edit, so those
 // fields are only read and applied for the trigger that has them; this is
 // also what makes disabling alert-start (the home-screen warning's subject)
@@ -419,6 +506,18 @@ func (s *Server) handleEventsSave(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
+	// Read for every row, applied only to a scheduled one, exactly like the
+	// name/time/weekday fields above: an alert row's form has neither
+	// control, so both arrive empty and this is the no-window case.
+	everyMinutes, until, windowErr := parseRepeatWindow(
+		r.FormValue("every_minutes"), r.FormValue("until"), timeStr,
+	)
+	if windowErr != "" {
+		s.renderEventsPage(w, http.StatusBadRequest, func(v *eventsView) {
+			v.Error = windowErr
+		})
+		return
+	}
 	if s.soundMissing(sound) {
 		s.renderEventsPage(w, http.StatusBadRequest, func(v *eventsView) {
 			v.Error = fmt.Sprintf("Звук «%s» відсутній у бібліотеці.", sound)
@@ -440,6 +539,8 @@ func (s *Server) handleEventsSave(w http.ResponseWriter, r *http.Request) {
 			ev.Name = name
 			ev.Time = timeStr
 			ev.Weekdays = weekdays
+			ev.EveryMinutes = everyMinutes
+			ev.Until = until
 		}
 		return nil
 	})
@@ -534,6 +635,13 @@ func (s *Server) handleEventsAdd(w http.ResponseWriter, r *http.Request) {
 			Weekdays: weekdays,
 			Sound:    sound,
 			Volume:   volume,
+			// EveryMinutes and Until are left at "no window", for the same
+			// reason Repeat below is left at the shipped default: a form
+			// that asked for them here would make an operator answer two
+			// more questions to add the single-shot announcement that is
+			// almost every announcement. The row this produces is where a
+			// window is given to the few events that want one.
+			//
 			// A freshly added event starts at the same repeat count every
 			// device ships with, editable afterward from the row this
 			// produces — the same treatment Enabled below already gets;

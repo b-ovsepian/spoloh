@@ -27,7 +27,7 @@
     <header class="flex items-center justify-between gap-2">
       <div>
         <h2 class="font-semibold">{{if .Name}}{{.Name}}{{else}}{{.TriggerLabel}}{{end}}</h2>
-        <p class="text-sm text-muted-foreground">{{.TriggerLabel}}{{if .Scheduled}} · {{.Time}}{{end}}</p>
+        <p class="text-sm text-muted-foreground">{{.TriggerLabel}}{{if .Scheduled}} · {{.Time}}{{if .EveryMinutes}}–{{.Until}}, кожні {{.EveryMinutes}} хв{{end}}{{end}}</p>
       </div>
       {{if .Removable}}
       <form method="post" action="/events/delete">
@@ -75,6 +75,36 @@
           {{end}}
         </div>
       </fieldset>
+
+      {{/*
+      The repeat window, and the reason it is worded nowhere near «Повторів
+      звуку поспіль» below: in Ukrainian both want the word «повтор», and
+      they are different axes that compose. That field is how many times the
+      sound plays for one occurrence; these two are how far apart the
+      occurrences are and when they stop. An event may carry both — a siren
+      sounded twice over, every ten minutes, from one time to another.
+
+      Neither input is required, and an empty pair is the state almost every
+      row is in. Nothing here depends on scripts: the server accepts a blank
+      or a 0 as "no repetition" whatever the browser did or did not enforce
+      about min and max.
+      */}}
+      <div class="field">
+        <label for="every-{{$id}}">Повторювати кожні, хв</label>
+        <input class="input" type="number" min="0" max="1440" id="every-{{$id}}" name="every_minutes"
+               value="{{if .EveryMinutes}}{{.EveryMinutes}}{{end}}" aria-describedby="every-help-{{$id}}">
+        <p id="every-help-{{$id}}" class="text-sm text-muted-foreground">
+          Порожньо — подія лунає один раз, о {{.Time}}. Інакше — від «Час» до «Повторювати до» включно.
+        </p>
+      </div>
+      <div class="field">
+        <label for="until-{{$id}}">Повторювати до</label>
+        <input class="input" type="time" id="until-{{$id}}" name="until" value="{{.Until}}"
+               aria-describedby="until-help-{{$id}}">
+        <p id="until-help-{{$id}}" class="text-sm text-muted-foreground">
+          Має бути не раніше за «Час» — повторення не переходить через північ.
+        </p>
+      </div>
       {{end}}
 
       {{if $.Sounds}}
@@ -94,9 +124,20 @@
         <input class="input" type="number" min="1" max="100" id="volume-{{$id}}" name="volume" value="{{.Volume}}" required>
       </div>
 
+      {{/*
+      Named «поспіль» and not simply «Повторів», which is what it said while
+      it was the only repetition on the screen. A scheduled row now carries
+      two of them, and one word would have had to mean both: how many times
+      the sound plays back to back, and how often the whole announcement
+      comes round again.
+      */}}
       <div class="field">
-        <label for="repeat-{{$id}}">Повторів</label>
-        <input class="input" type="number" min="1" max="10" id="repeat-{{$id}}" name="repeat" value="{{.Repeat}}" required>
+        <label for="repeat-{{$id}}">Програвань поспіль</label>
+        <input class="input" type="number" min="1" max="10" id="repeat-{{$id}}" name="repeat" value="{{.Repeat}}"
+               required aria-describedby="repeat-help-{{$id}}">
+        <p id="repeat-help-{{$id}}" class="text-sm text-muted-foreground">
+          Скільки разів звук лунає поспіль за одне спрацювання.
+        </p>
       </div>
 
       <label class="flex items-center gap-2 text-sm">
