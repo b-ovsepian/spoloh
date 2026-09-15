@@ -126,7 +126,26 @@ func MatchUkraineAlarmRegions(states []UkraineAlarmRegionView) ([]UkraineAlarmMa
 }
 
 // matchOne finds the one location in scope whose name is this region's, or
-// nil when there is none. Two candidates is a refusal, not a choice.
+// nil when there is none. Two candidates that are telling apart is a refusal,
+// not a choice.
+//
+// The exception is candidates that cannot be told apart at all: identical
+// name, identical kind, the same parent. The published sheet has exactly one
+// such pair in 1,622 rows — «Миколаївська територіальна громада» under
+// Сумський район, listed twice as UID 1180 and UID 1181 — and there is one
+// such hromada in that raion. Two rows, one place.
+//
+// They all map to the region, and that is not a guess: nothing distinguishes
+// them, including this build's own label generator, which fell back to
+// printing the UID because name and raion were not enough. Whichever of the
+// two an operator picked from the list, the device watches the right place.
+// Refusing instead would leave a real hromada unservable by this provider
+// over a duplicate row in somebody else's spreadsheet.
+//
+// The refusal keeps its teeth where they matter. Candidates that differ in
+// name, kind or parent are different places, one region cannot be both, and
+// that is still a refusal — which is the case that would otherwise have a
+// device announcing for somewhere else.
 func matchOne(scope map[string][]Location, r UkraineAlarmRegionView) (*Location, error) {
 	candidates := scope[normaliseName(r.RegionName)]
 	switch len(candidates) {
@@ -136,6 +155,9 @@ func matchOne(scope map[string][]Location, r UkraineAlarmRegionView) (*Location,
 		l := candidates[0]
 		return &l, nil
 	default:
+		if l, ok := onlyIndistinguishable(candidates); ok {
+			return &l, nil
+		}
 		names := make([]string, 0, len(candidates))
 		for _, c := range candidates {
 			names = append(names, fmt.Sprintf("%q (UID %d)", c.Label, c.UID))
@@ -205,4 +227,26 @@ func verifyUkraineAlarmMappings(ms []UkraineAlarmMapping) error {
 		return fmt.Errorf("no oblast matched at all; this source is asked by oblast, so the table would serve nobody")
 	}
 	return nil
+}
+
+// onlyIndistinguishable reports whether every candidate is the same place
+// wearing different UIDs — identical name, kind and parent — and returns the
+// one to map to. See matchOne for why that is a mapping rather than a
+// refusal.
+//
+// The returned candidate is the lowest UID, chosen only so the generator is
+// deterministic: the whole premise here is that the choice does not matter,
+// and a table that changed between runs would be a diff nobody could review.
+func onlyIndistinguishable(candidates []Location) (Location, bool) {
+	first := candidates[0]
+	pick := first
+	for _, c := range candidates[1:] {
+		if c.Name != first.Name || c.Kind != first.Kind || c.Parent != first.Parent {
+			return Location{}, false
+		}
+		if c.UID < pick.UID {
+			pick = c
+		}
+	}
+	return pick, true
 }

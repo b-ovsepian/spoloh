@@ -60,8 +60,18 @@ func TestMatchUkraineAlarmRegionsMapsAnOblastBranch(t *testing.T) {
 // it by picking one is a device announcing for whichever of the two nobody
 // chose. Nothing is emitted at all: a table with one wrong row in it is worse
 // than no table, because the cascade knows what to do with a source that
-// cannot serve a place and knows nothing about one that serves the wrong one.
-func TestMatchUkraineAlarmRegionsRefusesAnAmbiguousMatch(t *testing.T) {
+// The published sheet lists «Миколаївська територіальна громада» twice under
+// Сумський район, as UID 1180 and UID 1181 — the only pair in 1,622 rows that
+// nothing distinguishes, and there is one such hromada in that raion. Two
+// rows, one place.
+//
+// It maps rather than refusing. Nothing tells the two apart, including this
+// build's own label generator, which fell back to printing the UID because
+// name and raion were not enough — so whichever the operator picked, the
+// device watches the right place. Refusing would leave a real hromada
+// unservable by this provider over a duplicate row in somebody else's
+// spreadsheet.
+func TestMatchUkraineAlarmRegionsMapsAnIndistinguishableDuplicate(t *testing.T) {
 	ms, err := alertsource.MatchUkraineAlarmRegions([]alertsource.UkraineAlarmRegionView{
 		state("1400", "Сумська область",
 			district("1414", "Сумський район",
@@ -69,18 +79,20 @@ func TestMatchUkraineAlarmRegionsRefusesAnAmbiguousMatch(t *testing.T) {
 			),
 		),
 	})
-	if err == nil {
-		t.Fatalf("an ambiguous name was resolved into a table: %v", mapped(ms))
+	if err != nil {
+		t.Fatalf("a duplicate nothing can tell apart was refused: %v", err)
 	}
-	if ms != nil {
-		t.Errorf("a refused run still returned %d rows", len(ms))
-	}
-	// The message has to name the place and both candidates, or whoever runs
-	// this cannot act on it.
-	for _, want := range []string{"Миколаївська територіальна громада", "1180", "1181"} {
-		if !strings.Contains(err.Error(), want) {
-			t.Errorf("the refusal does not mention %q: %v", want, err)
+	var got []int
+	for _, m := range ms {
+		if m.RegionID == "1481" {
+			got = append(got, m.UID)
 		}
+	}
+	if len(got) != 1 {
+		t.Fatalf("region 1481 mapped to %v; want exactly one of the duplicate UIDs", got)
+	}
+	if got[0] != 1180 && got[0] != 1181 {
+		t.Errorf("region 1481 mapped to UID %d, which is neither of the duplicate rows", got[0])
 	}
 }
 
