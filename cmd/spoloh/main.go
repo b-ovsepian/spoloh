@@ -647,27 +647,48 @@ func buildAlertSource(cfg *config.Config, logger *slog.Logger) alertsource.Casca
 	}
 
 	for _, key := range cfg.Alerts.Sources {
-		if key != alertsource.AlertsUAKey {
+		// Each provider with a credential of its own is built here; every
+		// other key is a "?source=" value and joins the run being collected.
+		var (
+			token string
+			build func() alertsource.Cascade
+		)
+		switch key {
+		case alertsource.AlertsUAKey:
+			token = cfg.Alerts.AlertsUAToken
+			build = func() alertsource.Cascade {
+				return alertsource.NewAlertsUA(alertsource.AlertsUABaseURL, cfg.Alerts.AlertsUAToken, nil)
+			}
+		case alertsource.UkraineAlarmKey:
+			token = cfg.Alerts.UkraineAlarmToken
+			// Built with the place this device watches, because this
+			// provider is asked about one region rather than about the
+			// country: the oblast containing the chosen location, whose
+			// answer carries the raions and hromadas inside it.
+			build = func() alertsource.Cascade {
+				return alertsource.NewUkraineAlarm(alertsource.UkraineAlarmBaseURL, cfg.Alerts.UkraineAlarmToken,
+					cfg.Alerts.LocationUID, cfg.Alerts.Region, nil)
+			}
+		default:
 			pending = append(pending, key)
 			continue
 		}
-		if cfg.Alerts.AlertsUAToken == "" {
+
+		if token == "" {
 			// Loudly, not quietly. The config names this source — often
 			// first — and leaving it out changes what the device watches:
-			// alerts.in.ua is the only provider that reports a level and a
-			// place finer than an oblast, so without it a hromada broadens
-			// back to its oblast. An operator looking at a dashboard that
-			// does not mention their chosen source needs this line to exist
-			// somewhere, and the journal is where they will look.
-			logger.Error("alerts.in.ua is in the source list but no token is stored; skipping it",
-				"position", len(chain)+1)
+			// the credentialled providers are the ones that report a level
+			// and a place finer than an oblast, so without them a hromada
+			// broadens back to its oblast. An operator looking at a
+			// dashboard that does not mention their chosen source needs
+			// this line to exist somewhere, and the journal is where they
+			// will look.
+			logger.Error("an alert source is in the source list but no token is stored; skipping it",
+				"source", key, "position", len(chain)+1)
 			continue
 		}
 		flush()
-		chain = append(chain, chainLink{
-			keys: []string{alertsource.AlertsUAKey},
-			src:  alertsource.NewAlertsUA(alertsource.AlertsUABaseURL, cfg.Alerts.AlertsUAToken, nil),
-		})
+		chain = append(chain, chainLink{keys: []string{key}, src: build()})
 	}
 	flush()
 

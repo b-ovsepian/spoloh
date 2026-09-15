@@ -481,7 +481,7 @@ func TestAlertsPageOffersEveryKnownRegionAndSource(t *testing.T) {
 	slot := sourceSlotHTML(t, body, 1)
 	// The selectable set, not the whole registry: a source whose credential
 	// this device does not hold must not appear in the picker at all.
-	for _, source := range alertsource.SelectableSources(false) {
+	for _, source := range alertsource.SelectableSources() {
 		if !strings.Contains(slot, fmt.Sprintf(`<option value="%s"`, source)) {
 			t.Errorf("source %q is not offered in the cascade picker", source)
 		}
@@ -664,7 +664,7 @@ func TestAlertsPageLinksEveryChosenSource(t *testing.T) {
 	setPassword(t, srv, "correct horse battery staple")
 	cookie := login(t, srv, "correct horse battery staple")
 
-	for _, key := range alertsource.SelectableSources(false) {
+	for _, key := range alertsource.SelectableSources() {
 		info, ok := alertsource.Lookup(key)
 		if !ok || info.URL == "" {
 			t.Fatalf("setup: source %q carries no URL: %+v", key, info)
@@ -1118,5 +1118,89 @@ func TestAlertsSaveRefusesToSilentlyDropAnUnusableSource(t *testing.T) {
 	}
 	if got := store.Get().Alerts.Sources; !slices.Equal(got, before) {
 		t.Errorf("a refused submission changed the stored cascade: %v -> %v", before, got)
+	}
+}
+
+// The second provider key goes through the same form and the same rules, and
+// the reason to test it separately is that the two must not become one: a
+// device may hold either, both or neither, and a screen that stored them
+// together would offer a source it cannot authenticate to.
+func TestAlertsSaveStoresTheUkraineAlarmKeyAndOffersTheSourceItUnlocks(t *testing.T) {
+	srv, store := newServerWithStore(t)
+	setPassword(t, srv, "correct horse battery staple")
+	cookie := login(t, srv, "correct horse battery staple")
+
+	const key = "ukrainealarm-key-for-this-device"
+	req := postForm("/alerts", url.Values{
+		"region": {sumyOblast}, "location": {shostkaUID},
+		"source": {"default"}, "poll_interval": {"15"},
+		"ukrainealarm_token": {key},
+	})
+	req.AddCookie(cookie)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+	got := store.Get().Alerts
+	if got.UkraineAlarmToken != key {
+		t.Fatalf("stored key = %q, want it kept", got.UkraineAlarmToken)
+	}
+	if got.AlertsUAToken != "" {
+		t.Errorf("the alerts.in.ua token was written from the ukrainealarm field: %q", got.AlertsUAToken)
+	}
+	if strings.Contains(rec.Body.String(), key) {
+		t.Fatal("the page that confirms the save renders the key back")
+	}
+
+	body := alertsPage(t, srv, cookie)
+	if !strings.Contains(body, fmt.Sprintf(`<option value="%s"`, alertsource.UkraineAlarmKey)) {
+		t.Errorf("%q is still not offered with a key stored", alertsource.UkraineAlarmKey)
+	}
+	// And only that one: the other credentialled source is still unusable on
+	// this device, so offering it would put a slot in the cascade that can
+	// only fail to authenticate.
+	if strings.Contains(body, fmt.Sprintf(`<option value="%s"`, alertsource.AlertsUAKey)) {
+		t.Errorf("%q is offered on the strength of another provider's key", alertsource.AlertsUAKey)
+	}
+	if strings.Contains(body, key) {
+		t.Fatal("the alerts page renders the stored key")
+	}
+}
+
+// Each key is removed by its own checkbox. One deletion taking the other with
+// it would silently empty a cascade slot the operator never touched.
+func TestAlertsSaveRemovesOneKeyAndLeavesTheOther(t *testing.T) {
+	srv, store := newServerWithStore(t)
+	setPassword(t, srv, "correct horse battery staple")
+	cookie := login(t, srv, "correct horse battery staple")
+
+	const keep = "alerts-ua-token-that-stays"
+	if err := store.Update(func(c *config.Config) error {
+		c.Alerts.AlertsUAToken = keep
+		c.Alerts.UkraineAlarmToken = "ukrainealarm-key-on-its-way-out"
+		return nil
+	}); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	req := postForm("/alerts", url.Values{
+		"region": {sumyOblast}, "source": {"default"},
+		"poll_interval": {"20"}, "remove_ukrainealarm_token": {"1"},
+	})
+	req.AddCookie(cookie)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+	got := store.Get().Alerts
+	if got.UkraineAlarmToken != "" {
+		t.Errorf("stored ukrainealarm key = %q, want it gone", got.UkraineAlarmToken)
+	}
+	if got.AlertsUAToken != keep {
+		t.Errorf("stored alerts.in.ua token = %q; removing one credential took the other with it", got.AlertsUAToken)
 	}
 }

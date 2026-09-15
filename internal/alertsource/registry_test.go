@@ -28,23 +28,39 @@ func TestEverySourceWithAURLHasAName(t *testing.T) {
 // against nothing — a device that hears about no air raid while its dashboard
 // shows a fully configured list.
 func TestSelectableSourcesHidesACredentialledSourceUntilThereIsAToken(t *testing.T) {
-	without := alertsource.SelectableSources(false)
-	with := alertsource.SelectableSources(true)
+	credentialled := []string{alertsource.AlertsUAKey, alertsource.UkraineAlarmKey}
+
+	without := alertsource.SelectableSources()
+	with := alertsource.SelectableSources(credentialled...)
 
 	if len(with) <= len(without) {
 		t.Fatalf("setup: no source requires a token, so this test proves nothing (with=%v, without=%v)", with, without)
 	}
-	if contains(without, alertsource.AlertsUAKey) {
-		t.Errorf("%q is selectable with no token stored: %v", alertsource.AlertsUAKey, without)
+	for _, key := range credentialled {
+		if contains(without, key) {
+			t.Errorf("%q is selectable with no token stored: %v", key, without)
+		}
+		if !contains(with, key) {
+			t.Errorf("%q is not selectable even with a token stored: %v", key, with)
+		}
 	}
-	if !contains(with, alertsource.AlertsUAKey) {
-		t.Errorf("%q is not selectable even with a token stored: %v", alertsource.AlertsUAKey, with)
+
+	// The keys do not share a credential, and offering one on the strength of
+	// the other's would put a slot in the cascade that can only fail to
+	// authenticate. Each is checked against its own.
+	only := alertsource.SelectableSources(alertsource.AlertsUAKey)
+	if !contains(only, alertsource.AlertsUAKey) {
+		t.Errorf("%q is not offered with its own token stored: %v", alertsource.AlertsUAKey, only)
+	}
+	if contains(only, alertsource.UkraineAlarmKey) {
+		t.Errorf("%q is offered on the strength of another provider's token: %v", alertsource.UkraineAlarmKey, only)
 	}
 
 	// Everything else needs no credential and must be offered either way —
 	// a device with no account behind it stays fully configurable.
 	for _, key := range alertsource.Sources() {
-		if key == alertsource.AlertsUAKey {
+		info, _ := alertsource.Lookup(key)
+		if info.RequiresToken {
 			continue
 		}
 		if !contains(without, key) {

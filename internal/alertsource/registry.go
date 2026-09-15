@@ -22,13 +22,19 @@ package alertsource
 // operator choosing between them, or debugging one that is failing, actually
 // needs, because it is where each "?source=" value is explained.
 //
-// AlertsUAKey is the entry that ends that arrangement, and the reason this
+// AlertsUAKey is the entry that ended that arrangement, and the reason this
 // comment is worth reading twice. It is a genuinely different provider — a
-// different company, a different address, its own credential, and the only
-// one here that reports a severity level or a location below oblast. Its URL
-// is its own, and the per-slot link on /alerts therefore stopped being six
+// different company, a different address, its own credential — and it was the
+// first one here to report a severity level or a location below oblast. Its
+// URL is its own, and the per-slot link on /alerts therefore stopped being six
 // copies of one address the moment it was added. Do not "tidy" the URLs back
 // into a single constant.
+//
+// UkraineAlarmKey is the second of those, and it shares nothing with the
+// first: another company, another address, another credential, and an id
+// space of its own that a generated table maps onto the published one. Two
+// such entries is why RequiresToken is answered per key rather than by a
+// single "has a token" flag — a device may hold either key, both or neither.
 type SourceInfo struct {
 	Key  string
 	Name string
@@ -47,7 +53,8 @@ type SourceInfo struct {
 const AlertsUAKey = "alertsua"
 
 // sources is the fixed registry of upstream cascade keys — the six spec §3
-// names for Ubilling's "?source=", then alerts.in.ua — in the order the
+// names for Ubilling's "?source=", then the two providers that need a
+// credential of their own — in the order the
 // dashboard's cascade picker offers them. It is the one place that names
 // them, so the /alerts screen's cascade picker, its validation, and its
 // provenance links all read Sources() and Lookup() rather than keeping a
@@ -60,6 +67,7 @@ var sources = []SourceInfo{
 	{Key: "aiu", Name: "AIU", URL: DocsURL},
 	{Key: "ual", Name: "UAL", URL: DocsURL},
 	{Key: AlertsUAKey, Name: "alerts.in.ua", URL: AlertsUADocsURL, RequiresToken: true},
+	{Key: UkraineAlarmKey, Name: "ukrainealarm.com", URL: UkraineAlarmDocsURL, RequiresToken: true},
 }
 
 // Sources returns a copy of every cascade key the registry knows.
@@ -79,16 +87,24 @@ func Sources() []string {
 // SelectableSources returns the cascade keys an operator may choose from
 // right now, in registry order.
 //
-// hasToken says whether the operator's alerts.in.ua token is stored. It is
-// the only question worth asking, because every other source needs no
-// credential at all — and the answer matters more than it looks: a cascade
-// built entirely out of sources that cannot authenticate is a device that
-// hears about no air raid, while its dashboard shows a full, ordered,
-// perfectly configured-looking list.
-func SelectableSources(hasToken bool) []string {
+// withToken names the sources whose credential this device holds — by key,
+// because there is more than one provider needing one now and they do not
+// share a credential: a stored alerts.in.ua token says nothing about whether
+// ukrainealarm.com can be reached. Everything else needs no credential at all,
+// which is what lets a device work with no account behind it.
+//
+// The answer matters more than it looks: a cascade built entirely out of
+// sources that cannot authenticate is a device that hears about no air raid,
+// while its dashboard shows a full, ordered, perfectly configured-looking
+// list.
+func SelectableSources(withToken ...string) []string {
+	stored := make(map[string]bool, len(withToken))
+	for _, k := range withToken {
+		stored[k] = true
+	}
 	out := make([]string, 0, len(sources))
 	for _, s := range sources {
-		if s.RequiresToken && !hasToken {
+		if s.RequiresToken && !stored[s.Key] {
 			continue
 		}
 		out = append(out, s.Key)

@@ -110,23 +110,30 @@
       </div>
 
       {{/*
-      The stored token is never rendered, not even masked: a value that is
-      not on the page cannot leak from it, and leak_test.go walks every route
-      on this server to keep that true. So the box is always empty, and an
-      empty box means "leave it alone" — otherwise every visit here to change
-      the poll interval would quietly delete the credential. Removing one is
-      the checkbox, which somebody has to mean.
+      One box per provider key, built from the same description in Go (see
+      credentials in alerts.go) rather than written out twice here: the rules
+      are identical for every one of them and a second copy is where they
+      would drift apart.
+
+      A stored key is never rendered, not even masked: a value that is not on
+      the page cannot leak from it, and leak_test.go walks every route on this
+      server to keep that true. So the box is always empty, and an empty box
+      means "leave it alone" — otherwise every visit here to change the poll
+      interval would quietly delete the credential. Removing one is the
+      checkbox, which somebody has to mean.
       */}}
+      {{range .TokenFields}}
       <div class="field">
-        <label for="alerts_ua_token">Токен alerts.in.ua</label>
-        <input class="input" type="password" id="alerts_ua_token" name="alerts_ua_token" autocomplete="off" spellcheck="false" value="">
-        {{if .TokenStored}}
+        <label for="{{.Field}}">{{.Label}}</label>
+        <input class="input" type="password" id="{{.Field}}" name="{{.Field}}" autocomplete="off" spellcheck="false" value="">
+        {{if .Stored}}
         <p class="text-sm text-muted-foreground">Токен збережено. Залиште поле порожнім, щоб не змінювати його.</p>
-        <label class="flex items-center gap-2 text-sm"><input type="checkbox" name="remove_token" value="1"> Видалити збережений токен</label>
+        <label class="flex items-center gap-2 text-sm"><input type="checkbox" name="{{.RemoveField}}" value="1"> Видалити збережений токен</label>
         {{else}}
-        <p class="text-sm text-muted-foreground">Без токена джерело alerts.in.ua недоступне — саме воно повідомляє рівень тривоги й місце точніше за область. Отримати токен: <a class="underline" href="{{.TokenDocsURL}}" target="_blank" rel="noopener noreferrer" aria-label="Документація alerts.in.ua, де видають токен — відкриється в новій вкладці">devs.alerts.in.ua</a>.</p>
+        <p class="text-sm text-muted-foreground">{{.Help}} Отримати токен: <a class="underline" href="{{.DocsURL}}" target="_blank" rel="noopener noreferrer" aria-label="Документація {{.Name}}, де видають токен — відкриється в новій вкладці">{{.DocsLabel}}</a>.</p>
         {{end}}
       </div>
+      {{end}}
 
       <button class="btn w-fit" type="submit">Зберегти</button>
     </form>

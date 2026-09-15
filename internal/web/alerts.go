@@ -34,26 +34,92 @@ func isKnownRegion(region string) bool {
 	return false
 }
 
-// alertsUATokenStored reports whether the operator's alerts.in.ua token is on
-// this device, which is what decides whether that source may be chosen at all
+// credential is one provider key this screen stores, and everything that
+// differs between them.
+//
+// There are two now, and they have nothing in common but their shape: a
+// stored alerts.in.ua token says nothing about whether ukrainealarm.com can
+// be reached. Describing them as data rather than as two copies of the same
+// handler is what keeps the rules identical — a blank field leaves the stored
+// value alone, removing one is its own checkbox, neither is ever rendered
+// back — because there is exactly one implementation of each rule below.
+type credential struct {
+	// Key is the cascade key this credential unlocks
+	// (alertsource.SelectableSources).
+	Key string
+	// Name is what the operator is told they are typing a key for.
+	Name string
+	// Field and RemoveField are the form fields: a new value, and the
+	// deliberate deletion.
+	Field       string
+	RemoveField string
+	// Label is the field's own label; Help is why this key is worth
+	// getting, shown while none is stored; DocsURL and DocsLabel are where
+	// it is obtained. The URL comes from the registry rather than being
+	// typed here — see alertsource.SourceInfo: a link this device shows is
+	// a claim about where its data comes from, and one place owns those.
+	Label     string
+	Help      string
+	DocsURL   string
+	DocsLabel string
+
+	get func(*config.Config) string
+	set func(*config.Config, string)
+}
+
+// credentials is every provider key an operator can store here, in the order
+// the registry offers the sources they unlock.
+var credentials = []credential{
+	{
+		Key:         alertsource.AlertsUAKey,
+		Name:        "alerts.in.ua",
+		Field:       "alerts_ua_token",
+		RemoveField: "remove_token",
+		Label:       "Токен alerts.in.ua",
+		Help:        "Без токена джерело alerts.in.ua недоступне — саме воно повідомляє рівень тривоги й місце точніше за область.",
+		DocsURL:     alertsource.AlertsUADocsURL,
+		DocsLabel:   "devs.alerts.in.ua",
+		get:         func(c *config.Config) string { return c.Alerts.AlertsUAToken },
+		set:         func(c *config.Config, v string) { c.Alerts.AlertsUAToken = v },
+	},
+	{
+		Key:         alertsource.UkraineAlarmKey,
+		Name:        "ukrainealarm.com",
+		Field:       "ukrainealarm_token",
+		RemoveField: "remove_ukrainealarm_token",
+		Label:       "Ключ ukrainealarm.com",
+		Help:        "Без ключа джерело ukrainealarm.com недоступне — воно повідомляє рівень тривоги, червоний або жовтий, і бачить тривоги районів та громад усередині області.",
+		DocsURL:     alertsource.UkraineAlarmDocsURL,
+		DocsLabel:   "api.ukrainealarm.com",
+		get:         func(c *config.Config) string { return c.Alerts.UkraineAlarmToken },
+		set:         func(c *config.Config, v string) { c.Alerts.UkraineAlarmToken = v },
+	},
+}
+
+// storedCredentials names the sources whose credential is on this device,
+// which is what decides whether each may be chosen at all
 // (alertsource.SelectableSources).
 //
-// The one field read this has always been meant to be. It answers false on
-// every device that has not been given a token, and a source whose credential
-// is missing is not offered — the only honest of the two options. Offer it
-// without a credential and an operator can build a cascade whose every slot
-// fails to authenticate: a device that hears about no air raid at all, behind
-// a dashboard showing a complete, ordered, configured-looking list. That is
-// the exact failure this screen's other rules exist to prevent.
-func alertsUATokenStored(cfg *config.Config) bool {
-	return cfg.Alerts.AlertsUAToken != ""
+// A source whose credential is missing is not offered — the only honest of
+// the two options. Offer it anyway and an operator can build a cascade whose
+// every slot fails to authenticate: a device that hears about no air raid at
+// all, behind a dashboard showing a complete, ordered, configured-looking
+// list. That is the exact failure this screen's other rules exist to prevent.
+func storedCredentials(cfg *config.Config) []string {
+	var keys []string
+	for _, c := range credentials {
+		if c.get(cfg) != "" {
+			keys = append(keys, c.Key)
+		}
+	}
+	return keys
 }
 
 // selectableSources is the one list this screen offers, validates against and
 // sizes its pickers from. Reading it in one place is what keeps a submission
 // from being checked against a different list than the one it was offered.
 func selectableSources(cfg *config.Config) []string {
-	return alertsource.SelectableSources(alertsUATokenStored(cfg))
+	return alertsource.SelectableSources(storedCredentials(cfg)...)
 }
 
 // watch is where this device will look, exactly as the form currently reads:
@@ -73,20 +139,32 @@ type watch struct {
 // forSource is the sentence-worth of truth the page owes the operator for one
 // cascade slot: the place that source will actually report for.
 //
-// alerts.in.ua is the only provider that understands anything below oblast
-// level, so it is the only one that can answer for the chosen location. The
-// six Ubilling keys report a boolean per oblast, so a cascade that falls
-// through to one of them broadens to the whole oblast — more than was asked
-// for, never less, which is the safe direction but a genuine surprise if the
-// first time it is noticed is during a raid two districts away. Hence saying
-// it here, per source, before it happens.
+// Two providers understand something below oblast level; the six Ubilling
+// keys report a boolean per oblast, so a cascade that falls through to one of
+// them broadens to the whole oblast — more than was asked for, never less,
+// which is the safe direction but a genuine surprise if the first time it is
+// noticed is during a raid two districts away. Hence saying it here, per
+// source, before it happens.
+//
+// ukrainealarm.com is finer-grained only where this build carries its id for
+// the place. Without that row it can still watch the oblast and nothing
+// smaller, and the line has to say the oblast — claiming the hromada would be
+// this screen telling an operator they are covered more precisely than they
+// are.
 //
 // A UID the table no longer lists falls back to the oblast for the same
 // reason the daemon does: broadening announces too much, and refusing
 // announces nothing.
 func (w watch) forSource(key string) string {
-	if key == alertsource.AlertsUAKey {
-		if l, ok := alertsource.LookupLocation(w.LocationUID); ok {
+	l, ok := alertsource.LookupLocation(w.LocationUID)
+	if !ok {
+		return w.Region
+	}
+	switch key {
+	case alertsource.AlertsUAKey:
+		return l.Label
+	case alertsource.UkraineAlarmKey:
+		if _, mapped := alertsource.UkraineAlarmRegionID(l.UID); mapped {
 			return l.Label
 		}
 	}
@@ -336,45 +414,115 @@ func parseLocationUID(s, region string) (int, string) {
 	return uid, ""
 }
 
-// maxAlertsUATokenLen is a sanity bound, not a claim about the format: the
-// issued tokens are far shorter, and nothing here should store a megabyte
+// maxTokenLen is a sanity bound, not a claim about any provider's format: the
+// issued keys are far shorter, and nothing here should store a megabyte
 // because a field accepted whatever was posted at it.
-const maxAlertsUATokenLen = 256
+const maxTokenLen = 256
 
 const (
-	tokenInvalidMessage = "Токен alerts.in.ua має складатися з друкованих символів без пробілів."
-	tokenTooLongMessage = "Токен alerts.in.ua задовгий."
+	tokenInvalidMessage = "Токен %s має складатися з друкованих символів без пробілів."
+	tokenTooLongMessage = "Токен %s задовгий."
 )
 
-// parseAlertsUAToken reads the "alerts_ua_token" field. An empty return
-// message means it is valid; an empty token means "leave the stored one
-// alone".
+// parseToken reads one credential field, naming provider in anything it
+// refuses. An empty return message means it is valid; an empty token means
+// "leave the stored one alone".
 //
-// That asymmetry is deliberate and is the whole reason this is not an
-// ordinary text field. The token is never rendered back — leak_test.go walks
-// every route to prove it — so a blank box is what an operator sees on every
-// visit, and reading blank as "delete" would wipe the credential the first
-// time somebody came here to change the poll interval. Removing one is its
-// own checkbox, which is a thing a person has to mean.
+// That asymmetry is deliberate and is the whole reason these are not ordinary
+// text fields. A stored key is never rendered back — leak_test.go walks every
+// route to prove it — so a blank box is what an operator sees on every visit,
+// and reading blank as "delete" would wipe the credential the first time
+// somebody came here to change the poll interval. Removing one is its own
+// checkbox, which is a thing a person has to mean.
 //
-// The character check is not cosmetic. This value is sent as an Authorization
-// header, and a control character in a header value is header injection; a
-// space or a newline is far more likely to be a paste that picked up the text
-// around it than a token any API issued.
-func parseAlertsUAToken(s string) (string, string) {
+// The character check is not cosmetic. Every one of these values is sent as
+// an Authorization header, and a control character in a header value is
+// header injection; a space or a newline is far more likely to be a paste
+// that picked up the text around it than a key any API issued.
+func parseToken(s, provider string) (string, string) {
 	s = strings.TrimSpace(s)
 	if s == "" {
 		return "", ""
 	}
-	if len(s) > maxAlertsUATokenLen {
-		return "", tokenTooLongMessage
+	if len(s) > maxTokenLen {
+		return "", fmt.Sprintf(tokenTooLongMessage, provider)
 	}
 	for _, r := range s {
 		if r <= ' ' || r > '~' {
-			return "", tokenInvalidMessage
+			return "", fmt.Sprintf(tokenInvalidMessage, provider)
 		}
 	}
 	return s, ""
+}
+
+// tokenSubmission is one credential as this submission leaves it: a new
+// value, a deliberate removal, or neither.
+type tokenSubmission struct {
+	cred   *credential
+	value  string
+	remove bool
+	err    string
+}
+
+// parseTokens reads every credential field on the form. All of them, every
+// time, so that "what will be stored after this write" can be answered before
+// anything is validated against it — see handleAlertsSave.
+func parseTokens(r *http.Request) []tokenSubmission {
+	out := make([]tokenSubmission, len(credentials))
+	for i := range credentials {
+		c := &credentials[i]
+		value, msg := parseToken(r.FormValue(c.Field), c.Name)
+		out[i] = tokenSubmission{
+			cred:   c,
+			value:  value,
+			remove: r.FormValue(c.RemoveField) != "",
+			err:    msg,
+		}
+	}
+	return out
+}
+
+// after is what this credential will hold once the submission is written.
+func (s tokenSubmission) after(cfg *config.Config) string {
+	switch {
+	case s.remove:
+		return ""
+	case s.value != "":
+		return s.value
+	default:
+		return s.cred.get(cfg)
+	}
+}
+
+// tokenFieldView is one credential box on the form. It carries whether a key
+// is stored and never the key itself — see alertsView.TokenFields.
+type tokenFieldView struct {
+	Label       string
+	Field       string
+	RemoveField string
+	Help        string
+	DocsURL     string
+	DocsLabel   string
+	Name        string
+	Stored      bool
+}
+
+// tokenFields builds those boxes from the stored configuration.
+func tokenFields(cfg *config.Config) []tokenFieldView {
+	out := make([]tokenFieldView, len(credentials))
+	for i, c := range credentials {
+		out[i] = tokenFieldView{
+			Label:       c.Label,
+			Field:       c.Field,
+			RemoveField: c.RemoveField,
+			Help:        c.Help,
+			DocsURL:     c.DocsURL,
+			DocsLabel:   c.DocsLabel,
+			Name:        c.Name,
+			Stored:      c.get(cfg) != "",
+		}
+	}
+	return out
 }
 
 // alertsView is what alerts.html reads.
@@ -403,18 +551,11 @@ type alertsView struct {
 	// polling every 5 seconds had every source rate-limit at once.
 	PollIntervalSeconds int
 
-	// TokenStored says whether an alerts.in.ua credential is on this device,
-	// and it is deliberately a boolean: the token itself never enters this
+	// TokenFields is one box per provider credential this screen stores.
+	// Stored is deliberately a boolean: no key itself ever enters this
 	// view, because a view is what gets rendered. leak_test.go walks every
 	// route on this server to hold that line.
-	TokenStored bool
-
-	// TokenDocsURL is where an operator goes to get one. It comes from the
-	// registry rather than being typed into the template, for the reason
-	// alertsource.SourceInfo gives: a link this device shows is a claim
-	// about where its data comes from, and there is one place that owns
-	// those.
-	TokenDocsURL string
+	TokenFields []tokenFieldView
 
 	// Error is a rejected submission's reason; Message is a completed one's
 	// confirmation. Never both at once, the same contract every other
@@ -434,8 +575,7 @@ func (s *Server) alertsBaseView(cfg *config.Config) alertsView {
 		CurrentLocationUID:  cfg.Alerts.LocationUID,
 		SourceSlots:         buildSourceSlots(cfg.Alerts.Sources, selectableSources(cfg), stored),
 		PollIntervalSeconds: pollIntervalSeconds(cfg.Alerts.PollInterval),
-		TokenStored:         alertsUATokenStored(cfg),
-		TokenDocsURL:        alertsource.AlertsUADocsURL,
+		TokenFields:         tokenFields(cfg),
 	}
 }
 
@@ -479,11 +619,10 @@ func (s *Server) handleAlertsSave(w http.ResponseWriter, r *http.Request) {
 	region := r.FormValue("region")
 	locationUID, locationErr := parseLocationUID(r.FormValue("location"), region)
 	interval, intervalErr := parsePollInterval(r.FormValue("poll_interval"))
-	token, tokenErr := parseAlertsUAToken(r.FormValue("alerts_ua_token"))
-	removeToken := r.FormValue("remove_token") != ""
+	tokens := parseTokens(r)
 
-	// Validated against what the credential will be after this write, not
-	// what it was before it.
+	// Validated against what the credentials will be after this write, not
+	// what they were before it.
 	//
 	// This used to read the stored config, on the reasoning that a token
 	// arriving in the same submission should not widen the choice — the
@@ -499,14 +638,13 @@ func (s *Server) handleAlertsSave(w http.ResponseWriter, r *http.Request) {
 	//
 	// Ticking a source is already a deliberate act; it does not become more
 	// deliberate for having been done twice.
-	tokenAfter := cfg.Alerts.AlertsUAToken
-	switch {
-	case removeToken:
-		tokenAfter = ""
-	case token != "":
-		tokenAfter = token
+	var withToken []string
+	for _, t := range tokens {
+		if t.after(cfg) != "" {
+			withToken = append(withToken, t.cred.Key)
+		}
 	}
-	allowed := alertsource.SelectableSources(tokenAfter != "")
+	allowed := alertsource.SelectableSources(withToken...)
 	sources := parseSources(r.Form["source"], allowed)
 
 	// Nothing this screen accepts may be quietly thrown away. A key that
@@ -518,7 +656,7 @@ func (s *Server) handleAlertsSave(w http.ResponseWriter, r *http.Request) {
 		reject := func(message string) {
 			s.renderAlertsPage(w, http.StatusBadRequest, func(v *alertsView) { v.Error = message })
 		}
-		reject(fmt.Sprintf("Джерело «%s» недоступне без збереженого токена alerts.in.ua.", dropped))
+		reject(fmt.Sprintf("Джерело «%s» недоступне без збереженого токена.", dropped))
 		return
 	}
 
@@ -582,19 +720,23 @@ func (s *Server) handleAlertsSave(w http.ResponseWriter, r *http.Request) {
 		reject(http.StatusBadRequest, intervalErr)
 		return
 	}
-	if tokenErr != "" {
-		reject(http.StatusBadRequest, tokenErr)
-		return
+	for _, t := range tokens {
+		if t.err != "" {
+			reject(http.StatusBadRequest, t.err)
+			return
+		}
 	}
 	// Deleting the credential a chosen source authenticates with would leave
-	// a cascade slot that can only fail. Dropping alerts.in.ua from the
+	// a cascade slot that can only fail. Dropping that source from the
 	// cascade on the operator's behalf would be quieter and worse: they
 	// ordered that cascade, and a device silently reordering what it tries
 	// is a device nobody can reason about during a raid. So it is refused,
 	// and the sentence says which of the two things to undo.
-	if removeToken && slices.Contains(sources, alertsource.AlertsUAKey) {
-		reject(http.StatusBadRequest, "Спершу приберіть alerts.in.ua з черги джерел, а тоді видаляйте токен.")
-		return
+	for _, t := range tokens {
+		if t.remove && slices.Contains(sources, t.cred.Key) {
+			reject(http.StatusBadRequest, fmt.Sprintf("Спершу приберіть %s з черги джерел, а тоді видаляйте токен.", t.cred.Name))
+			return
+		}
 	}
 
 	err := s.deps.Config.Update(func(c *config.Config) error {
@@ -602,11 +744,13 @@ func (s *Server) handleAlertsSave(w http.ResponseWriter, r *http.Request) {
 		c.Alerts.LocationUID = locationUID
 		c.Alerts.Sources = sources
 		c.Alerts.PollInterval = interval
-		switch {
-		case removeToken:
-			c.Alerts.AlertsUAToken = ""
-		case token != "":
-			c.Alerts.AlertsUAToken = token
+		for _, t := range tokens {
+			switch {
+			case t.remove:
+				t.cred.set(c, "")
+			case t.value != "":
+				t.cred.set(c, t.value)
+			}
 		}
 		return nil
 	})

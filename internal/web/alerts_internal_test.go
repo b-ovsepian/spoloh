@@ -11,7 +11,7 @@ import (
 // offered is the list the page builds its pickers from when no credential is
 // stored — the state every device is in until an operator goes and gets a
 // token.
-var offered = alertsource.SelectableSources(false)
+var offered = alertsource.SelectableSources()
 
 // sumy is the oblast the slot-builder tests watch, chosen because
 // internal/alertsource pins its hromada chain: UID 1198, м. Шостка, under
@@ -55,14 +55,14 @@ func TestBuildSourceSlotsOmitsTheLinkForASourceWithNoURL(t *testing.T) {
 func TestParseSourcesDropsASourceWhoseCredentialIsNotStored(t *testing.T) {
 	submitted := []string{"default", alertsource.AlertsUAKey, "skog"}
 
-	got := parseSources(submitted, alertsource.SelectableSources(false))
+	got := parseSources(submitted, alertsource.SelectableSources())
 	if want := "default,skog"; strings.Join(got, ",") != want {
 		t.Errorf("with no token stored, parseSources(%v) = %v, want %q", submitted, got, want)
 	}
 
 	// And it is a real key, not a typo: with the credential it is accepted,
 	// in the position it was submitted in.
-	got = parseSources(submitted, alertsource.SelectableSources(true))
+	got = parseSources(submitted, alertsource.SelectableSources(alertsource.AlertsUAKey, alertsource.UkraineAlarmKey))
 	if want := "default,alertsua,skog"; strings.Join(got, ",") != want {
 		t.Errorf("with a token stored, parseSources(%v) = %v, want %q", submitted, got, want)
 	}
@@ -108,7 +108,7 @@ func TestSourceSlotsSayWhichSourceBroadensToTheOblast(t *testing.T) {
 	if got := w.forSource(alertsource.AlertsUAKey); got != shostkaLabel {
 		t.Errorf("alerts.in.ua watches %q, want the chosen hromada %q", got, shostkaLabel)
 	}
-	for _, key := range alertsource.SelectableSources(false) {
+	for _, key := range alertsource.SelectableSources() {
 		if got := w.forSource(key); got != sumyOblast {
 			t.Errorf("%q watches %q, want it broadened to %q — it reports by oblast and nothing finer", key, got, sumyOblast)
 		}
@@ -116,7 +116,7 @@ func TestSourceSlotsSayWhichSourceBroadensToTheOblast(t *testing.T) {
 
 	// And it reaches the slots the page renders, in the position the
 	// operator put the source in.
-	slots := buildSourceSlots([]string{alertsource.AlertsUAKey, "default"}, alertsource.SelectableSources(true), w)
+	slots := buildSourceSlots([]string{alertsource.AlertsUAKey, "default"}, alertsource.SelectableSources(alertsource.AlertsUAKey, alertsource.UkraineAlarmKey), w)
 	if len(slots) < 2 {
 		t.Fatalf("buildSourceSlots returned %d slots, want at least two", len(slots))
 	}
@@ -139,7 +139,7 @@ func TestSourceSlotsSayWhichSourceBroadensToTheOblast(t *testing.T) {
 // and they all say the same thing because they all do the same thing.
 func TestSourceSlotsWatchTheOblastWhenNoLocationIsChosen(t *testing.T) {
 	w := watch{Region: "Сумська область"}
-	for _, key := range alertsource.SelectableSources(true) {
+	for _, key := range alertsource.SelectableSources(alertsource.AlertsUAKey, alertsource.UkraineAlarmKey) {
 		if got := w.forSource(key); got != "Сумська область" {
 			t.Errorf("%q watches %q with no location chosen, want the oblast", key, got)
 		}
