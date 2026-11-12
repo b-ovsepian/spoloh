@@ -765,6 +765,16 @@ func TestHomeEmbedsTheAlertMapAsALabelledFluidFrame(t *testing.T) {
 	if strings.Contains(body, "500px") {
 		t.Error("the embed still carries the snippet's fixed 500px width")
 	}
+	// alerts.in.ua's embed is always 70px taller than its own window — its
+	// map layer is the window's height plus that — so it scrolls at every
+	// size, and a frame showing it showed two scrollbars down its right
+	// edge. No frame shape avoids that; the frame is made wider than the
+	// rounded box around it, which clips the scrollbars off.
+	frame := body[iframe:]
+	frame = frame[:strings.Index(frame, ">")]
+	if !strings.Contains(frame, "width: calc(100% + 40px)") {
+		t.Errorf("the frame is not wider than its box, so the embed's scrollbars show: %s", frame)
+	}
 
 	// The map now sits above the banner, on the operator's instruction: it
 	// is the country at a glance and it was at the bottom of a page nobody

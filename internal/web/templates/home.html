@@ -31,8 +31,16 @@ already widened.
   */}}
   <section class="card p-4">
     <h2 class="text-sm font-semibold text-muted-foreground">Мапа тривог (alerts.in.ua)</h2>
+    {{/*
+    The frame is 40px wider than the box, and the box's overflow-hidden cuts
+    the overhang off. alerts.in.ua's embed is always 70px taller than its own
+    window, so it scrolls at every size, and two scrollbars ran down the
+    right edge of the map — no frame shape avoids that. The overhang is where
+    they are drawn. Inline rather than a class: an arbitrary Tailwind value
+    would need the committed stylesheet rebuilt for one rule.
+    */}}
     <div class="mt-2 aspect-[5/3] w-full overflow-hidden rounded-md bg-muted sm:aspect-[16/5]">
-      <iframe class="h-full w-full border-0" src="https://alerts.in.ua/?embed" title="Мапа повітряних тривог" loading="lazy"></iframe>
+      <iframe class="h-full border-0" style="width: calc(100% + 40px); max-width: none" src="https://alerts.in.ua/?embed" title="Мапа повітряних тривог" loading="lazy"></iframe>
     </div>
     <p class="mt-2 text-sm text-muted-foreground">Дані alerts.in.ua, а не стан цього пристрою: те, за чим пристрій вмикає сирену, показано вгорі сторінки. Мапа завантажується з інтернету — коли пристрій роздає власну точку доступу, вона не з’явиться.</p>
   </section>
