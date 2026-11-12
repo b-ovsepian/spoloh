@@ -25,6 +25,8 @@ func (c *Config) Clone() *Config {
 		out.Events[i].Weekdays = append([]int(nil), ev.Weekdays...)
 	}
 
+	out.Radio.Weekdays = append([]int(nil), c.Radio.Weekdays...)
+
 	// Nil stays nil rather than becoming an empty slice: Webhooks is
 	// omitempty, and a clone that turned "no webhooks" into "webhooks: []"
 	// would rewrite config.json on the next save of any unrelated setting.

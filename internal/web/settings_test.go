@@ -43,7 +43,7 @@ func TestSettingsIndexLinksEveryConfigurationScreen(t *testing.T) {
 	// never tell an index that lists Мережа from one that does not.
 	index := pageContent(t, rec.Body.String())
 
-	for _, href := range []string{"/alerts", "/events", "/sounds", "/audio", "/webhooks", "/time"} {
+	for _, href := range []string{"/alerts", "/events", "/sounds", "/audio", "/radio", "/webhooks", "/time"} {
 		if !strings.Contains(index, `href="`+href+`"`) {
 			t.Errorf("the settings index does not link %s; a screen nothing links to is a screen nobody finds", href)
 		}

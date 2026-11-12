@@ -121,6 +121,32 @@ None of this reaches the network — a unix socket cannot be connected to from
 another machine — and none of it works if the daemon is not running, which
 `systemctl status spoloh` will say.
 
+## Radio
+
+**Налаштування → Радіо** plays an internet radio station between
+announcements, on the days and between the times you choose: one of a short
+list of Ukrainian stations, or a stream address of your own (http or https
+only). It is off until you switch it on.
+
+The radio comes last. Any sound the device makes — an alert, a scheduled
+event, listening to a sound on the settings pages — stops it at once, and it
+picks up again afterwards; because it is a live broadcast, what played in
+between is skipped, not paused. Quiet hours silence it. During an air raid it
+plays on between announcements unless you tick the box that keeps it off from
+the alert to the all-clear. **Зупинити звук** on the home screen stops the
+radio as well, until you press **Відновити радіо** on its page or its window
+next opens.
+
+Its volume is a share of the master volume, and the share is applied in
+software: the card itself stays at the master volume, so a fault while
+setting an announcement's own volume can never leave a siren as quiet as the
+radio was.
+
+A stream uses the site's internet connection the whole time it plays — about
+1.4 GB a day at 128 kbit/s — which matters on a mobile connection. Playing a
+broadcast to the public may need the broadcaster's or a rights society's
+permission; that is for whoever installs the device to check.
+
 ## Licence
 
 [PolyForm Noncommercial 1.0.0](LICENSE.md). Use it, change it, run it,

@@ -191,6 +191,8 @@ func New(d Deps) (*Server, error) {
 	s.handle("POST /sounds/delete", http.HandlerFunc(s.handleSoundsDelete))
 	s.handle("GET /audio", http.HandlerFunc(s.handleAudioPage))
 	s.handle("POST /audio", http.HandlerFunc(s.handleAudioSave))
+	s.handle("GET /radio", http.HandlerFunc(s.handleRadioPage))
+	s.handle("POST /radio", http.HandlerFunc(s.handleRadioSave))
 	s.handle("GET /webhooks", http.HandlerFunc(s.handleWebhooksPage))
 	s.handle("POST /webhooks/add", http.HandlerFunc(s.handleWebhooksAdd))
 	s.handle("POST /webhooks/save", http.HandlerFunc(s.handleWebhooksSave))

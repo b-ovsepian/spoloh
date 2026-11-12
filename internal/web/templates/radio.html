@@ -1,0 +1,101 @@
+{{define "title"}}Радіо — Сполох{{end}}
+{{define "content"}}
+<div class="grid gap-4">
+  {{if .Message}}
+  <div class="alert" role="status"><section><p>{{.Message}}</p></section></div>
+  {{end}}
+  {{if .Error}}
+  <div class="alert" data-variant="destructive" role="alert">
+    <section><p>{{.Error}}</p></section>
+  </div>
+  {{end}}
+
+  <div class="card p-6">
+    <header class="mb-4">
+      <h1 class="text-lg font-semibold">Радіо</h1>
+    </header>
+
+    {{/*
+    What comes first, said before the switch: an operator who learns on the
+    day of a raid that the music stops for the siren, or that it plays on
+    after it, has been handed a setting whose consequences nobody told them.
+    */}}
+    <div class="grid gap-2 rounded-md border border-border p-3 mb-4">
+      <p>Пристрій може грати інтернет-радіо, коли йому нічого оголошувати.</p>
+      <p class="text-sm text-muted-foreground">
+        Будь-який звук — тривога, подія за розкладом, прослуховування звуку — завжди перериває радіо,
+        і воно продовжується після нього. У тихі години радіо замовкає. Під час тривоги радіо грає між
+        оголошеннями, якщо не позначити вимкнення від сигналу тривоги до відбою.
+      </p>
+      {{if not .Playing}}
+      <p>Зараз радіо не грає.</p>
+      {{else if .Held}}
+      <p>Радіо <span class="font-semibold">{{.Playing}}</span> призупинено кнопкою «Зупинити звук».</p>
+      <form method="post" action="/radio">
+        <button class="btn w-fit" data-variant="outline" type="submit" name="action" value="resume">Відновити радіо</button>
+      </form>
+      {{else}}
+      <p>Зараз увімкнено: <span class="font-semibold">{{.Playing}}</span>.</p>
+      {{end}}
+      {{if and .Playing .LastError}}
+      <p class="text-sm text-destructive">Останнє відтворення не вдалося о {{.LastError}}. Пристрій пробує знову щокілька хвилин.</p>
+      {{end}}
+      <p class="text-sm text-muted-foreground">Кнопка «Зупинити звук» на головній зупиняє й радіо — до натискання «Відновити радіо» тут або до наступного вікна розкладу.</p>
+    </div>
+
+    <form method="post" action="/radio" class="grid gap-4">
+      <label class="flex items-center gap-2">
+        <input type="checkbox" name="enabled"{{if .Radio.Enabled}} checked{{end}}>
+        Грати радіо за розкладом
+      </label>
+
+      <div class="field">
+        <label for="station">Станція</label>
+        <select class="select" id="station" name="station">
+          {{range .Stations}}<option value="{{.ID}}"{{if eq .ID $.Radio.Station}} selected{{end}}>{{.Name}}</option>{{end}}
+          <option value="{{.Custom}}"{{if eq .Custom .Radio.Station}} selected{{end}}>Своя адреса потоку</option>
+        </select>
+      </div>
+
+      <div class="field">
+        <label for="url">Своя адреса потоку</label>
+        <input class="input" type="url" id="url" name="url" value="{{.Radio.URL}}" placeholder="https://">
+        <p class="text-sm text-muted-foreground">Лише для «Своя адреса потоку» у списку вище.</p>
+      </div>
+
+      <div class="field">
+        <label for="volume">Гучність, % від загальної</label>
+        <input class="input" type="number" min="0" max="100" id="volume" name="volume" value="{{.Radio.Volume}}" required>
+      </div>
+
+      <fieldset class="field">
+        <legend>Дні тижня</legend>
+        <div class="flex flex-wrap gap-3">
+          {{range .WeekdayOptions}}
+          <label class="flex items-center gap-1 text-sm">
+            <input type="checkbox" name="weekdays" value="{{.Value}}"{{if hasWeekday $.Radio.Weekdays .Value}} checked{{end}}>
+            {{.Label}}
+          </label>
+          {{end}}
+        </div>
+      </fieldset>
+
+      <div class="field">
+        <label for="from">З</label>
+        <input class="input" type="time" id="from" name="from" value="{{.Radio.From}}" required>
+      </div>
+      <div class="field">
+        <label for="to">До</label>
+        <input class="input" type="time" id="to" name="to" value="{{.Radio.To}}" required>
+      </div>
+
+      <label class="flex items-center gap-2">
+        <input type="checkbox" name="pause_during_alert"{{if .Radio.PauseDuringAlert}} checked{{end}}>
+        Вимикати радіо від сигналу тривоги до відбою
+      </label>
+
+      <button class="btn w-fit" type="submit">Зберегти</button>
+    </form>
+  </div>
+</div>
+{{end}}

@@ -80,6 +80,7 @@ func settingsLinks() []settingsLink {
 		// to tell them apart at a glance, not by reading past the first
 		// four letters.
 		{"/audio", "Аудіовихід", "Куди подається звук і наскільки гучно."},
+		{"/radio", "Радіо", "Інтернет-радіо між оголошеннями, за розкладом."},
 		{"/webhooks", "Вебхуки", "Запити до іншого обладнання під час оповіщення."},
 		{"/time", "Час", "Годинник, часовий пояс і синхронізація."},
 	}

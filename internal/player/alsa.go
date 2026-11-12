@@ -25,6 +25,7 @@ type RunFunc func(ctx context.Context, name string, args ...string) ([]byte, err
 type ALSA struct {
 	AplayBin  string // default "aplay"
 	AmixerBin string // default "amixer"
+	FfmpegBin string // default "ffmpeg"; used only by Stream
 	// Mixer names the amixer simple control to set the volume on. Empty —
 	// the normal case — means discover it from the card itself; see
 	// MixerControl. An explicit value always wins over discovery, which is
@@ -500,4 +501,90 @@ func silentWAV(d time.Duration) []byte {
 	binary.LittleEndian.PutUint32(buf[40:], uint32(dataLen))
 	// The samples themselves are the zero value of the slice: silence.
 	return buf
+}
+
+// Stream plays an internet stream into device until ctx is cancelled or the
+// stream ends, which is what makes ALSA a Streamer. ffmpeg decodes and writes
+// to the ALSA PCM itself, through the same names aplay takes, so the radio
+// reaches whichever output /audio chose and nothing else.
+//
+// -protocol_whitelist is the safety catch: ffmpeg reads file:, pipe: and a
+// dozen more, and a URL an operator typed must not reach the board's files.
+// radio.ValidateURL refuses those on the form; this refuses them whatever
+// got into config.json. The reconnect flags ride out a dropped connection
+// inside one run, so the player's own backoff is for a station that is
+// really gone; -rw_timeout ends one that stalls without dropping, which no
+// reconnect notices and which would otherwise hold ffmpeg forever. The
+// volume filter is the radio's level within the card's — see
+// player.Background. -nostdin because a daemon's stdin is not ffmpeg's to
+// read.
+//
+// Cancelling ctx kills ffmpeg, and Stream returns only once it has exited,
+// so the PCM is released before the player hands the card to aplay for
+// whatever cut the radio off.
+func (a ALSA) Stream(ctx context.Context, device, url string, gain int) error {
+	if device == "" {
+		device = "default"
+	}
+	args := []string{
+		"-nostdin", "-hide_banner", "-loglevel", "error",
+		"-protocol_whitelist", "http,https,tls,tcp,crypto",
+		"-rw_timeout", "15000000",
+		"-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "30",
+		"-i", url,
+		"-af", fmt.Sprintf("volume=%.2f", float64(max(0, min(gain, 100)))/100),
+		"-f", "alsa", device,
+	}
+	var out []byte
+	var err error
+	if a.Run != nil {
+		out, err = a.Run(ctx, a.ffmpeg(), args...)
+	} else {
+		// Not run(): CombinedOutput keeps everything a process prints, and
+		// this one runs for hours. Only the end is kept, which is where the
+		// reason it stopped is.
+		var tail tailBuffer
+		cmd := exec.CommandContext(ctx, a.ffmpeg(), args...)
+		cmd.Stdout, cmd.Stderr = &tail, &tail
+		// After a cancel kills ffmpeg, Wait also waits for the output to
+		// drain; this bounds that, so a stuck pipe can never keep the
+		// player — and whatever cut the radio off — waiting.
+		cmd.WaitDelay = 2 * time.Second
+		err = cmd.Run()
+		out = []byte(tail.String())
+	}
+	if err != nil {
+		return fmt.Errorf("ffmpeg -f alsa %s: %w: %s", device, err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+// tailBuffer keeps the last limit bytes written to it, or the last
+// tailBufferLimit when limit is zero.
+type tailBuffer struct {
+	limit int
+	buf   []byte
+}
+
+const tailBufferLimit = 2048
+
+func (t *tailBuffer) Write(b []byte) (int, error) {
+	limit := t.limit
+	if limit <= 0 {
+		limit = tailBufferLimit
+	}
+	t.buf = append(t.buf, b...)
+	if over := len(t.buf) - limit; over > 0 {
+		t.buf = append(t.buf[:0], t.buf[over:]...)
+	}
+	return len(b), nil
+}
+
+func (t *tailBuffer) String() string { return string(t.buf) }
+
+func (a ALSA) ffmpeg() string {
+	if a.FfmpegBin != "" {
+		return a.FfmpegBin
+	}
+	return "ffmpeg"
 }

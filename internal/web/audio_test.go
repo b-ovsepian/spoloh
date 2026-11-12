@@ -1309,3 +1309,63 @@ func TestAudioStopRefusesAnOffSiteReturn(t *testing.T) {
 		t.Errorf("Location = %q, want the / fallback", loc)
 	}
 }
+
+// streamingBackend holds a radio stream open until it is cut, the way ffmpeg
+// holds the card.
+type streamingBackend struct {
+	*fakePlaybackBackend
+	on chan struct{}
+}
+
+func (b streamingBackend) Stream(ctx context.Context, _, _ string, _ int) error {
+	b.on <- struct{}{}
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+// While the radio streams to the headphone jack, ffmpeg holds that card and
+// opening it again fails as busy. A probe would mark the one working output
+// broken — and an operator who believed it would move the device to HDMI,
+// where it cannot play at all. The page leaves that card unprobed instead.
+func TestAudioDoesNotProbeTheCardTheRadioIsPlayingOn(t *testing.T) {
+	busy := player.ProbeResult{Detail: "aplay: main:850: audio open error: Device or resource busy"}
+	lister := realBoardProber()
+	lister.refuse["plughw:CARD=Headphones,DEV=0"] = busy
+	lister.refuse["hw:CARD=Headphones,DEV=0"] = busy
+
+	store, err := configstore.Open(filepath.Join(t.TempDir(), "config.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Update(func(c *config.Config) error { c.Audio.Device = "plughw:CARD=Headphones,DEV=0"; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	b := streamingBackend{newFakePlaybackBackend(), make(chan struct{}, 1)}
+	pl := player.New(b, "plughw:CARD=Headphones,DEV=0")
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	go pl.Run(ctx)
+	pl.SetBackground(player.Background{URL: "https://online.hitfm.ua/HitFM", Volume: 80, Gain: 50})
+	select {
+	case <-b.on:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the radio never started")
+	}
+
+	srv, err := web.New(web.Deps{Config: store, Devices: lister, Player: pl})
+	if err != nil {
+		t.Fatal(err)
+	}
+	setPassword(t, srv, "correct horse battery staple")
+	cookie := login(t, srv, "correct horse battery staple")
+	body := getAudio(t, srv, cookie, "")
+
+	for _, pcm := range lister.probed {
+		if strings.Contains(pcm, "CARD=Headphones") {
+			t.Errorf("the page probed %q while the radio held that card", pcm)
+		}
+	}
+	if strings.Contains(body, "Цей вихід зараз не вдається відкрити") {
+		t.Errorf("the output in use was reported broken while the radio played on it; body:\n%s", body)
+	}
+}

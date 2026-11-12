@@ -107,6 +107,15 @@ type Engine struct {
 	sched *scheduler.Runner
 	rnd   *rand.Rand
 
+	// radioWant is the background radioTick last handed the player, kept so
+	// the radio starting and stopping is logged once per change rather than
+	// once a second. Tick's goroutine only.
+	radioWant player.Background
+	// radioErrMu guards radioErrLogged, which the player's goroutine writes
+	// through radioFailed.
+	radioErrMu     sync.Mutex
+	radioErrLogged time.Time
+
 	nextPoll time.Time
 	pollWait time.Duration // the wait Tick most recently scheduled nextPoll for
 	attempt  int
@@ -220,6 +229,7 @@ func New(d Deps) *Engine {
 		// player is the only thing that sees the voice fall silent, and the
 		// engine is what owes the operator's hardware the word that it has.
 		d.Player.OnIdle = e.playerIdle
+		d.Player.OnBackgroundError = e.radioFailed
 	}
 	e.sched = scheduler.NewRunner(d.Sync, d.Config, e.fireScheduled)
 	e.sched.Logger = d.Logger
@@ -248,6 +258,7 @@ func (e *Engine) Tick(ctx context.Context) {
 	defer e.heartbeat(now)
 
 	e.sched.Tick(now)
+	e.radioTick(now)
 
 	// Scheduled events first and always: a chime at noon needs a clock and a
 	// speaker, not an upstream. Only the poll below has nothing to talk to

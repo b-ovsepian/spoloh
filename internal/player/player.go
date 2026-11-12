@@ -127,6 +127,17 @@ type Player struct {
 	// before Run; tests inject a short limit.
 	MaxPlayback time.Duration
 
+	// OnBackgroundError reports a background stream that ended with an
+	// error on its own — not one that gave way to a sound. It is retried
+	// regardless; see SetBackground. Set it before Run.
+	OnBackgroundError func(b Background, err error)
+
+	// After and Now replace time.After and time.Now for the background's
+	// retry waits. Nil means the real ones; tests inject them so a retry
+	// test does not wait out real minutes.
+	After func(time.Duration) <-chan time.Time
+	Now   func() time.Time
+
 	mu    sync.Mutex
 	queue []Request
 	cur   *current
@@ -136,6 +147,20 @@ type Player struct {
 	// queue was last found empty, so OnIdle reports the fall into silence
 	// rather than every trip around an idle loop.
 	spoke bool
+
+	// bg is the background SetBackground asked for; bgCancel stops it while
+	// it plays or waits to retry, and is nil otherwise; bgWait is how long
+	// to wait before streaming it again. See background.go.
+	bg       Background
+	bgCancel context.CancelFunc
+	bgWait   time.Duration
+	// bgHeld is Stop holding the background off; see Stop. bgErr and
+	// bgErrAt are its last failure; see BackgroundError.
+	bgHeld  bool
+	bgErr   error
+	bgErrAt time.Time
+	// bgDevice is the PCM a stream is holding right now; see StreamingCard.
+	bgDevice string
 }
 
 func New(b Backend, device string) *Player {
@@ -187,21 +212,30 @@ func (p *Player) Play(r Request) {
 	if p.cur != nil && r.Priority > p.cur.req.Priority {
 		p.cur.cancel()
 	}
-	p.mu.Unlock()
-
-	select {
-	case p.wake <- struct{}{}:
-	default:
+	// Every request outranks the background, whatever its priority.
+	if p.bgCancel != nil {
+		p.bgCancel()
 	}
+	p.mu.Unlock()
+	p.poke()
 }
 
-// Stop cancels whatever is playing and drops everything queued.
+// Stop cancels whatever is playing and drops everything queued, and holds
+// the background off until ResumeBackground or a different SetBackground.
+//
+// The hold is the point of the button: "Зупинити звук" means the speaker goes
+// quiet, and an operator who stops a siren to take the PA must not have the
+// radio start under them a moment later because the queue ran dry.
 func (p *Player) Stop() {
 	p.mu.Lock()
 	p.queue = nil
 	if p.cur != nil {
 		p.cur.stopped = true
 		p.cur.cancel()
+	}
+	p.bgHeld = true
+	if p.bgCancel != nil {
+		p.bgCancel()
 	}
 	p.mu.Unlock()
 }
@@ -276,6 +310,11 @@ func (p *Player) Run(ctx context.Context) {
 			// did not end the sound, and a preemption is exactly that case.
 			if p.fellSilent() && p.OnIdle != nil {
 				p.OnIdle()
+			}
+			// After OnIdle, never before: the voice has fallen silent
+			// whether or not the radio now comes back.
+			if p.playBackground(ctx) {
+				continue
 			}
 			select {
 			case <-ctx.Done():

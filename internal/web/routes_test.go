@@ -50,6 +50,7 @@ func TestEveryRouteIsPublicOrPrivateAsIntended(t *testing.T) {
 		"/sounds/upload":          false,
 		"/sounds/delete":          false,
 		"/audio":                  false,
+		"/radio":                  false,
 		"/time":                   false,
 		"/time/timezone":          false,
 		"/time/ntp":               false,

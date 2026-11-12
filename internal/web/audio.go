@@ -160,6 +160,14 @@ func (s *Server) probeOutputs(ctx context.Context, names []string) map[string]pr
 		if probeCtx.Err() != nil {
 			break
 		}
+		// The radio's ffmpeg holds this card, so opening it fails as busy —
+		// an answer about the radio, not the card, which is plainly working:
+		// the music is coming out of it. Left unprobed rather than marked
+		// broken, or an operator would move the device off the one output
+		// that plays.
+		if s.deps.Player != nil && s.deps.Player.StreamingCard(name) {
+			continue
+		}
 
 		res, err := prober.ProbeDevice(probeCtx, name)
 		if probeCtx.Err() != nil {

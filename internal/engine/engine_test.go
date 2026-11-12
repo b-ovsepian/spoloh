@@ -37,12 +37,24 @@ type recorder struct {
 	// existing test — which never touches hold — sees Play return
 	// immediately, exactly as before this field existed.
 	hold chan struct{}
+
+	// streams reports the radio: "on" when a stream starts and "off" when it
+	// is cut. It makes the recorder a player.Streamer, which every test with
+	// the radio switched off — config.Default() — never reaches.
+	streams chan string
 }
 
 func newRecorder() *recorder {
 	closed := make(chan struct{})
 	close(closed)
-	return &recorder{ch: make(chan string, 8), hold: closed}
+	return &recorder{ch: make(chan string, 8), hold: closed, streams: make(chan string, 64)}
+}
+
+func (r *recorder) Stream(ctx context.Context, _, _ string, _ int) error {
+	r.streams <- "on"
+	<-ctx.Done()
+	r.streams <- "off"
+	return nil
 }
 
 func (r *recorder) SetVolume(context.Context, string, int) error { return nil }
@@ -98,6 +110,7 @@ type harness struct {
 	// read back what a poll wrote.
 	statePath string
 	rec       *recorder
+	pl        *player.Player
 	log       *eventlog.Log
 	set       func(alert bool)
 	// setOther drives the second oblast in the snapshot, for the tests that
@@ -215,6 +228,7 @@ func newHarnessWith(t *testing.T, machine *alertstate.Machine, clk clock.Clock, 
 		cfg:       cfg,
 		statePath: statePath,
 		rec:       rec,
+		pl:        pl,
 		log:       lg,
 		set:       func(v bool) { mu.Lock(); alert = v; mu.Unlock() },
 		setOther:  func(v bool) { mu.Lock(); otherAlert = v; mu.Unlock() },

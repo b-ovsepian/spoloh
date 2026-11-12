@@ -143,6 +143,36 @@ type Config struct {
 	// controller, a light — acts at the same moment the speaker does. See
 	// Webhook and ValidateWebhook.
 	Webhooks []Webhook `json:"webhooks,omitempty"`
+
+	// Radio is an internet stream the device plays while it has nothing to
+	// announce. Absent from every config.json written before it existed,
+	// which is exactly right: the zero value is a radio switched off.
+	Radio Radio `json:"radio"`
+}
+
+// Radio is what /radio configures. It is deliberately not checked by
+// Validate, for the reason webhooks are not: a stored setting this build
+// would refuse must never stop the daemon starting, and a radio that cannot
+// play is a radio that does not play, not a device that cannot announce.
+// /radio refuses bad input with radio.Validate; the engine treats whatever is
+// stored as "not due" when it cannot make sense of it.
+type Radio struct {
+	Enabled bool `json:"enabled"`
+	// Station is a radio.Stations ID, or radio.Custom for URL below.
+	Station string `json:"station,omitempty"`
+	URL     string `json:"url,omitempty"`
+	Volume  int    `json:"volume,omitempty"`
+	// Weekdays, From and To are one window a week, the shape a scheduled
+	// event's repeat window has and for the same reason: it never wraps
+	// past midnight, so no day ever has to be asked whose night it is.
+	Weekdays []int  `json:"weekdays,omitempty"`
+	From     string `json:"from,omitempty"`
+	To       string `json:"to,omitempty"`
+	// PauseDuringAlert keeps the radio quiet from a raid's siren to its
+	// all-clear. Off — the zero value, and so the behaviour of a config that
+	// never mentions it — the radio plays on between announcements, which
+	// is what the operator who asked for this wanted by default.
+	PauseDuringAlert bool `json:"pause_during_alert,omitempty"`
 }
 
 type Device struct {
@@ -700,6 +730,12 @@ func Default() *Config {
 			PollInterval: Duration(15 * time.Second),
 		},
 		Audio: Audio{Device: "default", MasterVolume: 80},
+		// Off, and only a starting point for /radio's form: a weekday working
+		// day on the first station in the list, at half volume.
+		Radio: Radio{
+			Station: "hitfm", Volume: 50,
+			Weekdays: []int{1, 2, 3, 4, 5}, From: "08:00", To: "18:00",
+		},
 		QuietHours: QuietHours{
 			Enabled:   false,
 			From:      "22:00",
