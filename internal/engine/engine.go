@@ -489,7 +489,11 @@ func (e *Engine) PollOnce(ctx context.Context) error {
 
 	switch transition {
 	case alertstate.Started:
-		e.announce(config.TriggerAlertStart, eventlog.KindAlert, now)
+		if e.d.Machine.Level().TreatAsRed() {
+			e.announceRedStart(now)
+		} else {
+			e.announce(config.TriggerAlertStart, eventlog.KindAlert, now)
+		}
 	case alertstate.Ended:
 		e.announce(config.TriggerAlertEnd, eventlog.KindAlert, now)
 	case alertstate.Escalated:
@@ -692,12 +696,55 @@ func (e *Engine) announce(trigger, kind string, at time.Time) {
 // the threat has grown, with the same sound that told them it existed.
 func (e *Engine) announceEscalation(at time.Time) {
 	e.fireWebhooks(config.PhaseOnTrigger, config.TriggerAlertEscalated)
+	// The session belongs to whichever event's sound is played: the
+	// start's sound arrives with the start's before and after, which is
+	// what wakes whatever that sound needs woken.
+	e.speak(e.redSound(at))
+}
 
-	trigger := config.TriggerAlertEscalated
-	if !configured(e.d.Config(), trigger) {
-		trigger = config.TriggerAlertStart
+// announceRedStart announces a raid that was red from its first reading — or
+// unknown, which is handled as red — so no escalation will ever follow it.
+//
+// Seen on a real board: an operator who gave alert-start the yellow warning's
+// sound, expecting red to arrive as an escalation, heard that yellow warning
+// for a raid that went straight to red. The sound the operator chose for red
+// is the sound of a red raid however it got there; see redSound for what
+// stands in when there is none.
+//
+// The session is still the start's. Its before and after webhooks are what
+// wake an amplifier or mute a music feed for a raid, and a raid that began
+// red began all the same: opened under alert_escalated, they would never
+// fire and the red sound would play into a sleeping amplifier. Both
+// on-trigger webhooks fire, because both things are true — the raid began,
+// and it is red — and a relay wired to red alone must not stay open through
+// a red raid because nothing yellow came first.
+func (e *Engine) announceRedStart(at time.Time) {
+	e.d.Logger.Info("the raid started red", "level", e.d.Machine.Level())
+	e.fireWebhooks(config.PhaseOnTrigger, config.TriggerAlertStart)
+	e.fireWebhooks(config.PhaseOnTrigger, config.TriggerAlertEscalated)
+	_, reqs := e.redSound(at)
+	e.speak(config.TriggerAlertStart, reqs)
+}
+
+// redSound resolves what a red raid sounds like, and names the trigger whose
+// event supplied it: the operator's alert_escalated event, or the start's
+// when that gives nothing to play.
+//
+// "Nothing to play" means not configured, or configured with a sound that is
+// gone from the library — which play has already logged and recorded, and
+// which must not leave a raid announced with silence. It does not include
+// quiet hours: a red sound they silenced has been written down as silenced,
+// and falling back would only be silenced again and write the operator a
+// second suppression row for one raid.
+func (e *Engine) redSound(at time.Time) (string, []player.Request) {
+	cfg := e.d.Config()
+	if configured(cfg, config.TriggerAlertEscalated) {
+		reqs := e.resolve(config.TriggerAlertEscalated, eventlog.KindAlert, at)
+		if len(reqs) > 0 || len(rules.Suppressions(cfg, config.TriggerAlertEscalated, at)) > 0 {
+			return config.TriggerAlertEscalated, reqs
+		}
 	}
-	e.playTrigger(trigger, eventlog.KindAlert, at)
+	return config.TriggerAlertStart, e.resolve(config.TriggerAlertStart, eventlog.KindAlert, at)
 }
 
 // configured reports whether the operator has an enabled event on this
@@ -720,6 +767,13 @@ func configured(cfg *config.Config, trigger string) bool {
 // playTrigger is the half of an announcement that reaches the speaker: what
 // quiet hours silenced, written down, and what survives, played.
 func (e *Engine) playTrigger(trigger, kind string, at time.Time) {
+	e.speak(trigger, e.resolve(trigger, kind, at))
+}
+
+// resolve turns a trigger into the requests that will carry it, writing down
+// anything quiet hours silenced on the way. It queues nothing; the caller
+// hands the result to speak as one session.
+func (e *Engine) resolve(trigger, kind string, at time.Time) []player.Request {
 	cfg := e.d.Config()
 	// Quiet hours can be configured to cover alerts, and then this is a
 	// trigger that produces no decisions, no playback and — without the
@@ -750,7 +804,7 @@ func (e *Engine) playTrigger(trigger, kind string, at time.Time) {
 	for _, d := range rules.Resolve(cfg, trigger, at) {
 		reqs = append(reqs, e.play(d, kind, at)...)
 	}
-	e.speak(trigger, reqs)
+	return reqs
 }
 
 func (e *Engine) fireScheduled(ev config.Event, at time.Time) {

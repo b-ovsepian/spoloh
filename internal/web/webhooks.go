@@ -235,9 +235,10 @@ func webhookPhases(selected string) []webhookPhaseOption {
 // clock.
 //
 // The escalation fires its own webhook and never the start's, whether or not
-// an event names it: see Engine.announceEscalation. A relay driven from this
-// screen therefore hears about a rise in severity only if the operator adds
-// a row for it, which is why the name has to be on this list at all.
+// an event names it: see Engine.announceEscalation. A raid that starts red
+// fires both, since it both began and is red: see Engine.announceRedStart. A
+// relay driven from this screen therefore hears about red only if the
+// operator adds a row for it, which is why the name has to be on this list.
 func webhookTriggers(selected string) []webhookTriggerOption {
 	triggers := []string{
 		config.TriggerAlertStart,

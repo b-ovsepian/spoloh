@@ -812,6 +812,15 @@ func TestEventsPageOffersAnEscalationSoundWhenNoneIsConfigured(t *testing.T) {
 	if !strings.Contains(body, "звуком початку тривоги") {
 		t.Error("the page does not say that an unconfigured escalation is announced with the alert-start sound")
 	}
+	// The same sound also answers a raid that starts red with no yellow
+	// before it, and an operator choosing the alert-start sound needs to know
+	// that, or they pick the yellow warning for it and a red raid gets that.
+	if !strings.Contains(body, "одразу починається червоною") {
+		t.Error("the page does not say that a raid starting red is announced with the red sound too")
+	}
+	if !strings.Contains(body, "рівень якої джерело не повідомляє, теж вважається червоною") {
+		t.Error("the page does not say that a raid of unknown level is announced as red")
+	}
 
 	// And once one exists, the offer is gone: there is nothing to choose
 	// between two escalation events, and a second would answer one rise in

@@ -67,6 +67,12 @@ const (
 	// old one: nothing fired for it before, so no stored configuration can
 	// be made worse by its existence.
 	//
+	// A raid that starts red, or at a level its source cannot name, uses it
+	// too: its webhook fires alongside TriggerAlertStart's, and its sound
+	// replaces the start's, inside the start's session. It is the operator's
+	// sound for red, and red is red whether or not yellow came first. See
+	// Engine.announceRedStart.
+	//
 	// An operator who configures nothing for it still hears the escalation.
 	// The engine plays TriggerAlertStart in its place — see
 	// Engine.announceEscalation — because a rise in severity is a start's

@@ -95,8 +95,10 @@ func TestAWebhookFiresOnTheAlertStartTransition(t *testing.T) {
 	h.set(true)
 	pollTimes(t, h, ctx, 1)
 
-	want := []string{config.TriggerAlertStart}
-	if got := hooks.triggers(); len(got) != 1 || got[0] != want[0] {
+	// The harness source cannot name a level, and unknown is red, so the
+	// start also fires the red webhook: see announceRedStart.
+	want := []string{config.TriggerAlertStart, config.TriggerAlertEscalated}
+	if got := hooks.triggers(); len(got) != 2 || got[0] != want[0] || got[1] != want[1] {
 		t.Fatalf("triggers = %v, want %v", got, want)
 	}
 }
@@ -129,7 +131,9 @@ func TestAnAlertEndWebhookWaitsForTheConfirmedAllClear(t *testing.T) {
 
 	pollTimes(t, h, ctx, 1)
 
-	want := []string{config.TriggerAlertStart, config.TriggerAlertEnd}
+	// The harness source cannot name a level, and unknown is red, so the
+	// start also fires the red webhook: see announceRedStart.
+	want := []string{config.TriggerAlertStart, config.TriggerAlertEscalated, config.TriggerAlertEnd}
 	got := hooks.triggers()
 	if len(got) != len(want) {
 		t.Fatalf("triggers = %v, want %v", got, want)
@@ -169,9 +173,11 @@ func TestQuietHoursSilenceTheSirenAndStillFireTheWebhook(t *testing.T) {
 	h.set(false)
 	pollTimes(t, h, ctx, alertstate.EndConfirmations)
 
-	want := []string{config.TriggerAlertStart, config.TriggerAlertEnd}
+	// The harness source cannot name a level, and unknown is red, so the
+	// start also fires the red webhook: see announceRedStart.
+	want := []string{config.TriggerAlertStart, config.TriggerAlertEscalated, config.TriggerAlertEnd}
 	got := hooks.triggers()
-	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] || got[2] != want[2] {
 		t.Fatalf("triggers = %v, want %v", got, want)
 	}
 	// The siren itself stayed silent: that is what quiet hours were asked

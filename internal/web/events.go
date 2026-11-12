@@ -59,7 +59,7 @@ func triggerLabel(trigger string) string {
 	case config.TriggerAlertEnd:
 		return "Кінець тривоги"
 	case config.TriggerAlertEscalated:
-		return "Посилення тривоги"
+		return "Червона тривога"
 	case config.TriggerScheduled:
 		return "За розкладом"
 	case config.TriggerManual:
@@ -646,7 +646,7 @@ func (s *Server) handleEventsAdd(w http.ResponseWriter, r *http.Request) {
 	// tidiness guard, and losing the race to another writer costs the
 	// operator a row they can delete, never an announcement.
 	if trigger == config.TriggerAlertEscalated && hasTrigger(s.deps.Config.Get().Events, trigger) {
-		reject("Подія для посилення тривоги вже є — змініть її нижче.")
+		reject("Подія для червоної тривоги вже є — змініть її нижче.")
 		return
 	}
 
