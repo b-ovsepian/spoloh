@@ -456,3 +456,28 @@ func TestSecurityHeadersArePresent(t *testing.T) {
 		}
 	}
 }
+
+// The network supervisor lowers an access point nobody is using, to look for
+// a network the device remembers; a request is how it knows somebody is.
+// The request here is one with no session, deliberately: an operator on the
+// login screen is using the access point every bit as much as one signed in,
+// so the record has to be taken before authentication, not after.
+func TestARequestMarksTheDashboardInUse(t *testing.T) {
+	store, err := configstore.Open(filepath.Join(t.TempDir(), "config.json"))
+	if err != nil {
+		t.Fatalf("configstore.Open: %v", err)
+	}
+	act := &netmgr.Activity{}
+	srv, err := web.New(web.Deps{Config: store, Activity: act})
+	if err != nil {
+		t.Fatalf("web.New: %v", err)
+	}
+	at := time.Date(2026, 9, 7, 8, 0, 0, 0, time.UTC)
+	srv.SetNow(func() time.Time { return at })
+
+	srv.Handler().ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", nil))
+
+	if !act.Within(at, time.Second) {
+		t.Fatal("a dashboard request was not recorded as activity; the supervisor would pull the access point from under the operator")
+	}
+}

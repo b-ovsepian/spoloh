@@ -42,6 +42,11 @@ type Deps struct {
 	// the join in progress. Nil is tolerated like every other optional
 	// dependency here, and a nil gate is simply never held.
 	JoinGate *netmgr.JoinGate
+	// Activity is touched by every request, so the network supervisor waits
+	// while someone is using the access point instead of lowering it from
+	// under them — see netmgr.Activity. Nil is tolerated like every other
+	// optional dependency here, and a nil record is simply never recent.
+	Activity *netmgr.Activity
 	// NetStatus is what the network supervisor last saw. It is what decides
 	// whether / is the dashboard or the network setup screen — see
 	// handleHome — and it is read rather than asking Network above, which
@@ -218,8 +223,23 @@ func (s *Server) handle(pattern string, h http.Handler) {
 // wraps the whole mux rather than individual routes, so a route a later task
 // adds is protected by default and has to be deliberately exempted, rather
 // than protected only if whoever adds it remembers to wrap it.
+//
+// recordActivity is outermost so that a request with no session counts too:
+// someone on the login screen is using the access point as much as someone
+// signed in.
 func (s *Server) Handler() http.Handler {
-	return securityHeaders(s.requireAuth(s.mux))
+	return s.recordActivity(securityHeaders(s.requireAuth(s.mux)))
+}
+
+// recordActivity tells the network supervisor someone is using the
+// dashboard, so it does not lower the access point from under them to look
+// for a saved network. The stamp is taken when the request arrives: a status
+// stream left open in a tab is one request, not continuous use.
+func (s *Server) recordActivity(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		s.deps.Activity.Touch(s.now())
+		next.ServeHTTP(w, r)
+	})
 }
 
 // publicPaths never require a session: they are how an operator reaches or

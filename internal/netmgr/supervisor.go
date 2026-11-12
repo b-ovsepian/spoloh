@@ -41,14 +41,55 @@ const failureLogInterval = 5 * time.Minute
 // deliver, so a slow tick costs cadence rather than correctness.
 const tickDeadline = 30 * time.Second
 
+// searchInterval is how long the access point stays up, with nothing above
+// it, before the supervisor lowers it to let NetworkManager look for a
+// network it remembers. On a single-radio board the access point is the
+// radio, and NetworkManager only autoconnects a device that is free: without
+// this, a device whose router was simply slower to boot after a power cut
+// serves its own access point forever and receives no alerts.
+//
+// A board with a second radio (a USB dongle beside the onboard Wi-Fi) loses
+// its access point for a search it did not need. That is accepted: telling
+// the two apart is more machinery than one search window every few minutes
+// costs.
+const searchInterval = 5 * time.Minute
+
+// searchWindow is how long the radio is left to NetworkManager once the
+// access point is down. It is a constant and not Network.APFallbackAfter,
+// which the boot grace uses, for two reasons. NetworkManager's own DHCP
+// timeout is 45 seconds and only starts after a scan and an association on a
+// radio that was serving an access point a moment ago, so a window that short
+// can end mid-lease and raise the access point over a join about to succeed —
+// every cycle. And a hand-edited ap_fallback_after of an hour would otherwise
+// take the access point down for an hour at a time.
+const searchWindow = 90 * time.Second
+
+// clockStep is how far apart two looks at the access point can be before the
+// gap is taken for the clock moving rather than time passing. Ticks come
+// every tickInterval, and a slow one costs at most tickDeadline, so anything
+// past a minute is a step. See searchForSavedNetwork.
+const clockStep = time.Minute
+
+// searchQuietFor is how recently a dashboard request must have arrived for
+// the search to wait: someone on the setup screen is using the access point,
+// and pulling it from under them every five minutes would make the device
+// impossible to configure. See Activity for why requests and not clients.
+const searchQuietFor = 2 * time.Minute
+
+// searchCeiling bounds that wait. A tab left open on the setup screen, or an
+// operator who wanders off mid-page, must not keep the device off the network
+// it remembers indefinitely; at the worst the operator loses the page for one
+// search window and reconnects.
+const searchCeiling = 15 * time.Minute
+
 // Supervisor keeps the device reachable. It holds no belief about whether the
 // hotspot is up — it reads that from the manager each tick, because a belief
 // the world can contradict is a bug waiting to happen.
 //
-// Tick and Run are for a single goroutine: downSince and the failure-log
-// timestamps below are read and written without synchronization. That is
-// safe because the object the rest of the daemon shares across goroutines is
-// the Manager passed into NewSupervisor — NMCLI and Fake are both already
+// Tick and Run are for a single goroutine: downSince, the search state and
+// the failure-log timestamps below are read and written without
+// synchronization. That is safe because the object the rest of the daemon
+// shares across goroutines is the Manager passed into NewSupervisor — NMCLI and Fake are both already
 // safe for concurrent use — not the Supervisor itself, and nothing holds a
 // second reference to one. A caller that starts a second goroutine calling
 // Tick breaks that invariant and must add its own synchronization.
@@ -68,6 +109,33 @@ type Supervisor struct {
 	// acted on instead of asking nmcli again. Nil is valid and means nobody
 	// is listening — see StatusFeed.
 	feed *StatusFeed
+
+	// act is when the dashboard last served a request, which defers the
+	// search for a saved network — see searchQuietFor. Nil is valid and means
+	// nobody is ever waiting on the access point — see Activity.
+	act *Activity
+
+	// apSince is when the access point was first seen up with nothing above
+	// it, or the zero time otherwise; it is what searchInterval counts from.
+	// Seen, not raised: a daemon restarted under an access point the previous
+	// run raised must still go looking.
+	apSince time.Time
+
+	// apSeen is the last time the access point was seen up (or raised), so a
+	// forward clock step can be told from an access point that has really
+	// been up that long. See clockStep.
+	apSeen time.Time
+
+	// searchUntil is when the current search for a saved network ends, or the
+	// zero time when none is under way. Until then the radio is left alone
+	// even though downSince is long past the grace period — that is the whole
+	// point of the search, and without it the next tick would raise the
+	// access point straight back.
+	searchUntil time.Time
+
+	// searchedInVain is set when a search ends with nothing found, so the
+	// raise that follows is logged quietly: see the log calls in Tick.
+	searchedInVain bool
 
 	// downSince is when the device was first seen without a connection, or the
 	// zero time while it is connected. It starts at construction time (see
@@ -90,11 +158,11 @@ type Supervisor struct {
 	lastStatusFailureLog time.Time
 }
 
-func NewSupervisor(m Manager, cfg func() *config.Config, clk clock.Clock, logger *slog.Logger, join *JoinGate, feed *StatusFeed) *Supervisor {
+func NewSupervisor(m Manager, cfg func() *config.Config, clk clock.Clock, logger *slog.Logger, join *JoinGate, feed *StatusFeed, act *Activity) *Supervisor {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Supervisor{mgr: m, cfg: cfg, clk: clk, logger: logger, join: join, feed: feed, downSince: clk.Now()}
+	return &Supervisor{mgr: m, cfg: cfg, clk: clk, logger: logger, join: join, feed: feed, act: act, downSince: clk.Now()}
 }
 
 func (s *Supervisor) Run(ctx context.Context) {
@@ -154,7 +222,15 @@ func (s *Supervisor) Tick(ctx context.Context) {
 	s.feed.Publish(st, now)
 
 	if st.Connected {
+		if !s.searchUntil.IsZero() {
+			// The one outcome of a search worth a line: the device went
+			// looking and found its way back.
+			s.logger.Info("found a saved network while the access point was down", "ssid", st.SSID)
+		}
 		s.downSince = time.Time{}
+		s.apSince = time.Time{}
+		s.searchUntil = time.Time{}
+		s.searchedInVain = false
 		if st.HotspotUp {
 			// downSince is already cleared above, so a StopHotspot that keeps
 			// failing re-enters this branch every tick — exactly the case
@@ -188,7 +264,26 @@ func (s *Supervisor) Tick(ctx context.Context) {
 		s.downSince = now
 	}
 	if st.HotspotUp {
-		return // already reachable; nothing to do until a network appears
+		// Reachable, but on a single-radio board no network can "appear"
+		// while the radio serves the access point; see searchInterval.
+		s.searchUntil = time.Time{}
+		s.searchForSavedNetwork(ctx, now)
+		return
+	}
+	s.apSince = time.Time{}
+
+	if !s.searchUntil.IsZero() {
+		// A search can be no longer than its window from now. A clock
+		// stepped backwards mid-search would otherwise stretch it by the
+		// whole step — hours with no access point and no network either.
+		if s.searchUntil.Sub(now) > searchWindow {
+			s.searchUntil = now.Add(searchWindow)
+		}
+		if now.Before(s.searchUntil) {
+			return
+		}
+		s.searchUntil = time.Time{}
+		s.searchedInVain = true
 	}
 	if now.Sub(s.downSince) < s.cfg().Network.APFallbackAfter.Std() {
 		return
@@ -213,8 +308,65 @@ func (s *Supervisor) Tick(ctx context.Context) {
 		return
 	}
 	s.lastStartFailureLog = time.Time{}
-	s.logger.Warn("no network, raised the access point",
+	s.apSince, s.apSeen = now, now
+	// After a search that found nothing, the raise is the design working,
+	// once every few minutes for as long as the network stays away: at Warn
+	// that is hundreds of lines a day onto an SD card that wears out. The
+	// first raise of an outage is the event, and keeps its Warn.
+	log := s.logger.Warn
+	if s.searchedInVain {
+		log = s.logger.Debug
+	}
+	s.searchedInVain = false
+	log("no network, raised the access point",
 		"ssid", cfg.Network.APSSID, "down_for", now.Sub(s.downSince).Round(time.Second))
+}
+
+// searchForSavedNetwork lowers an access point that has stood alone for
+// searchInterval, so NetworkManager can autoconnect to a network it
+// remembers on the radio it gets back. If none answers within the window,
+// the ordinary fallback in Tick raises the access point again.
+//
+// It is called only while the access point is up with nothing above it.
+func (s *Supervisor) searchForSavedNetwork(ctx context.Context, now time.Time) {
+	seen := s.apSeen
+	s.apSeen = now
+	if s.apSince.IsZero() || s.apSince.After(now) || now.Sub(seen) > clockStep {
+		// First sight of it, or a clock that stepped. Backwards must not
+		// push the search away by the whole step, as with downSince.
+		// Forwards must not make an access point raised a minute ago look
+		// days old: on a board with no RTC and no upstream the clock is
+		// wrong, the operator on the access point is who fixes it from
+		// /time, and their request was stamped before the step — so neither
+		// the ceiling nor the dashboard deferral would hold the access point
+		// up under the form they just submitted.
+		s.apSince = now
+		return
+	}
+	up := now.Sub(s.apSince)
+	if up < searchInterval {
+		return
+	}
+	if up < searchCeiling && s.act.Within(now, searchQuietFor) {
+		return
+	}
+	// A board with nothing saved but its own access point can find nothing,
+	// and the operator setting it up would lose their connection every few
+	// minutes for it. Asked only now, once per interval, not every tick. An
+	// unreadable answer searches anyway: ninety seconds of access point is
+	// cheaper than every alert until somebody visits the board.
+	if saved, err := s.mgr.HasSavedWiFi(ctx); err == nil && !saved {
+		s.apSince = now
+		return
+	}
+	if err := s.mgr.StopHotspot(ctx); err != nil {
+		s.logFailure(&s.lastStopFailureLog, now, s.logger.Error, "could not lower the access point", err)
+		return
+	}
+	s.lastStopFailureLog = time.Time{}
+	s.searchUntil = now.Add(searchWindow)
+	s.logger.Debug("no network, lowered the access point to look for a saved one",
+		"up_for", up.Round(time.Second))
 }
 
 // logFailure logs a failed status read, StartHotspot or StopHotspot attempt

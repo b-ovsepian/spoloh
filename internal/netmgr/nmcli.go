@@ -457,3 +457,28 @@ func (m NMCLI) StopHotspot(ctx context.Context) error {
 	_, err := m.run(ctx, "connection", "down", hotspotConnID)
 	return err
 }
+
+// HasSavedWiFi reports whether a Wi-Fi profile other than hotspotConnID is
+// saved: the dashboard's join, one the OS image wrote, one made by hand.
+// Whether its network is in range is not asked — that is what lowering the
+// access point finds out.
+//
+// TYPE comes first and NAME last for the reason parseStatus puts CONNECTION
+// last: the name is the field that can hold a colon, so it is rejoined from
+// whatever follows the fixed field.
+func (m NMCLI) HasSavedWiFi(ctx context.Context) (bool, error) {
+	out, err := m.run(ctx, "-t", "-f", "TYPE,NAME", "connection", "show")
+	if err != nil {
+		return false, err
+	}
+	for _, line := range splitLines(out) {
+		fields := splitTerseFields(line)
+		if len(fields) < 2 {
+			continue
+		}
+		if fields[0] == "802-11-wireless" && strings.Join(fields[1:], ":") != hotspotConnID {
+			return true, nil
+		}
+	}
+	return false, nil
+}

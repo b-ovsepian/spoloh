@@ -302,7 +302,12 @@ func run(configPath, dataDir, listen, socket string) error {
 	// which past the grace period is precisely the state it acts on. See
 	// netmgr.JoinGate.
 	joinGate := &netmgr.JoinGate{}
-	sup := netmgr.NewSupervisor(netManager, cfgFn, clock.System{Loc: loc}, logger, joinGate, netStatus)
+	// Every dashboard request touches this, and the supervisor reads it before
+	// lowering a lone access point to look for a network the device
+	// remembers: someone on the setup screen must not have it pulled from
+	// under them. See netmgr.Activity.
+	activity := &netmgr.Activity{}
+	sup := netmgr.NewSupervisor(netManager, cfgFn, clock.System{Loc: loc}, logger, joinGate, netStatus, activity)
 
 	// timeManager is the write side of the tool clock.Timedatectl above
 	// reads: the /time page sets the zone, the clock and the NTP switch
@@ -341,6 +346,7 @@ func run(configPath, dataDir, listen, socket string) error {
 		Network:   netManager,
 		NetStatus: netStatus,
 		JoinGate:  joinGate,
+		Activity:  activity,
 		Devices:   alsa,
 		Timedate:  timeManager,
 		Logger:    logger,

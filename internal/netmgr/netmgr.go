@@ -49,4 +49,8 @@ type Manager interface {
 	Connect(ctx context.Context, ssid, psk string) error
 	StartHotspot(ctx context.Context, ssid, psk string) error
 	StopHotspot(ctx context.Context) error
+	// HasSavedWiFi reports whether any Wi-Fi network other than the
+	// device's own access point is saved: whether lowering the access point
+	// to look for one could find anything at all.
+	HasSavedWiFi(ctx context.Context) (bool, error)
 }

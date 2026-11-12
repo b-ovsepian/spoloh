@@ -30,6 +30,12 @@ type Fake struct {
 	StartHotspotErr error
 	StopHotspotErr  error
 
+	// NoSavedWiFi is what HasSavedWiFi denies. Inverted so the zero value is
+	// a device with a network saved, which every supervisor test before
+	// this field existed assumed.
+	NoSavedWiFi  bool
+	SavedWiFiErr error
+
 	mu    sync.Mutex
 	calls []Call
 }
@@ -123,4 +129,14 @@ func (f *Fake) StopHotspot(ctx context.Context) error {
 	}
 	f.CurrentStatus.HotspotUp = false
 	return nil
+}
+
+func (f *Fake) HasSavedWiFi(ctx context.Context) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls = append(f.calls, Call{Method: "HasSavedWiFi"})
+	if f.SavedWiFiErr != nil {
+		return false, f.SavedWiFiErr
+	}
+	return !f.NoSavedWiFi, nil
 }

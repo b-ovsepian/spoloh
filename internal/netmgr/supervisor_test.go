@@ -26,7 +26,7 @@ func supervisor(t *testing.T, f *netmgr.Fake, start time.Time) (*netmgr.Supervis
 	clk := clock.NewFake(start)
 	cfg := config.Default() // APFallbackAfter is 45s
 	cfg.Network.APPassword = testAPPassword
-	return netmgr.NewSupervisor(f, func() *config.Config { return cfg }, clk, nil, nil, nil), clk
+	return netmgr.NewSupervisor(f, func() *config.Config { return cfg }, clk, nil, nil, nil, nil), clk
 }
 
 // supervisorWithGate is supervisor plus the join gate the dashboard holds
@@ -36,7 +36,7 @@ func supervisorWithGate(t *testing.T, f *netmgr.Fake, start time.Time, g *netmgr
 	clk := clock.NewFake(start)
 	cfg := config.Default()
 	cfg.Network.APPassword = testAPPassword
-	return netmgr.NewSupervisor(f, func() *config.Config { return cfg }, clk, nil, g, nil), clk
+	return netmgr.NewSupervisor(f, func() *config.Config { return cfg }, clk, nil, g, nil, nil), clk
 }
 
 // supervisorWithLog is supervisor plus a logger writing into a buffer the
@@ -48,7 +48,7 @@ func supervisorWithLog(t *testing.T, f *netmgr.Fake, start time.Time) (*netmgr.S
 	cfg.Network.APPassword = testAPPassword
 	var buf bytes.Buffer
 	logger := slog.New(slog.NewTextHandler(&buf, nil))
-	return netmgr.NewSupervisor(f, func() *config.Config { return cfg }, clk, logger, nil, nil), clk, &buf
+	return netmgr.NewSupervisor(f, func() *config.Config { return cfg }, clk, logger, nil, nil, nil), clk, &buf
 }
 
 // calls counts, from f's call log, how many times method was invoked.
@@ -362,6 +362,7 @@ func (p *deadlineProbe) Scan(context.Context) ([]netmgr.Network, error)   { retu
 func (p *deadlineProbe) Rescan(context.Context) ([]netmgr.Network, error) { return nil, nil }
 func (p *deadlineProbe) Connect(context.Context, string, string) error    { return nil }
 func (p *deadlineProbe) StopHotspot(context.Context) error                { return nil }
+func (p *deadlineProbe) HasSavedWiFi(context.Context) (bool, error)       { return true, nil }
 
 func TestTickBoundsEveryCommand(t *testing.T) {
 	// A wedged NetworkManager must not stop the supervisor for good. Tick runs
@@ -372,7 +373,7 @@ func TestTickBoundsEveryCommand(t *testing.T) {
 	cfg := config.Default()
 	cfg.Network.APPassword = testAPPassword
 	logger := slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil))
-	s := netmgr.NewSupervisor(p, func() *config.Config { return cfg }, clk, logger, nil, nil)
+	s := netmgr.NewSupervisor(p, func() *config.Config { return cfg }, clk, logger, nil, nil, nil)
 
 	clk.Advance(46 * time.Second)
 	s.Tick(context.Background())
@@ -576,7 +577,7 @@ func TestAJoinBeginningDuringTheStatusReadStopsTheRaise(t *testing.T) {
 	cfg := config.Default()
 	cfg.Network.APPassword = testAPPassword
 	logger := slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil))
-	s := netmgr.NewSupervisor(m, func() *config.Config { return cfg }, clk, logger, gate, nil)
+	s := netmgr.NewSupervisor(m, func() *config.Config { return cfg }, clk, logger, gate, nil, nil)
 
 	// Constructed first, then advanced: downSince is anchored at construction,
 	// so advancing before it would leave this tick short of the grace period
@@ -630,3 +631,292 @@ func (m *statusHookManager) Scan(context.Context) ([]netmgr.Network, error)   { 
 func (m *statusHookManager) Rescan(context.Context) ([]netmgr.Network, error) { return nil, nil }
 func (m *statusHookManager) Connect(context.Context, string, string) error    { return nil }
 func (m *statusHookManager) StopHotspot(context.Context) error                { return nil }
+func (m *statusHookManager) HasSavedWiFi(context.Context) (bool, error)       { return true, nil }
+
+// supervisorWithActivity is supervisor plus the record of dashboard requests
+// the supervisor consults before it lowers the access point to look around.
+func supervisorWithActivity(t *testing.T, f *netmgr.Fake, start time.Time, act *netmgr.Activity) (*netmgr.Supervisor, *clock.Fake) {
+	t.Helper()
+	clk := clock.NewFake(start)
+	cfg := config.Default()
+	cfg.Network.APPassword = testAPPassword
+	return netmgr.NewSupervisor(f, func() *config.Config { return cfg }, clk, nil, nil, nil, act), clk
+}
+
+// raiseAccessPoint takes a device that has been down since boot past the
+// grace period, and fails the test unless that raised the access point.
+func raiseAccessPoint(t *testing.T, s *netmgr.Supervisor, clk *clock.Fake, f *netmgr.Fake) {
+	t.Helper()
+	clk.Advance(46 * time.Second)
+	s.Tick(context.Background())
+	if calls(f, "StartHotspot") != 1 {
+		t.Fatal("setup: the access point should be up")
+	}
+}
+
+// tickFor ticks once a second for d, advancing the clock before each tick.
+func tickFor(s *netmgr.Supervisor, clk *clock.Fake, d time.Duration, each func()) {
+	for i := time.Duration(0); i < d; i += time.Second {
+		clk.Advance(time.Second)
+		if each != nil {
+			each()
+		}
+		s.Tick(context.Background())
+	}
+}
+
+// The power comes back to the device and the router together, and the router
+// is the slower to boot. The device raises its access point at the 45-second
+// mark, and on a single-radio board that access point is the radio:
+// NetworkManager cannot autoconnect to the site network while wlan0 is busy
+// serving it. Unless the supervisor steps aside, the device sits on its own
+// access point for good, a few metres from a network it remembers, receiving
+// no alerts at all.
+func TestTheAccessPointStepsAsideToLookForASavedNetwork(t *testing.T) {
+	f := &netmgr.Fake{CurrentStatus: netmgr.Status{Connected: false}}
+	s, clk := supervisorWithActivity(t, f, boot, nil)
+	raiseAccessPoint(t, s, clk, f)
+
+	tickFor(s, clk, 5*time.Minute-time.Second, nil)
+	if got := calls(f, "StopHotspot"); got != 0 {
+		t.Fatalf("StopHotspot called %d times before the access point had been up 5 minutes, want 0", got)
+	}
+	tickFor(s, clk, time.Second, nil)
+	if got := calls(f, "StopHotspot"); got != 1 {
+		t.Fatalf("StopHotspot called %d times once the access point had been up 5 minutes with nothing above it, want 1", got)
+	}
+
+	// NetworkManager finds the saved network on the radio it just got back.
+	f.CurrentStatus = netmgr.Status{Connected: true, SSID: "SiteWiFi"}
+	tickFor(s, clk, 10*time.Minute, nil)
+	if got := calls(f, "StartHotspot"); got != 1 {
+		t.Fatalf("StartHotspot called %d times in total, want 1: the device found its network and must stay on it", got)
+	}
+}
+
+// The look-around ends. If nothing the device remembers answered, it must be
+// reachable again — but only after the whole window, because downSince has
+// been running since boot, and without a window of its own the very next tick
+// would raise the access point straight back over the search it just began.
+//
+// 90 seconds, not the 45-second boot grace: NetworkManager's own DHCP
+// timeout is 45 seconds, and it only starts after a scan and an association
+// on a radio that was serving an access point a moment ago. A window that
+// ends mid-lease raises the access point over a join about to succeed, and
+// does it again every cycle.
+func TestTheAccessPointReturnsWhenNoSavedNetworkAnswers(t *testing.T) {
+	f := &netmgr.Fake{CurrentStatus: netmgr.Status{Connected: false}}
+	s, clk := supervisorWithActivity(t, f, boot, nil)
+	raiseAccessPoint(t, s, clk, f)
+	tickFor(s, clk, 5*time.Minute, nil)
+	if calls(f, "StopHotspot") != 1 {
+		t.Fatal("setup: the access point should have stepped aside")
+	}
+
+	tickFor(s, clk, 89*time.Second, nil)
+	if got := calls(f, "StartHotspot"); got != 1 {
+		t.Fatalf("StartHotspot called %d times in total 89s into a 90s search, want 1: the search was cut short", got)
+	}
+	tickFor(s, clk, time.Second, nil)
+	if got := calls(f, "StartHotspot"); got != 2 {
+		t.Fatalf("StartHotspot called %d times in total once a 90s search found nothing, want 2", got)
+	}
+}
+
+// An operator on the setup screen, connected to the access point, must not
+// have it pulled from under them every five minutes.
+func TestDashboardUseDefersTheSearch(t *testing.T) {
+	f := &netmgr.Fake{CurrentStatus: netmgr.Status{Connected: false}}
+	act := &netmgr.Activity{}
+	s, clk := supervisorWithActivity(t, f, boot, act)
+	raiseAccessPoint(t, s, clk, f)
+
+	tickFor(s, clk, 14*time.Minute, func() { act.Touch(clk.Now()) })
+	if got := calls(f, "StopHotspot"); got != 0 {
+		t.Fatalf("StopHotspot called %d times while the dashboard was in use, want 0 before the 15-minute ceiling", got)
+	}
+}
+
+// A dashboard tab left open does not mean someone is reading it. Deferral that
+// never ends is a device that never goes back to the network it remembers,
+// so the search goes ahead at the ceiling whatever the dashboard is doing.
+func TestDashboardUseCannotDeferTheSearchPastTheCeiling(t *testing.T) {
+	f := &netmgr.Fake{CurrentStatus: netmgr.Status{Connected: false}}
+	act := &netmgr.Activity{}
+	s, clk := supervisorWithActivity(t, f, boot, act)
+	raiseAccessPoint(t, s, clk, f)
+
+	tickFor(s, clk, 15*time.Minute, func() { act.Touch(clk.Now()) })
+	if got := calls(f, "StopHotspot"); got != 1 {
+		t.Fatalf("StopHotspot called %d times after 15 minutes of constant dashboard use, want 1: deferral must have a ceiling", got)
+	}
+}
+
+// What defers the search is someone using the dashboard now, not someone
+// having used it once. The operator finishes and walks away; two quiet
+// minutes later the device goes looking.
+func TestTheSearchGoesAheadOnceTheDashboardFallsQuiet(t *testing.T) {
+	f := &netmgr.Fake{CurrentStatus: netmgr.Status{Connected: false}}
+	act := &netmgr.Activity{}
+	s, clk := supervisorWithActivity(t, f, boot, act)
+	raiseAccessPoint(t, s, clk, f)
+
+	tickFor(s, clk, 4*time.Minute, func() { act.Touch(clk.Now()) })
+	tickFor(s, clk, 2*time.Minute-time.Second, nil) // 5:59 up, last request 1:59 ago
+	if got := calls(f, "StopHotspot"); got != 0 {
+		t.Fatalf("StopHotspot called %d times with the last request 1:59 ago, want 0", got)
+	}
+	tickFor(s, clk, time.Second, nil)
+	if got := calls(f, "StopHotspot"); got != 1 {
+		t.Fatalf("StopHotspot called %d times two quiet minutes after the operator left, want 1", got)
+	}
+}
+
+// The daemon restarts — an update installs, or it crashes — while the radio
+// is still serving the access point the previous run raised. This run did not
+// raise it, but it must still go looking: the anchor is when the access point
+// was first seen up, not when this process raised it.
+func TestAnInheritedAccessPointStillStepsAside(t *testing.T) {
+	f := &netmgr.Fake{CurrentStatus: netmgr.Status{HotspotUp: true}}
+	s, clk := supervisorWithActivity(t, f, boot, nil)
+
+	s.Tick(context.Background())
+	tickFor(s, clk, 5*time.Minute, nil)
+	if got := calls(f, "StopHotspot"); got != 1 {
+		t.Fatalf("StopHotspot called %d times 5 minutes into an access point inherited from a previous run, want 1", got)
+	}
+}
+
+// NTP corrects the clock backwards while the radio is off looking. Measured
+// against the uncorrected end of the window, the device would spend the whole
+// step — an hour here — with no access point and no network either.
+func TestABackwardsClockStepDoesNotStretchTheSearch(t *testing.T) {
+	f := &netmgr.Fake{CurrentStatus: netmgr.Status{Connected: false}}
+	s, clk := supervisorWithActivity(t, f, boot, nil)
+	raiseAccessPoint(t, s, clk, f)
+	tickFor(s, clk, 5*time.Minute, nil)
+	if calls(f, "StopHotspot") != 1 {
+		t.Fatal("setup: the access point should have stepped aside")
+	}
+
+	clk.Set(clk.Now().Add(-time.Hour))
+	tickFor(s, clk, 2*time.Minute, nil)
+	if got := calls(f, "StartHotspot"); got != 2 {
+		t.Fatalf("StartHotspot called %d times in total in the two minutes after a one-hour backwards step mid-search, want 2", got)
+	}
+}
+
+// The same correction while the access point is up must not push the next
+// search an hour away either.
+func TestABackwardsClockStepDoesNotDelayTheSearch(t *testing.T) {
+	f := &netmgr.Fake{CurrentStatus: netmgr.Status{Connected: false}}
+	s, clk := supervisorWithActivity(t, f, boot, nil)
+	raiseAccessPoint(t, s, clk, f)
+
+	clk.Set(clk.Now().Add(-time.Hour))
+	tickFor(s, clk, 6*time.Minute, nil)
+	if got := calls(f, "StopHotspot"); got != 1 {
+		t.Fatalf("StopHotspot called %d times in the 6 minutes after a one-hour backwards step, want 1", got)
+	}
+}
+
+// A freshly installed board has nothing saved but its own access point.
+// Lowering it can find nothing, and costs the operator setting the device up
+// their connection every five minutes for nothing — and, past the ceiling,
+// in the middle of an upload.
+func TestNoSearchWithoutASavedNetwork(t *testing.T) {
+	f := &netmgr.Fake{CurrentStatus: netmgr.Status{Connected: false}, NoSavedWiFi: true}
+	s, clk := supervisorWithActivity(t, f, boot, nil)
+	raiseAccessPoint(t, s, clk, f)
+
+	tickFor(s, clk, 20*time.Minute, nil)
+	if got := calls(f, "StopHotspot"); got != 0 {
+		t.Fatalf("StopHotspot called %d times on a device with no saved network, want 0", got)
+	}
+}
+
+// Not knowing what is saved is not knowing that nothing is. The search costs
+// ninety seconds of access point; skipping it on a guess could cost every
+// alert until somebody visits the board.
+func TestAnUnreadableProfileListStillSearches(t *testing.T) {
+	f := &netmgr.Fake{CurrentStatus: netmgr.Status{Connected: false}, SavedWiFiErr: errors.New("exit status 8")}
+	s, clk := supervisorWithActivity(t, f, boot, nil)
+	raiseAccessPoint(t, s, clk, f)
+
+	tickFor(s, clk, 5*time.Minute, nil)
+	if got := calls(f, "StopHotspot"); got != 1 {
+		t.Fatalf("StopHotspot called %d times when the saved profiles could not be read, want 1", got)
+	}
+}
+
+// A board with no RTC and no upstream has a wrong clock, and the operator on
+// the access point is exactly who sets it, from /time. Days forward in one
+// step make the access point look up for days — past the ceiling, with the
+// operator's last request stamped before the step — and it would be pulled
+// out from under the form they just submitted.
+func TestAForwardClockStepDoesNotPullTheAccessPoint(t *testing.T) {
+	f := &netmgr.Fake{CurrentStatus: netmgr.Status{Connected: false}}
+	act := &netmgr.Activity{}
+	s, clk := supervisorWithActivity(t, f, boot, act)
+	raiseAccessPoint(t, s, clk, f)
+
+	tickFor(s, clk, time.Minute, func() { act.Touch(clk.Now()) })
+	clk.Set(clk.Now().Add(72 * time.Hour))
+	tickFor(s, clk, 4*time.Minute, nil)
+	if got := calls(f, "StopHotspot"); got != 0 {
+		t.Fatalf("StopHotspot called %d times within 4 minutes of a forward clock step, want 0", got)
+	}
+	tickFor(s, clk, 2*time.Minute, nil)
+	if got := calls(f, "StopHotspot"); got != 1 {
+		t.Fatalf("StopHotspot called %d times 6 minutes after a forward clock step, want 1: the search is re-anchored, not abandoned", got)
+	}
+}
+
+// A lower that fails leaves the access point up, which is the safe half of the
+// failure: the device stays reachable, and the next tick tries again.
+func TestAFailedLowerIsRetried(t *testing.T) {
+	f := &netmgr.Fake{CurrentStatus: netmgr.Status{Connected: false}}
+	s, clk := supervisorWithActivity(t, f, boot, nil)
+	raiseAccessPoint(t, s, clk, f)
+
+	f.StopHotspotErr = errors.New("exit status 10")
+	tickFor(s, clk, 5*time.Minute, nil)
+	if got := calls(f, "StopHotspot"); got != 1 {
+		t.Fatalf("setup: StopHotspot called %d times, want 1 failed attempt", got)
+	}
+	if got := calls(f, "StartHotspot"); got != 1 {
+		t.Fatalf("StartHotspot called %d times after a failed lower, want 1: the access point never went down", got)
+	}
+
+	f.StopHotspotErr = nil
+	tickFor(s, clk, time.Second, nil)
+	if got := calls(f, "StopHotspot"); got != 2 {
+		t.Fatalf("StopHotspot called %d times, want the failed lower retried on the next tick", got)
+	}
+}
+
+// A device with a saved network that is gone for the day searches every few
+// minutes. Each fruitless search is the design working, and two lines for it
+// every cycle is five hundred a day onto an SD card that wears out; the first
+// raise is the event worth a line, and a search that finds the network is.
+func TestFruitlessSearchesWriteNothingAndASuccessfulOneIsLogged(t *testing.T) {
+	f := &netmgr.Fake{CurrentStatus: netmgr.Status{Connected: false}}
+	s, clk, buf := supervisorWithLog(t, f, boot)
+	raiseAccessPoint(t, s, clk, f)
+	first := buf.String()
+
+	tickFor(s, clk, 3*(5*time.Minute+90*time.Second), nil)
+	if calls(f, "StopHotspot") != 3 {
+		t.Fatalf("setup: StopHotspot called %d times, want 3 searches", calls(f, "StopHotspot"))
+	}
+	if got := buf.String(); got != first {
+		t.Fatalf("three fruitless searches wrote to the log:\n%s", strings.TrimPrefix(got, first))
+	}
+
+	tickFor(s, clk, 5*time.Minute, nil)
+	f.CurrentStatus = netmgr.Status{Connected: true, SSID: "SiteWiFi"}
+	tickFor(s, clk, time.Second, nil)
+	if !strings.Contains(buf.String(), "SiteWiFi") {
+		t.Fatalf("joining a saved network during a search was not logged:\n%s", buf.String())
+	}
+}

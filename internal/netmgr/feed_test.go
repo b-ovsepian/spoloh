@@ -84,7 +84,7 @@ func TestSupervisorPublishesWhatItRead(t *testing.T) {
 	clk := clock.NewFake(feedStart)
 	cfg := config.Default()
 	cfg.Network.APPassword = testAPPassword
-	s := netmgr.NewSupervisor(f, func() *config.Config { return cfg }, clk, nil, nil, feed)
+	s := netmgr.NewSupervisor(f, func() *config.Config { return cfg }, clk, nil, nil, feed, nil)
 
 	s.Tick(context.Background())
 	if !feed.APOnly(clk.Now()) {
@@ -110,7 +110,7 @@ func TestSupervisorPublishesNothingForAFailedRead(t *testing.T) {
 	clk := clock.NewFake(feedStart)
 	cfg := config.Default()
 	cfg.Network.APPassword = testAPPassword
-	s := netmgr.NewSupervisor(f, func() *config.Config { return cfg }, clk, nil, nil, feed)
+	s := netmgr.NewSupervisor(f, func() *config.Config { return cfg }, clk, nil, nil, feed, nil)
 
 	s.Tick(context.Background())
 	if !feed.APOnly(clk.Now()) {

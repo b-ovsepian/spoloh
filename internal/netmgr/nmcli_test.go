@@ -554,3 +554,49 @@ func TestConnectToAnOpenNetworkStatesNoSecurity(t *testing.T) {
 		}
 	}
 }
+
+// Captured from a Raspberry Pi 4 with two saved networks: the profile the
+// dashboard's join writes, and one the OS image's netplan wrote. The second's
+// name was the site's real SSID and is replaced here; nothing else is.
+func TestHasSavedWiFiReadsRealOutput(t *testing.T) {
+	rec := &recorder{out: fixture(t, "nmcli-connections.txt")}
+	m := netmgr.NMCLI{Run: rec.run}
+
+	got, err := m.HasSavedWiFi(context.Background())
+	if err != nil {
+		t.Fatalf("HasSavedWiFi: %v", err)
+	}
+	if !got {
+		t.Error("HasSavedWiFi = false with two saved Wi-Fi profiles")
+	}
+	want := []string{"nmcli", "-t", "-f", "TYPE,NAME", "connection", "show"}
+	if len(rec.argv) != 1 || strings.Join(rec.argv[0], " ") != strings.Join(want, " ") {
+		t.Errorf("argv = %v, want %v", rec.argv, want)
+	}
+}
+
+// The same capture with the two saved networks removed: what a freshly
+// installed board has. Its own access point is a Wi-Fi profile too, and
+// counting it would send the supervisor looking for a network the device has
+// never been told about, every five minutes, under the operator setting it up.
+func TestHasSavedWiFiDoesNotCountTheAccessPoint(t *testing.T) {
+	rec := &recorder{out: fixture(t, "nmcli-connections-none-saved.txt")}
+	m := netmgr.NMCLI{Run: rec.run}
+
+	got, err := m.HasSavedWiFi(context.Background())
+	if err != nil {
+		t.Fatalf("HasSavedWiFi: %v", err)
+	}
+	if got {
+		t.Error("HasSavedWiFi = true with only the access point, loopback and a wired profile saved")
+	}
+}
+
+func TestHasSavedWiFiReportsACommandFailure(t *testing.T) {
+	rec := &recorder{err: errors.New("exit status 8")}
+	m := netmgr.NMCLI{Run: rec.run}
+
+	if _, err := m.HasSavedWiFi(context.Background()); err == nil {
+		t.Fatal("HasSavedWiFi returned no error for a failed nmcli")
+	}
+}

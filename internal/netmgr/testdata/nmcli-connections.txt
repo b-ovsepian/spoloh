@@ -1,0 +1,5 @@
+802-11-wireless:spoloh-wifi
+loopback:lo
+802-3-ethernet:netplan-eth0
+802-11-wireless:netplan-wlan0-SiteWiFi
+802-11-wireless:spoloh-hotspot

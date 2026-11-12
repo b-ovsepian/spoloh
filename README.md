@@ -33,6 +33,13 @@ in `/etc/spoloh/config.json` too, but that file is `0600` and owned by
 `spoloh`, so reading it back takes a shell on the board — which is exactly
 what you do not have on the day you need the password.
 
+While `Spoloh-Setup` is up and the device has a Wi-Fi network saved, it takes
+the access point down for 90 seconds after every five minutes up, to look for
+that network — a router that came back after the device did. It waits while
+someone has used the dashboard in the last two minutes, but for no more than
+fifteen. If `Spoloh-Setup` vanishes briefly from your phone's list, that is
+why; it comes back on its own. A device with no network saved never does this.
+
 Then open `http://spoloh.local/` and set an administrator password. That, and
 `sudo usermod -aG spoloh $USER` if you want the command line, are the only
 things an operator has to do by hand; both are once, not once per update.
