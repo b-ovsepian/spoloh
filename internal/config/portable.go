@@ -27,6 +27,9 @@ func Export(c *Config, withSecrets bool) ([]byte, error) {
 		out = c.Redacted()
 	}
 	out.Auth = Auth{}
+	// Monitoring follows Auth for the same reason: it belongs to this
+	// device, and Import never reads it back.
+	out.Monitoring = Monitoring{}
 	if !withSecrets {
 		// Redacted keeps the access point password on purpose — the network
 		// page shows it, because an operator who lost the installer's output
@@ -74,6 +77,10 @@ func Import(current *Config, data []byte) (*Config, error) {
 		return nil, fmt.Errorf("%w: %w", ErrImportUnreadable, err)
 	}
 	in.Auth = current.Auth
+	// The monitoring token too: the monitoring system is configured against
+	// this board, so a restore keeps it — whether the backup carried no keys
+	// or came from another board.
+	in.Monitoring = current.Monitoring
 	repairStored(&in)
 	if err := in.Validate(); err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrImportUnusable, err)

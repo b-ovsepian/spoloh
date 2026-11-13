@@ -74,6 +74,7 @@ func TestNoPageRendersASecret(t *testing.T) {
 	if err := store.Update(func(c *config.Config) error {
 		c.Alerts.AlertsUAToken = alertsUAToken
 		c.Alerts.UkraineAlarmToken = ukraineAlarmToken
+		c.Monitoring.TokenHash = tokenHash(leakMetricsToken)
 		return nil
 	}); err != nil {
 		t.Fatalf("store the provider keys: %v", err)
@@ -86,6 +87,9 @@ func TestNoPageRendersASecret(t *testing.T) {
 	authSecrets := map[string]string{
 		"password hash":  cfg.Auth.PasswordHash,
 		"session secret": cfg.Auth.SessionSecret,
+		// Not a credential a request can use, but this device's own: it is
+		// in no page and no file, the export with keys included.
+		"monitoring token hash": cfg.Monitoring.TokenHash,
 	}
 	secrets := map[string]string{
 		"alerts.in.ua token":   cfg.Alerts.AlertsUAToken,
@@ -170,4 +174,24 @@ func TestNoPageRendersASecret(t *testing.T) {
 	if !exportWalked {
 		t.Errorf("no route registers %s any more; the leg of this walk that checks the download with credentials is checking nothing", exportPath)
 	}
+
+	// /metrics answers with no session, so the walk above, holding a
+	// session and no token, only ever saw its refusal. Fetched with the
+	// token it would accept, so a label added later that carried a key or
+	// a header value would be found here rather than in a scraper's store.
+	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	req.Header.Set("Authorization", "Bearer "+leakMetricsToken)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("/metrics with the configured token: status %d, so this leg checks nothing", rec.Code)
+	}
+	for name, v := range secrets {
+		if strings.Contains(rec.Body.String(), v) {
+			t.Errorf("/metrics carries the %s", name)
+		}
+	}
 }
+
+// leakMetricsToken opens /metrics for the leak walk.
+const leakMetricsToken = "leak-walk-metrics-token-0123456789abcdef"

@@ -1,0 +1,62 @@
+{{define "title"}}Моніторинг — Сполох{{end}}
+{{define "content"}}
+<div class="grid gap-4">
+  {{if .Message}}
+  <div class="alert" role="status"><section><p>{{.Message}}</p></section></div>
+  {{end}}
+  {{if .Error}}
+  <div class="alert" data-variant="destructive" role="alert">
+    <section><p>{{.Error}}</p></section>
+  </div>
+  {{end}}
+
+  <div class="card p-6">
+    <header class="mb-4">
+      <h1 class="text-lg font-semibold">Моніторинг</h1>
+    </header>
+
+    <div class="grid gap-2 mb-4">
+      <p>
+        Zabbix, Prometheus та інші системи моніторингу можуть стежити за пристроєм за адресою
+        <span class="font-mono text-sm">{{.URL}}</span>: чи відповідають джерела тривог, чи є тривога,
+        чи не вимкнено сирену в налаштуваннях, чи синхронізовано годинник, чи були помилки відтворення.
+      </p>
+      <p class="text-sm text-muted-foreground">
+        Доступ — лише з токеном у заголовку <span class="font-mono">Authorization: Bearer …</span>.
+        Пристрій зберігає не сам токен, а його відбиток, тож показує токен один раз — коли створює.
+        Загубили — створіть новий; старий тоді перестане діяти.
+      </p>
+      <p>Зараз: {{if .Enabled}}моніторинг <span class="font-semibold">увімкнено</span>.{{else}}моніторинг вимкнено — адреса не відповідає.{{end}}</p>
+    </div>
+
+    {{if .Token}}
+    <div class="grid gap-2 rounded-md border border-border p-3 mb-4">
+      <p class="font-semibold">Новий токен</p>
+      <code class="font-mono text-sm wrap-break-word" data-token="{{.Token}}">{{.Token}}</code>
+      <p class="text-sm text-muted-foreground">Перевірка з будь-якого комп'ютера в мережі:</p>
+      <code class="font-mono text-sm wrap-break-word">curl -H "Authorization: Bearer {{.Token}}" {{.URL}}</code>
+    </div>
+    {{end}}
+
+    <form method="post" action="/monitoring" class="flex flex-wrap gap-2">
+      <input type="hidden" name="rev" value="{{.Rev}}">
+      <button class="btn w-fit" type="submit" name="action" value="generate">{{if .Enabled}}Створити новий токен (старий перестане діяти){{else}}Створити токен{{end}}</button>
+      {{if .Enabled}}
+      <button class="btn w-fit" data-variant="outline" type="submit" name="action" value="disable">Вимкнути</button>
+      {{end}}
+    </form>
+  </div>
+
+  <div class="card p-6">
+    <header class="mb-4"><h2 class="font-semibold">Як підключити</h2></header>
+    <div class="grid gap-2">
+      <p><span class="font-semibold">Zabbix 6.0 і новіші.</span>
+        Імпортуйте шаблон <span class="font-mono text-sm">deploy/monitoring/zabbix_template_spoloh.yaml</span>
+        з репозиторію Сполоху, прив'яжіть його до вузла з адресою пристрою і задайте макрос
+        <span class="font-mono text-sm">{$SPOLOH.TOKEN}</span> — цей токен.</p>
+      <p><span class="font-semibold">Prometheus.</span> Ціль <span class="font-mono text-sm">{{.URL}}</span>
+        з <span class="font-mono text-sm">authorization: {credentials: …}</span> у налаштуваннях збору.</p>
+    </div>
+  </div>
+</div>
+{{end}}

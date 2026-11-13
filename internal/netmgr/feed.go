@@ -98,3 +98,23 @@ func (f *StatusFeed) APOnly(now time.Time) bool {
 	}
 	return f.st.HotspotUp && !f.st.Connected
 }
+
+// Latest reports the last published status if it is still fresh — no older
+// than staleAfter and not from the future — and false otherwise. It is what
+// /metrics reports, and fresh-or-nothing for the reason APOnly is: a
+// supervisor that stopped ticking must not leave a reading standing in for
+// the network as it is.
+func (f *StatusFeed) Latest(now time.Time) (Status, bool) {
+	if f == nil {
+		return Status{}, false
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.at.IsZero() {
+		return Status{}, false
+	}
+	if age := now.Sub(f.at); age < 0 || age > staleAfter {
+		return Status{}, false
+	}
+	return f.st, true
+}

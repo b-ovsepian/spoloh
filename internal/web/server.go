@@ -124,6 +124,11 @@ type Server struct {
 	// frozen for this task.
 	now func() time.Time
 
+	// started is when this Server was built, which /metrics reports as the
+	// start time: a counter that fell back to zero with no restart in sight
+	// would otherwise be a mystery to whoever reads the graph.
+	started time.Time
+
 	// bcryptCost is the work factor for the one password this device has.
 	//
 	// A seam only because the suite cannot afford the real one: at
@@ -147,6 +152,7 @@ func New(d Deps) (*Server, error) {
 		limiter:  newLoginLimiter(),
 		events:   NewBroadcaster(),
 		now:      time.Now,
+		started:  time.Now(),
 	}
 
 	// After s exists, not before: two of the template helpers answer from
@@ -191,6 +197,9 @@ func New(d Deps) (*Server, error) {
 	s.handle("POST /sounds/delete", http.HandlerFunc(s.handleSoundsDelete))
 	s.handle("GET /audio", http.HandlerFunc(s.handleAudioPage))
 	s.handle("POST /audio", http.HandlerFunc(s.handleAudioSave))
+	s.handle("GET "+metricsPath, http.HandlerFunc(s.handleMetrics))
+	s.handle("GET /monitoring", http.HandlerFunc(s.handleMonitoringPage))
+	s.handle("POST /monitoring", http.HandlerFunc(s.handleMonitoringSave))
 	s.handle("GET /radio", http.HandlerFunc(s.handleRadioPage))
 	s.handle("POST /radio", http.HandlerFunc(s.handleRadioSave))
 	s.handle("GET /webhooks", http.HandlerFunc(s.handleWebhooksPage))
@@ -239,7 +248,12 @@ func (s *Server) Handler() http.Handler {
 // stream left open in a tab is one request, not continuous use.
 func (s *Server) recordActivity(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		s.deps.Activity.Touch(s.now())
+		// A scrape is a machine, not someone on the access point. Counted,
+		// a monitoring system polling every minute would hold the device on
+		// its access point and off the network it remembers.
+		if r.URL.Path != metricsPath {
+			s.deps.Activity.Touch(s.now())
+		}
 		next.ServeHTTP(w, r)
 	})
 }
@@ -250,6 +264,9 @@ var publicPaths = map[string]bool{
 	"/setup":  true,
 	"/login":  true,
 	"/logout": true,
+	// No session, because a monitoring system holds none; handleMetrics
+	// checks its own token instead, and answers 404 when there is none.
+	metricsPath: true,
 }
 
 func isPublicPath(path string) bool {

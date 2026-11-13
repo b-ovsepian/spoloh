@@ -207,3 +207,31 @@ func TestImportRepairsAnOlderBackupInsteadOfRefusingIt(t *testing.T) {
 		}
 	}
 }
+
+// The monitoring token belongs to the device, like Auth: Zabbix is configured
+// against this board. A restore must not switch monitoring off because the
+// backup was taken without keys, nor carry another board's token in.
+func TestTheMonitoringTokenNeitherLeavesNorArrivesWithAConfiguration(t *testing.T) {
+	c := config.Default()
+	c.Monitoring.TokenHash = "this-device"
+	for _, secrets := range []bool{false, true} {
+		data, err := config.Export(c, secrets)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(data), "this-device") {
+			t.Errorf("Export(secrets=%t) wrote the monitoring token hash", secrets)
+		}
+	}
+
+	other := config.Default()
+	other.Monitoring.TokenHash = "another-device"
+	data, _ := json.Marshal(other)
+	got, err := config.Import(c, data)
+	if err != nil {
+		t.Fatalf("Import: %v", err)
+	}
+	if got.Monitoring.TokenHash != "this-device" {
+		t.Errorf("after Import the token hash is %q, want this device's own", got.Monitoring.TokenHash)
+	}
+}

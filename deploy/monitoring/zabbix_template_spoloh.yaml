@@ -1,0 +1,555 @@
+zabbix_export:
+  version: '6.0'
+  groups:
+    - uuid: b3d091ab176148948ae5f1786da2ea8f
+      name: Templates/Applications
+  templates:
+    - uuid: 79a1645129244088b06cced077abef08
+      template: 'Spoloh by HTTP'
+      name: 'Spoloh by HTTP'
+      description: |
+        Spoloh, the air raid alert announcer: its /metrics endpoint, read over HTTP.
+        
+        On the device: Налаштування → Моніторинг → Створити токен.
+        Here: link this template to a host whose interface is the device's address,
+        and set {$SPOLOH.TOKEN} on the host to that token.
+        
+        The token travels as a bearer header over plain HTTP, as the dashboard does;
+        keep the device and Zabbix on a network you trust.
+      groups:
+        - name: Templates/Applications
+      items:
+        - uuid: 343d6dac23c34933b22da68f60fa1571
+          name: 'Spoloh: Get metrics'
+          type: HTTP_AGENT
+          key: spoloh.get_metrics
+          delay: '{$SPOLOH.INTERVAL}'
+          history: '0'
+          trends: '0'
+          value_type: TEXT
+          description: 'The whole /metrics page; every other item is read from it.'
+          url: '{$SPOLOH.SCHEME}://{HOST.CONN}:{$SPOLOH.PORT}/metrics'
+          headers:
+            - name: Authorization
+              value: 'Bearer {$SPOLOH.TOKEN}'
+          tags:
+            - tag: component
+              value: raw
+        - uuid: 4ea9221aeabe4e2aaabcd263ba7fb120
+          name: 'Spoloh: Version'
+          type: DEPENDENT
+          key: spoloh.version
+          delay: '0'
+          trends: '0'
+          value_type: CHAR
+          description: 'The build the device runs.'
+          preprocessing:
+            - type: PROMETHEUS_PATTERN
+              parameters:
+                - 'spoloh_build_info'
+                - label
+                - 'version'
+          master_item:
+            key: spoloh.get_metrics
+          tags:
+            - tag: component
+              value: system
+        - uuid: a257ba232dc8429d8729997b1e04d318
+          name: 'Spoloh: Started'
+          type: DEPENDENT
+          key: spoloh.start_time
+          delay: '0'
+          value_type: UNSIGNED
+          units: unixtime
+          description: 'When the daemon started.'
+          preprocessing:
+            - type: PROMETHEUS_PATTERN
+              parameters:
+                - 'spoloh_start_time_seconds'
+                - value
+                - ''
+          master_item:
+            key: spoloh.get_metrics
+          tags:
+            - tag: component
+              value: system
+          triggers:
+            - uuid: 966ec1bb8ce34a6196612f355af8adeb
+              expression: 'change(/Spoloh by HTTP/spoloh.start_time)<>0'
+              name: 'Spoloh: the daemon restarted'
+              priority: INFO
+              description: 'The daemon started again: an update, a crash or a power cut. Any change, not only a rise: a board with no RTC can start with its clock behind the last run''s.'
+              manual_close: 'YES'
+            - uuid: d3afee27ad5545b69d5d769c221fb74e
+              expression: 'nodata(/Spoloh by HTTP/spoloh.start_time,{$SPOLOH.NODATA})=1'
+              name: 'Spoloh: no metrics for {$SPOLOH.NODATA}'
+              priority: HIGH
+              description: 'Nothing read from /metrics for {$SPOLOH.NODATA}. Watched on this item because the raw page keeps no history, which nodata() needs. The device does not answer /metrics: switched off, off the network, or the token was replaced or switched off. A device nobody can reach may not be announcing either.'
+              tags:
+                - tag: scope
+                  value: availability
+        - uuid: 2acf62d76e5546cbbe581b333766b524
+          name: 'Spoloh: Air raid alert'
+          type: DEPENDENT
+          key: spoloh.alert.active
+          delay: '0'
+          value_type: UNSIGNED
+          description: '1 while an air raid alert is announced for the configured region.'
+          preprocessing:
+            - type: PROMETHEUS_PATTERN
+              parameters:
+                - 'spoloh_alert_active'
+                - value
+                - ''
+          master_item:
+            key: spoloh.get_metrics
+          tags:
+            - tag: component
+              value: alert
+          triggers:
+            - uuid: 1831a090218541d782361049095753be
+              expression: 'last(/Spoloh by HTTP/spoloh.alert.active)=1'
+              name: 'Spoloh: air raid alert'
+              priority: INFO
+              description: 'An air raid alert is announced for the region this device watches.'
+        - uuid: 4e17c5db4efa490084556c7f4690f59d
+          name: 'Spoloh: Alert is red'
+          type: DEPENDENT
+          key: spoloh.alert.red
+          delay: '0'
+          value_type: UNSIGNED
+          description: '1 while the alert is red, or of a level its source does not report.'
+          preprocessing:
+            - type: PROMETHEUS_PATTERN
+              parameters:
+                - 'spoloh_alert_red'
+                - value
+                - ''
+          master_item:
+            key: spoloh.get_metrics
+          tags:
+            - tag: component
+              value: alert
+        - uuid: c8ab17e31a3b464a92aa4d57ed698e30
+          name: 'Spoloh: Alert source last answered'
+          type: DEPENDENT
+          key: spoloh.poll.last_success
+          delay: '0'
+          value_type: UNSIGNED
+          units: unixtime
+          description: 'When an alert source last answered, by the device clock.'
+          preprocessing:
+            - type: PROMETHEUS_PATTERN
+              parameters:
+                - 'spoloh_poll_last_success_timestamp_seconds'
+                - value
+                - ''
+          master_item:
+            key: spoloh.get_metrics
+          tags:
+            - tag: component
+              value: alert-source
+        - uuid: 7f2ba0a6522342dabd3e68340c588aaf
+          name: 'Spoloh: Alert source silent for'
+          type: DEPENDENT
+          key: spoloh.poll.age
+          delay: '0'
+          value_type: FLOAT
+          units: s
+          description: 'Seconds since an alert source last answered, or since the daemon started if none has yet, by the device clock.'
+          preprocessing:
+            - type: PROMETHEUS_PATTERN
+              parameters:
+                - 'spoloh_poll_last_success_age_seconds'
+                - value
+                - ''
+          master_item:
+            key: spoloh.get_metrics
+          tags:
+            - tag: component
+              value: alert-source
+          triggers:
+            - uuid: 29b47f2fbda34e72ba0c58fbbc0c0cec
+              expression: 'last(/Spoloh by HTTP/spoloh.poll.age)>{$SPOLOH.POLL.STALE}'
+              name: 'Spoloh: no alert source has answered for {$SPOLOH.POLL.STALE}s'
+              priority: HIGH
+              description: 'The device cannot learn about air raid alerts: no source in its cascade has answered. Check its internet connection and the sources on its Джерела page.'
+        - uuid: fc8cc36ec62841b68ddfaf3d55fa5901
+          name: 'Spoloh: Alert poll failing'
+          type: DEPENDENT
+          key: spoloh.poll.failing
+          delay: '0'
+          value_type: UNSIGNED
+          description: '1 while the last poll of the alert sources failed.'
+          preprocessing:
+            - type: PROMETHEUS_PATTERN
+              parameters:
+                - 'spoloh_poll_failing'
+                - value
+                - ''
+          master_item:
+            key: spoloh.get_metrics
+          tags:
+            - tag: component
+              value: alert-source
+          triggers:
+            - uuid: 7208217dac2047b39891872e2afd517b
+              expression: 'min(/Spoloh by HTTP/spoloh.poll.failing,{$SPOLOH.POLL.FAILING})=1 and count(/Spoloh by HTTP/spoloh.poll.failing,{$SPOLOH.POLL.FAILING})>=4'
+              name: 'Spoloh: alert polls failing for {$SPOLOH.POLL.FAILING}'
+              priority: AVERAGE
+              description: 'Every poll of the alert sources has failed for a while. Brief failures are normal and retried.'
+        - uuid: 1478d13a01cb456cbcc958bd99008ce5
+          name: 'Spoloh: Alert poll paused'
+          type: DEPENDENT
+          key: spoloh.poll.paused
+          delay: '0'
+          value_type: UNSIGNED
+          description: '1 while polling is paused because the device serves its own access point.'
+          preprocessing:
+            - type: PROMETHEUS_PATTERN
+              parameters:
+                - 'spoloh_poll_paused'
+                - value
+                - ''
+          master_item:
+            key: spoloh.get_metrics
+          tags:
+            - tag: component
+              value: alert-source
+        - uuid: 39611bde72f345fa9a192feaf78bf5ac
+          name: 'Spoloh: Clock synchronised'
+          type: DEPENDENT
+          key: spoloh.clock.synced
+          delay: '0'
+          value_type: UNSIGNED
+          description: '1 when the clock is NTP-synchronised. Scheduled announcements and the radio wait for it.'
+          preprocessing:
+            - type: PROMETHEUS_PATTERN
+              parameters:
+                - 'spoloh_clock_synced'
+                - value
+                - ''
+          master_item:
+            key: spoloh.get_metrics
+          tags:
+            - tag: component
+              value: system
+          triggers:
+            - uuid: 824a4236acca442e87d95be7cb3d37ff
+              expression: 'max(/Spoloh by HTTP/spoloh.clock.synced,10m)=0 and count(/Spoloh by HTTP/spoloh.clock.synced,10m)>=9'
+              name: 'Spoloh: clock not synchronised for 10m'
+              priority: WARNING
+              description: 'Scheduled announcements and the radio are held until the clock is synchronised.'
+        - uuid: 655a934b584843a2b1e41518c3eac60c
+          name: 'Spoloh: Announcement playing'
+          type: DEPENDENT
+          key: spoloh.playing
+          delay: '0'
+          value_type: UNSIGNED
+          description: '1 while an announcement is playing.'
+          preprocessing:
+            - type: PROMETHEUS_PATTERN
+              parameters:
+                - 'spoloh_playing'
+                - value
+                - ''
+          master_item:
+            key: spoloh.get_metrics
+          tags:
+            - tag: component
+              value: sound
+        - uuid: f15bc1c16d1a41259da76c46cafe7902
+          name: 'Spoloh: Alert sound switched off'
+          type: DEPENDENT
+          key: spoloh.alert_start.disabled
+          delay: '0'
+          value_type: UNSIGNED
+          description: '1 when the alert-start announcement is switched off or at volume 0.'
+          preprocessing:
+            - type: PROMETHEUS_PATTERN
+              parameters:
+                - 'spoloh_alert_start_disabled'
+                - value
+                - ''
+          master_item:
+            key: spoloh.get_metrics
+          tags:
+            - tag: component
+              value: config
+          triggers:
+            - uuid: 1b1ee345835c43b9949a5a775372bc04
+              expression: 'last(/Spoloh by HTTP/spoloh.alert_start.disabled)=1'
+              name: 'Spoloh: the air raid siren is switched off in the settings'
+              priority: HIGH
+              description: 'The alert-start announcement is disabled or at volume 0: an air raid alert will make no sound.'
+        - uuid: 30e19dce687145c9ad972141f7d017a7
+          name: 'Spoloh: Quiet hours silence alerts'
+          type: DEPENDENT
+          key: spoloh.quiet_hours.silence_alerts
+          delay: '0'
+          value_type: UNSIGNED
+          description: '1 when quiet hours are set to silence air raid alerts.'
+          preprocessing:
+            - type: PROMETHEUS_PATTERN
+              parameters:
+                - 'spoloh_quiet_hours_silence_alerts'
+                - value
+                - ''
+          master_item:
+            key: spoloh.get_metrics
+          tags:
+            - tag: component
+              value: config
+          triggers:
+            - uuid: 84bd9a3007df4c0d925c70779b4f2d9a
+              expression: 'last(/Spoloh by HTTP/spoloh.quiet_hours.silence_alerts)=1'
+              name: 'Spoloh: quiet hours are set to silence air raid alerts'
+              priority: WARNING
+              description: 'Inside the quiet-hours window an air raid alert makes no sound. This is a setting someone chose; make sure it is still meant.'
+        - uuid: 2020c22c69ed4737ac67edf91f18498c
+          name: 'Spoloh: Joined to a network'
+          type: DEPENDENT
+          key: spoloh.network.connected
+          delay: '0'
+          value_type: UNSIGNED
+          description: '1 when the device is joined to an upstream network. Absent until the network supervisor has a reading.'
+          preprocessing:
+            - type: PROMETHEUS_PATTERN
+              parameters:
+                - 'spoloh_network_connected'
+                - value
+                - ''
+              error_handler: DISCARD_VALUE
+          master_item:
+            key: spoloh.get_metrics
+          tags:
+            - tag: component
+              value: network
+        - uuid: 5e11553e6ba74e878291ecc11295c4c3
+          name: 'Spoloh: Serving its own access point'
+          type: DEPENDENT
+          key: spoloh.network.hotspot_up
+          delay: '0'
+          value_type: UNSIGNED
+          description: '1 while the device serves its own Spoloh-Setup access point.'
+          preprocessing:
+            - type: PROMETHEUS_PATTERN
+              parameters:
+                - 'spoloh_network_hotspot_up'
+                - value
+                - ''
+              error_handler: DISCARD_VALUE
+          master_item:
+            key: spoloh.get_metrics
+          tags:
+            - tag: component
+              value: network
+          triggers:
+            - uuid: d5d0ea53e6b541188cc65dd24fb5dc5c
+              expression: 'min(/Spoloh by HTTP/spoloh.network.hotspot_up,{$SPOLOH.HOTSPOT})=1 and count(/Spoloh by HTTP/spoloh.network.hotspot_up,{$SPOLOH.HOTSPOT})>=4 and last(/Spoloh by HTTP/spoloh.network.connected)=1'
+              name: 'Spoloh: cannot lower its own access point for {$SPOLOH.HOTSPOT}'
+              priority: AVERAGE
+              description: 'The device is on its network and still broadcasting Spoloh-Setup: lowering the access point keeps failing. Alerts are received; the access point is open to anyone with its password. A device with no network at all is not reachable from here, and shows as no metrics instead.'
+        - uuid: fe30d96306644eb684012f47059ba7c5
+          name: 'Spoloh: Radio switched on'
+          type: DEPENDENT
+          key: spoloh.radio.enabled
+          delay: '0'
+          value_type: UNSIGNED
+          description: '1 when the radio is switched on in the settings.'
+          preprocessing:
+            - type: PROMETHEUS_PATTERN
+              parameters:
+                - 'spoloh_radio_enabled'
+                - value
+                - ''
+          master_item:
+            key: spoloh.get_metrics
+          tags:
+            - tag: component
+              value: radio
+        - uuid: 9b6db412c45245749d15b008c46b39c1
+          name: 'Spoloh: Radio scheduled now'
+          type: DEPENDENT
+          key: spoloh.radio.on
+          delay: '0'
+          value_type: UNSIGNED
+          description: '1 while the schedule says the radio should play.'
+          preprocessing:
+            - type: PROMETHEUS_PATTERN
+              parameters:
+                - 'spoloh_radio_on'
+                - value
+                - ''
+          master_item:
+            key: spoloh.get_metrics
+          tags:
+            - tag: component
+              value: radio
+        - uuid: 0345b77ddff445bc99fffc086f2e9d30
+          name: 'Spoloh: Radio held by the stop button'
+          type: DEPENDENT
+          key: spoloh.radio.held
+          delay: '0'
+          value_type: UNSIGNED
+          description: '1 while the stop button holds the radio off.'
+          preprocessing:
+            - type: PROMETHEUS_PATTERN
+              parameters:
+                - 'spoloh_radio_held'
+                - value
+                - ''
+          master_item:
+            key: spoloh.get_metrics
+          tags:
+            - tag: component
+              value: radio
+        - uuid: 0960726dc85147048fe76f29d86d4559
+          name: 'Spoloh: Radio last stream failure'
+          type: DEPENDENT
+          key: spoloh.radio.last_error
+          delay: '0'
+          value_type: UNSIGNED
+          units: unixtime
+          description: 'When the radio stream last failed; 0 if it has not since it was set.'
+          preprocessing:
+            - type: PROMETHEUS_PATTERN
+              parameters:
+                - 'spoloh_radio_last_error_timestamp_seconds'
+                - value
+                - ''
+          master_item:
+            key: spoloh.get_metrics
+          tags:
+            - tag: component
+              value: radio
+        - uuid: 69853fd4fb0744d3a4226a2d3e905800
+          name: 'Spoloh: Playback errors'
+          type: DEPENDENT
+          key: spoloh.events.playback_error
+          delay: '0'
+          value_type: UNSIGNED
+          description: 'Announcements that failed to play since the daemon started.'
+          preprocessing:
+            - type: PROMETHEUS_PATTERN
+              parameters:
+                - 'spoloh_events_total{kind="playback_error"}'
+                - function
+                - 'sum'
+              error_handler: CUSTOM_VALUE
+              error_handler_params: '0'
+          master_item:
+            key: spoloh.get_metrics
+          tags:
+            - tag: component
+              value: sound
+          triggers:
+            - uuid: 71ab581526ef4c4e84c6369400e8d1a0
+              expression: 'change(/Spoloh by HTTP/spoloh.events.playback_error)<>0 and last(/Spoloh by HTTP/spoloh.events.playback_error)>0'
+              name: 'Spoloh: an announcement failed to play'
+              priority: AVERAGE
+              description: 'Check the output on the device''s Аудіовихід page and its Журнал. A failed sound check on that page counts too. Raised again after a restart, when the count starts from 0.'
+              manual_close: 'YES'
+        - uuid: aa1a2098bd8b459283276642e0cf4ee9
+          name: 'Spoloh: Alerts silenced by quiet hours'
+          type: DEPENDENT
+          key: spoloh.events.alert_suppressed
+          delay: '0'
+          value_type: UNSIGNED
+          description: 'Air raid announcements quiet hours silenced since the daemon started.'
+          preprocessing:
+            - type: PROMETHEUS_PATTERN
+              parameters:
+                - 'spoloh_events_total{kind="alert_suppressed"}'
+                - function
+                - 'sum'
+              error_handler: CUSTOM_VALUE
+              error_handler_params: '0'
+          master_item:
+            key: spoloh.get_metrics
+          tags:
+            - tag: component
+              value: sound
+          triggers:
+            - uuid: a7617abca99b4d78acce6671ccc1d890
+              expression: 'change(/Spoloh by HTTP/spoloh.events.alert_suppressed)<>0 and last(/Spoloh by HTTP/spoloh.events.alert_suppressed)>0'
+              name: 'Spoloh: quiet hours silenced an air raid alert'
+              priority: WARNING
+              description: 'An air raid alert was announced with no sound because quiet hours cover alerts.'
+              manual_close: 'YES'
+        - uuid: 60cf6e0e683e4cf3a95b00f0620a9300
+          name: 'Spoloh: Webhook failures'
+          type: DEPENDENT
+          key: spoloh.events.webhook_failed
+          delay: '0'
+          value_type: UNSIGNED
+          description: 'Webhook requests that failed since the daemon started.'
+          preprocessing:
+            - type: PROMETHEUS_PATTERN
+              parameters:
+                - 'spoloh_events_total{kind="webhook",ok="false"}'
+                - function
+                - 'sum'
+              error_handler: CUSTOM_VALUE
+              error_handler_params: '0'
+          master_item:
+            key: spoloh.get_metrics
+          tags:
+            - tag: component
+              value: webhook
+          triggers:
+            - uuid: bcc7cc8b44904869a6bcb830911a317a
+              expression: 'change(/Spoloh by HTTP/spoloh.events.webhook_failed)<>0 and last(/Spoloh by HTTP/spoloh.events.webhook_failed)>0'
+              name: 'Spoloh: a webhook request failed'
+              priority: WARNING
+              description: 'A request to other equipment failed; see the device''s Журнал.'
+              manual_close: 'YES'
+        - uuid: d44eecc19c954650ada1d7a913bcb818
+          name: 'Spoloh: Event log write errors'
+          type: DEPENDENT
+          key: spoloh.eventlog.write_errors
+          delay: '0'
+          value_type: UNSIGNED
+          description: 'Event log entries that could not be written since the daemon started.'
+          preprocessing:
+            - type: PROMETHEUS_PATTERN
+              parameters:
+                - 'spoloh_eventlog_write_errors_total'
+                - value
+                - ''
+          master_item:
+            key: spoloh.get_metrics
+          tags:
+            - tag: component
+              value: system
+          triggers:
+            - uuid: 9ede418d377942eaa02f2d072eb2b7ed
+              expression: 'change(/Spoloh by HTTP/spoloh.eventlog.write_errors)<>0 and last(/Spoloh by HTTP/spoloh.eventlog.write_errors)>0'
+              name: 'Spoloh: the event log cannot be written'
+              priority: WARNING
+              description: 'Usually an SD card remounted read-only: the device keeps announcing, but keeps no record of it.'
+              manual_close: 'YES'
+      macros:
+        - macro: '{$SPOLOH.TOKEN}'
+          value: ''
+          type: SECRET_TEXT
+          description: 'The token made on the device under Налаштування → Моніторинг.'
+        - macro: '{$SPOLOH.SCHEME}'
+          value: 'http'
+        - macro: '{$SPOLOH.PORT}'
+          value: '80'
+        - macro: '{$SPOLOH.INTERVAL}'
+          value: '1m'
+          description: 'How often /metrics is read. The "for 5m" and "for 10m" triggers count readings in their window — at least 4 and 9 — so that one reading after a gap cannot fire them; those counts assume this 1m.'
+        - macro: '{$SPOLOH.NODATA}'
+          value: '5m'
+          description: 'How long without metrics before the device counts as unreachable.'
+        - macro: '{$SPOLOH.POLL.STALE}'
+          value: '300'
+          description: 'Seconds without an answer from any alert source before it is a problem.'
+        - macro: '{$SPOLOH.POLL.FAILING}'
+          value: '5m'
+          description: 'How long polls may keep failing before it is a problem.'
+        - macro: '{$SPOLOH.HOTSPOT}'
+          value: '5m'
+          description: 'How long on its own access point before it is a problem.'

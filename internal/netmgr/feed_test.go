@@ -131,3 +131,30 @@ func TestSupervisorPublishesNothingForAFailedRead(t *testing.T) {
 		t.Error("a status that has not been readable for two minutes still stops the poll")
 	}
 }
+
+// /metrics reports the network as the supervisor last read it, and only while
+// that reading is fresh: a supervisor that stopped ticking must not leave a
+// monitoring system believing a connection from an hour ago.
+func TestLatestIsTheFreshReadingOrNothing(t *testing.T) {
+	var nilFeed *netmgr.StatusFeed
+	if _, ok := nilFeed.Latest(feedStart); ok {
+		t.Fatal("a nil feed reported a reading")
+	}
+	f := &netmgr.StatusFeed{}
+	if _, ok := f.Latest(feedStart); ok {
+		t.Fatal("an empty feed reported a reading")
+	}
+	f.Publish(netmgr.Status{Connected: true, SSID: "site"}, feedStart)
+	if st, ok := f.Latest(feedStart.Add(30 * time.Second)); !ok || !st.Connected {
+		t.Fatalf("Latest = %+v, %t for a 30s-old reading", st, ok)
+	}
+	if _, ok := f.Latest(feedStart.Add(2 * time.Minute)); ok {
+		t.Fatal("a 2-minute-old reading was reported as current")
+	}
+	// A reading stamped after now is a clock that stepped back since, not
+	// a reading from the future: not reported, as APOnly does not act on it.
+	f.Publish(netmgr.Status{Connected: true}, feedStart.Add(time.Minute))
+	if _, ok := f.Latest(feedStart); ok {
+		t.Fatal("a reading from a minute in the future was reported as current")
+	}
+}

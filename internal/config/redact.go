@@ -42,6 +42,10 @@ func (c *Config) Redacted() *Config {
 	out.Auth = Auth{}
 	out.Alerts.AlertsUAToken = ""
 	out.Alerts.UkraineAlarmToken = ""
+	// Only a hash, and no request can be made with it — but it is the one
+	// thing that tells this device's monitoring token from any other, and a
+	// configuration rendered or handed on has no use for it.
+	out.Monitoring = Monitoring{}
 	for i := range out.Webhooks {
 		for j := range out.Webhooks[i].Headers {
 			out.Webhooks[i].Headers[j] = WebhookHeader{}

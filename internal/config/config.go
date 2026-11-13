@@ -148,6 +148,11 @@ type Config struct {
 	// announce. Absent from every config.json written before it existed,
 	// which is exactly right: the zero value is a radio switched off.
 	Radio Radio `json:"radio"`
+
+	// Monitoring is what lets a monitoring system read /metrics. Absent from
+	// every config.json written before it existed, and the zero value is the
+	// endpoint switched off.
+	Monitoring Monitoring `json:"monitoring"`
 }
 
 // Radio is what /radio configures. It is deliberately not checked by
@@ -173,6 +178,18 @@ type Radio struct {
 	// never mentions it — the radio plays on between announcements, which
 	// is what the operator who asked for this wanted by default.
 	PauseDuringAlert bool `json:"pause_during_alert,omitempty"`
+}
+
+// Monitoring holds the one credential /metrics accepts, and only its hash.
+//
+// The token itself is shown once, when /monitoring generates it, and never
+// stored: a backup, an export or a page that leaked this field would leak
+// nothing a request could use. Lost, it is generated again, which is the
+// whole cost of not keeping it.
+type Monitoring struct {
+	// TokenHash is the hex SHA-256 of the bearer token. Empty means /metrics
+	// is off and answers 404.
+	TokenHash string `json:"token_hash,omitempty"`
 }
 
 type Device struct {

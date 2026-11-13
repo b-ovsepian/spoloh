@@ -147,6 +147,35 @@ A stream uses the site's internet connection the whole time it plays — about
 broadcast to the public may need the broadcaster's or a rights society's
 permission; that is for whoever installs the device to check.
 
+## Monitoring
+
+`http://<device>/metrics` reports the device's health in the Prometheus text
+format: whether an alert source has answered and how long ago, whether an
+alert is on and how severe, whether the siren has been switched off in the
+settings or quiet hours silence alerts, whether the clock is synchronised,
+the network and the radio, and counts of announcements, playback errors,
+silenced alerts, failed webhooks and event log writes that failed.
+
+It is off until **Налаштування → Моніторинг → Створити токен**, and then
+answers only a request carrying that token as `Authorization: Bearer <token>`.
+The device keeps only the token's hash, so it shows the token once, when it
+is made; a lost token is replaced by making a new one. Like the dashboard it
+is plain HTTP, so keep the device and the monitoring system on a network you
+trust.
+
+- **Zabbix 6.0 or later:** import
+  [deploy/monitoring/zabbix_template_spoloh.yaml](deploy/monitoring/zabbix_template_spoloh.yaml),
+  link *Spoloh by HTTP* to a host whose interface is the device's address,
+  and set `{$SPOLOH.TOKEN}` on that host. Its triggers cover a device that
+  stops answering, no alert source answering, the siren switched off, quiet
+  hours silencing alerts, an unsynchronised clock, an access point the device
+  cannot lower once it is back on its network, playback and webhook failures,
+  and an event log that can no longer be written. A device with no network at
+  all cannot be reached from Zabbix, so it shows as one that stopped
+  answering.
+- **Prometheus and anything that reads its format:** scrape `/metrics` with
+  `authorization: {credentials: <token>}`.
+
 ## Licence
 
 [PolyForm Noncommercial 1.0.0](LICENSE.md). Use it, change it, run it,

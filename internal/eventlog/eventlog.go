@@ -5,6 +5,7 @@ package eventlog
 import (
 	"database/sql"
 	"fmt"
+	"sort"
 	"sync"
 	"time"
 
@@ -119,8 +120,11 @@ type Log struct {
 	db       *sql.DB
 	capacity int
 
-	mu      sync.Mutex // guards inserts and the decision to prune
+	mu      sync.Mutex // guards inserts, the counters and the decision to prune
 	inserts int
+	// counts and writeErrors back Counts and WriteErrors.
+	counts      map[CountKey]uint64
+	writeErrors uint64
 }
 
 func Open(path string, capacity int) (*Log, error) {
@@ -170,11 +174,22 @@ func (l *Log) Append(e Entry) error {
 	if e.At.IsZero() {
 		e.At = time.Now()
 	}
+	// Counted before the write, so an event the database refused is still
+	// an event.
+	l.mu.Lock()
+	if l.counts == nil {
+		l.counts = map[CountKey]uint64{}
+	}
+	l.counts[CountKey{Kind: e.Kind, OK: e.OK}]++
+	l.mu.Unlock()
 	_, err := l.db.Exec(
 		`INSERT INTO entries (at, kind, event_id, sound, ok, err) VALUES (?, ?, ?, ?, ?, ?)`,
 		e.At.UnixMilli(), e.Kind, e.EventID, e.Sound, boolToInt(e.OK), e.Err,
 	)
 	if err != nil {
+		l.mu.Lock()
+		l.writeErrors++
+		l.mu.Unlock()
 		return err
 	}
 
@@ -315,4 +330,53 @@ func boolToInt(b bool) int {
 		return 1
 	}
 	return 0
+}
+
+// CountKey is what Counts groups by.
+type CountKey struct {
+	Kind string
+	OK   bool
+}
+
+// Count is how many entries of one kind and outcome have been appended since
+// this Log was opened.
+type Count struct {
+	CountKey
+	N uint64
+}
+
+// Counts reports every entry appended since Open, by kind and outcome, in a
+// stable order. It counts appends, not rows: the table is capped and pruned,
+// and a total that fell when old rows were swept would read to a monitoring
+// system as a daemon that had restarted. A nil Log counts nothing.
+func (l *Log) Counts() []Count {
+	if l == nil {
+		return nil
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	out := make([]Count, 0, len(l.counts))
+	for k, n := range l.counts {
+		out = append(out, Count{CountKey: k, N: n})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Kind != out[j].Kind {
+			return out[i].Kind < out[j].Kind
+		}
+		return !out[i].OK && out[j].OK
+	})
+	return out
+}
+
+// WriteErrors reports how many appends since Open failed to reach the
+// database — an SD card remounted read-only, typically. The entries
+// themselves are still in Counts: the event happened whether or not it could
+// be written down.
+func (l *Log) WriteErrors() uint64 {
+	if l == nil {
+		return 0
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.writeErrors
 }
