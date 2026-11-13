@@ -124,9 +124,10 @@ another machine — and none of it works if the daemon is not running, which
 ## Radio
 
 **Налаштування → Радіо** plays an internet radio station between
-announcements, on the days and between the times you choose: one of a short
-list of Ukrainian stations, or a stream address of your own (http or https
-only). It is off until you switch it on.
+announcements, on the days and between the times you choose: one of the
+Ukrainian stations in its list — every TAVR Media station and channel, Lux FM
+and Суспільне's three — or a stream address of your own (http or https only).
+It is off until you switch it on.
 
 The radio comes last. Any sound the device makes — an alert, a scheduled
 event, listening to a sound on the settings pages — stops it at once, and it

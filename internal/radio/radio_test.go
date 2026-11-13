@@ -1,6 +1,7 @@
 package radio_test
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -16,7 +17,17 @@ func TestEveryStationIsUsable(t *testing.T) {
 		t.Fatal("the catalogue is empty")
 	}
 	seen := map[string]bool{}
+	// Unique URLs as well: /radio names what is playing by its URL, and two
+	// entries sharing one would show the first one's name for the second.
+	seenURL := map[string]bool{}
 	for _, s := range radio.Stations {
+		if seenURL[s.URL] {
+			t.Errorf("URL %q is listed twice", s.URL)
+		}
+		seenURL[s.URL] = true
+		if s.Group == "" {
+			t.Errorf("station %q has no group, so /radio would list it outside every heading", s.ID)
+		}
 		if s.ID == "" || s.Name == "" {
 			t.Errorf("station %+v has no ID or name", s)
 		}
@@ -152,6 +163,51 @@ func TestRedactKeepsTheStationAndDropsTheSecrets(t *testing.T) {
 	} {
 		if got := radio.Redact(in); got != want {
 			t.Errorf("Redact(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// A station a device has stored must still be in the list after an update.
+// The ID is what config.json keeps; dropped or renamed, Due finds nothing
+// and the radio on that board goes quiet with nothing on the page to say
+// why. These are every ID v1.1.0 shipped.
+func TestEveryShippedStationIDStillResolves(t *testing.T) {
+	for _, id := range []string{
+		"hitfm", "kissfm", "roks", "roks-ukr", "relax", "melodia", "bayraktar",
+		"nashe", "jazz", "luxfm", "ur1", "promin", "kultura",
+	} {
+		if _, ok := radio.Lookup(id); !ok {
+			t.Errorf("station %q, which a device may have stored, is gone from the catalogue", id)
+		}
+	}
+}
+
+// The TAVR Media stations play from tavr.tvstitch.com, the address the
+// broadcaster's own player uses; the per-station hosts this list started with
+// are the older ones. Every entry is held to it, bar the named few that are
+// not TAVR's or that its player plays from elsewhere, so a typo in any of the
+// forty-odd paths, or a station sliding back to an old host, fails here. The
+// Hit FM channels are pinned whole, as the operator gave them.
+func TestTavrStationsPlayFromTvstitch(t *testing.T) {
+	elsewhere := map[string]bool{"nashe-ukr": true, "news": true, "luxfm": true, "ur1": true, "promin": true, "kultura": true}
+	for _, s := range radio.Stations {
+		if elsewhere[s.ID] {
+			continue
+		}
+		if !strings.HasPrefix(s.URL, "https://tavr.tvstitch.com/") {
+			t.Errorf("station %q plays from %q, not tavr.tvstitch.com", s.ID, s.URL)
+		}
+	}
+	for id, want := range map[string]string{
+		"hitfm":      "https://tavr.tvstitch.com/HitFM",
+		"hitfm-best": "https://tavr.tvstitch.com/HitFM_Best",
+		"hitfm-ukr":  "https://tavr.tvstitch.com/HitFM_Ukr",
+		"hitfm-top":  "https://tavr.tvstitch.com/HitFM_Top",
+		"bayraktar":  "https://tavr.tvstitch.com/RadioBayraktar",
+	} {
+		s, ok := radio.Lookup(id)
+		if !ok || s.URL != want {
+			t.Errorf("Lookup(%q) = %q, %t; want %q", id, s.URL, ok, want)
 		}
 	}
 }

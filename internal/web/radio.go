@@ -15,7 +15,7 @@ type radioView struct {
 	Error   string
 
 	Radio          config.Radio
-	Stations       []radio.Station
+	Groups         []radio.Group
 	Custom         string
 	WeekdayOptions []weekdayOption
 	// Playing names what the player has been asked to stream right now, or
@@ -119,7 +119,7 @@ func (s *Server) renderRadioPage(w http.ResponseWriter, status int, mutate func(
 	}
 	view := radioView{
 		Radio:          stored,
-		Stations:       radio.Stations,
+		Groups:         radio.Groups(),
 		Custom:         radio.Custom,
 		WeekdayOptions: weekdayOptions,
 	}

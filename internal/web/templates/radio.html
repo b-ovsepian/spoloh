@@ -52,7 +52,11 @@
       <div class="field">
         <label for="station">Станція</label>
         <select class="select" id="station" name="station">
-          {{range .Stations}}<option value="{{.ID}}"{{if eq .ID $.Radio.Station}} selected{{end}}>{{.Name}}</option>{{end}}
+          {{range .Groups}}
+          <optgroup label="{{.Name}}">
+            {{range .Stations}}<option value="{{.ID}}"{{if eq .ID $.Radio.Station}} selected{{end}}>{{.Name}}</option>{{end}}
+          </optgroup>
+          {{end}}
           <option value="{{.Custom}}"{{if eq .Custom .Radio.Station}} selected{{end}}>Своя адреса потоку</option>
         </select>
       </div>

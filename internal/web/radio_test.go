@@ -3,6 +3,7 @@ package web_test
 import (
 	"context"
 	"errors"
+	"html/template"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -66,9 +67,16 @@ func TestTheRadioPageOffersEveryStation(t *testing.T) {
 	h, cookie, _ := radioServer(t)
 	body := getRadio(t, h, cookie)
 	for _, s := range radio.Stations {
-		if !strings.Contains(body, `value="`+s.ID+`"`) || !strings.Contains(body, s.Name) {
+		// As html/template writes it: "Hard'n'Heavy" reaches the page as
+		// Hard&#39;n&#39;Heavy, which a browser shows as typed.
+		if !strings.Contains(body, `value="`+s.ID+`"`) || !strings.Contains(body, template.HTMLEscapeString(s.Name)) {
 			t.Errorf("station %q (%s) is not offered", s.ID, s.Name)
 		}
+	}
+	// Forty-odd stations in one flat list is a list nobody finds anything
+	// in: they come under their brand's heading, still a plain <select>.
+	if !strings.Contains(body, `<optgroup label="Hit FM">`) || !strings.Contains(body, `<optgroup label="Суспільне">`) {
+		t.Error("the stations are not grouped under their brands")
 	}
 	if !strings.Contains(body, `value="`+radio.Custom+`"`) {
 		t.Error("there is no way to choose a stream of the operator's own")
